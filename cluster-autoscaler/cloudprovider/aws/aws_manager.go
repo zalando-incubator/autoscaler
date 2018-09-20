@@ -44,6 +44,7 @@ const (
 	operationWaitTimeout    = 5 * time.Second
 	operationPollInterval   = 100 * time.Millisecond
 	maxRecordsReturnedByAPI = 100
+	maxAsgNamesPerDescribe  = 50
 	refreshInterval         = 10 * time.Second
 	megabyte                = 1024 * 1024
 )

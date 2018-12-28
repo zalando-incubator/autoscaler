@@ -38,8 +38,8 @@ import (
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	scheduler_util "k8s.io/autoscaler/cluster-autoscaler/utils/scheduler"
 
+	appsv1 "k8s.io/api/apps/v1"
 	apiv1 "k8s.io/api/core/v1"
-	extensionsv1 "k8s.io/api/extensions/v1beta1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	kube_client "k8s.io/client-go/kubernetes"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
@@ -220,7 +220,7 @@ func CheckPodsSchedulableOnNode(context *context.AutoscalingContext, pods []*api
 //
 // TODO(mwielgus): Review error policy - sometimes we may continue with partial errors.
 func GetNodeInfosForGroups(nodes []*apiv1.Node, forceTemplateFromCloudProvider bool, cloudProvider cloudprovider.CloudProvider, kubeClient kube_client.Interface,
-	daemonsets []*extensionsv1.DaemonSet, predicateChecker *simulator.PredicateChecker) (map[string]*schedulercache.NodeInfo, errors.AutoscalerError) {
+	daemonsets []*appsv1.DaemonSet, predicateChecker *simulator.PredicateChecker) (map[string]*schedulercache.NodeInfo, errors.AutoscalerError) {
 	result := make(map[string]*schedulercache.NodeInfo)
 
 	// If this is enabled, always construct a sample node from the provider template node

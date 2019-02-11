@@ -259,6 +259,11 @@ func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*ap
 		}
 	}
 
+	resourcesFromTags := extractAllocatableResourcesFromAsg(template.Tags)
+	if val, ok := resourcesFromTags["ephemeral-storage"]; ok {
+		node.Status.Capacity[apiv1.ResourceEphemeralStorage] = *val
+	}
+
 	// NodeLabels
 	node.Labels = cloudprovider.JoinStringMaps(node.Labels, extractLabelsFromAsg(template.Tags))
 	// GenericLabels
@@ -405,6 +410,28 @@ func extractLabelsFromAsg(tags []*autoscaling.TagDescription) map[string]string 
 			label := splits[1]
 			if label != "" {
 				result[label] = v
+			}
+		}
+	}
+
+	return result
+}
+
+func extractAllocatableResourcesFromAsg(tags []*autoscaling.TagDescription) map[string]*resource.Quantity {
+	result := make(map[string]*resource.Quantity)
+
+	for _, tag := range tags {
+		k := *tag.Key
+		v := *tag.Value
+		splits := strings.Split(k, "k8s.io/cluster-autoscaler/node-template/resources/")
+		if len(splits) > 1 {
+			label := splits[1]
+			if label != "" {
+				quantity, err := resource.ParseQuantity(v)
+				if err != nil {
+					continue
+				}
+				result[label] = &quantity
 			}
 		}
 	}

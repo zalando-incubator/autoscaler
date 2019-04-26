@@ -39,8 +39,28 @@ func GetDaemonSetPodsForNode(nodeInfo *schedulercache.NodeInfo, daemonsets []*ex
 	return result
 }
 
+// If only the limits are specified, requests are automatically set to match the limits. Since the scheduler doesn't
+// do this, fixup the requests instead.
+func fixupContainers(spec *apiv1.PodSpec) *apiv1.PodSpec {
+	newSpec := spec.DeepCopy()
+	for i := range newSpec.Containers {
+		container := newSpec.Containers[i]
+		for resourceName, resourceValue := range container.Resources.Limits {
+			if _, ok := container.Resources.Requests[resourceName]; !ok {
+				if container.Resources.Requests == nil {
+					container.Resources.Requests = make(apiv1.ResourceList)
+				}
+				container.Resources.Requests[resourceName] = resourceValue
+			}
+		}
+		newSpec.Containers[i] = container
+	}
+	return newSpec
+}
+
 func newPod(ds *extensionsv1.DaemonSet, nodeName string) *apiv1.Pod {
-	newPod := &apiv1.Pod{Spec: ds.Spec.Template.Spec, ObjectMeta: ds.Spec.Template.ObjectMeta}
+	podSpec := fixupContainers(&ds.Spec.Template.Spec)
+	newPod := &apiv1.Pod{Spec: *podSpec, ObjectMeta: ds.Spec.Template.ObjectMeta}
 	newPod.Namespace = ds.Namespace
 	newPod.Name = fmt.Sprintf("%s-pod-%d", ds.Name, rand.Int63())
 	newPod.Spec.NodeName = nodeName

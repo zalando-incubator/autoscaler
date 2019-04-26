@@ -35,6 +35,7 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	extensionsv1 "k8s.io/api/extensions/v1beta1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	core "k8s.io/client-go/testing"
@@ -310,6 +311,98 @@ func TestWillConsiderAllPoolsWhichFitTwoPodsRequiringGpus(t *testing.T) {
 	simpleScaleUpTest(t, config)
 }
 
+func TestScaleUpTemplateFromCloudProider(t *testing.T) {
+	options := defaultOptions
+	options.ScaleUpTemplateFromCloudProvider = true
+
+	config := &scaleTestConfig{
+		nodes: []nodeConfig{
+			{"n1", 100, 100, 0, true, "ng1"},
+			{"n2", 100, 100, 0, true, "ng2"},
+		},
+		pods: []podConfig{
+			{"p1", 80, 0, 0, "n1"},
+			{"p2", 80, 0, 0, "n2"},
+		},
+		extraPods: []podConfig{
+			{"p-new", 500, 0, 0, ""},
+		},
+		templateNodes: []nodeConfig{
+			{"t-n1", 100, 100, 0, true, "ng1"},
+			{"t-n2", 1000, 1000, 0, true, "ng2"},
+		},
+		expectedScaleUpOptions: []groupSizeChange{
+			{groupName: "ng2", sizeChange: 1},
+		},
+		scaleUpOptionToChoose: groupSizeChange{groupName: "ng2", sizeChange: 1},
+		expectedFinalScaleUp:  groupSizeChange{groupName: "ng2", sizeChange: 1},
+		options:               options,
+	}
+
+	simpleScaleUpTest(t, config)
+}
+
+func TestScaleUpTemplateFromCloudProiderReservedResources(t *testing.T) {
+	options := defaultOptions
+	options.ScaleUpTemplateFromCloudProvider = true
+
+	config := &scaleTestConfig{
+		nodes: []nodeConfig{
+			{"n1", 500, 500, 0, true, "ng1"},
+			{"n2", 500, 500, 0, true, "ng2"},
+			{"n3", 500, 500, 0, true, "ng3"},
+		},
+		pods: []podConfig{
+			{"p1", 80, 0, 0, "n1"},
+			{"p2", 80, 0, 0, "n2"},
+			{"p3", 80, 0, 0, "n3"},
+		},
+		extraPods: []podConfig{
+			{"p-new", 400, 400, 0, ""},
+		},
+		templateNodes: []nodeConfig{
+			{"t-n1", 500, 500, 0, true, "ng1"},
+			{"t-n2", 500, 500, 0, true, "ng2"},
+			{"t-n3", 500, 500, 0, true, "ng3"},
+			{"t-n4", 600, 600, 0, true, "ng4"},
+		},
+		reservedResources: map[string]apiv1.ResourceList{
+			"n1": {
+				apiv1.ResourceCPU:    resource.MustParse("200m"),
+				apiv1.ResourceMemory: resource.MustParse("100"),
+			},
+			"n2": {
+				apiv1.ResourceCPU:    resource.MustParse("100m"),
+				apiv1.ResourceMemory: resource.MustParse("200"),
+			},
+			"n3": {
+				apiv1.ResourceCPU:    resource.MustParse("50m"),
+				apiv1.ResourceMemory: resource.MustParse("50"),
+			},
+			"t-n1": {
+				apiv1.ResourceCPU:    resource.MustParse("50m"),
+				apiv1.ResourceMemory: resource.MustParse("50"),
+			},
+			"t-n2": {
+				apiv1.ResourceCPU:    resource.MustParse("50m"),
+				apiv1.ResourceMemory: resource.MustParse("50"),
+			},
+			"t-n3": {
+				apiv1.ResourceCPU:    resource.MustParse("50m"),
+				apiv1.ResourceMemory: resource.MustParse("50"),
+			},
+		},
+		expectedScaleUpOptions: []groupSizeChange{
+			{groupName: "ng4", sizeChange: 1},
+		},
+		scaleUpOptionToChoose: groupSizeChange{groupName: "ng4", sizeChange: 1},
+		expectedFinalScaleUp:  groupSizeChange{groupName: "ng4", sizeChange: 1},
+		options:               options,
+	}
+
+	simpleScaleUpTest(t, config)
+}
+
 type assertingStrategy struct {
 	initialNodeConfigs     []nodeConfig
 	expectedScaleUpOptions []groupSizeChange
@@ -369,6 +462,16 @@ func simpleScaleUpTest(t *testing.T, config *scaleTestConfig) {
 	nodes := make([]*apiv1.Node, len(config.nodes))
 	for i, n := range config.nodes {
 		node := BuildTestNode(n.name, n.cpu, n.memory)
+		if resources, ok := config.reservedResources[n.name]; ok {
+			for resourceName, reserved := range resources {
+				if nodeAllocatable, ok := node.Status.Capacity[resourceName]; ok {
+					nodeAllocatable = nodeAllocatable.DeepCopy()
+					nodeAllocatable.Sub(reserved)
+					node.Status.Allocatable[resourceName] = nodeAllocatable
+				}
+			}
+		}
+
 		if n.gpu > 0 {
 			AddGpusToNode(node, n.gpu)
 		}
@@ -405,6 +508,35 @@ func simpleScaleUpTest(t *testing.T, config *scaleTestConfig) {
 		provider.AddNodeGroup(name, 1, 10, len(nodesInGroup))
 		for _, n := range nodesInGroup {
 			provider.AddNode(name, n)
+		}
+	}
+
+	for _, n := range config.templateNodes {
+		node := BuildTestNode(n.name, n.cpu, n.memory)
+		if resources, ok := config.reservedResources[n.name]; ok {
+			for resourceName, reserved := range resources {
+				if nodeAllocatable, ok := node.Status.Capacity[resourceName]; ok {
+					nodeAllocatable = nodeAllocatable.DeepCopy()
+					nodeAllocatable.Sub(reserved)
+					node.Status.Allocatable[resourceName] = nodeAllocatable
+				}
+			}
+		}
+
+		if n.gpu > 0 {
+			AddGpusToNode(node, n.gpu)
+		}
+		SetNodeReadyState(node, true, time.Time{})
+		templateNodeInfo := schedulercache.NodeInfo{}
+		templateNodeInfo.SetNode(node)
+
+		if n.group != "" && provider.GetNodeGroup(n.group) == nil {
+			provider.AddNodeGroup(n.group, 1, 10, 0)
+		}
+
+		if n.group != "" {
+			groups[n.group] = append(groups[n.group], node)
+			provider.SetNodeTemplate(n.group, &templateNodeInfo)
 		}
 	}
 

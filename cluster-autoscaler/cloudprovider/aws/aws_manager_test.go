@@ -29,18 +29,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 )
 
 func TestBuildGenericLabels(t *testing.T) {
 	labels := buildGenericLabels(&asgTemplate{
-		InstanceType: &instanceType{
-			InstanceType: "c4.large",
-			VCPU:         2,
-			MemoryMb:     3840,
-		},
-		Region: "us-east-1",
+		AvailableResources: []*instanceResourceInfo{{InstanceType: "c4.large"}},
+		Region:             "us-east-1",
 	}, "sillyname")
 	assert.Equal(t, "us-east-1", labels[kubeletapis.LabelZoneRegion])
 	assert.Equal(t, "sillyname", labels[kubeletapis.LabelHostname])
@@ -171,8 +170,8 @@ func TestFetchExplicitAsgs(t *testing.T) {
 	validateAsg(t, asgs[0], groupname, min, max)
 }
 
-func TestBuildInstanceType(t *testing.T) {
-	ltName, ltVersion, instanceType := "launcher", "1", "t2.large"
+func TestBuildInstanceTypes(t *testing.T) {
+	ltName, ltVersion, instanceType := "launcher", "1", []string{"t2.large"}
 
 	s := &EC2Mock{}
 	s.On("DescribeLaunchTemplateVersions", &ec2.DescribeLaunchTemplateVersionsInput{
@@ -182,7 +181,7 @@ func TestBuildInstanceType(t *testing.T) {
 		LaunchTemplateVersions: []*ec2.LaunchTemplateVersion{
 			{
 				LaunchTemplateData: &ec2.ResponseLaunchTemplateData{
-					InstanceType: aws.String(instanceType),
+					InstanceType: aws.String(instanceType[0]),
 				},
 			},
 		},
@@ -196,7 +195,7 @@ func TestBuildInstanceType(t *testing.T) {
 		LaunchTemplateVersion: ltVersion,
 	}
 
-	builtInstanceType, err := m.buildInstanceType(&asg)
+	builtInstanceType, err := m.buildInstanceTypes(&asg)
 
 	assert.NoError(t, err)
 	assert.Equal(t, instanceType, builtInstanceType)
@@ -268,6 +267,130 @@ func TestFetchAutoAsgs(t *testing.T) {
 	err = m.asgCache.regenerate()
 	assert.NoError(t, err)
 	assert.Empty(t, m.asgCache.Get())
+}
+
+func TestTemplateNodes(t *testing.T) {
+	m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, nil)
+	assert.NoError(t, err)
+
+	// No data and no nodes, use raw AWS data
+	resources, err := m.availableResources("p2.xlarge")
+	assert.NoError(t, err)
+	assertResourcesEqual(t, parseResourceList(map[apiv1.ResourceName]string{
+		apiv1.ResourceCPU:     "4",
+		apiv1.ResourceMemory:  "62464Mi",
+		apiv1.ResourcePods:    "110",
+		gpu.ResourceNvidiaGPU: "1",
+	}), resources.Capacity)
+	assertResourcesEqual(t, parseResourceList(map[apiv1.ResourceName]string{
+		apiv1.ResourceCPU:     "4",
+		apiv1.ResourceMemory:  "62464Mi",
+		apiv1.ResourcePods:    "110",
+		gpu.ResourceNvidiaGPU: "1",
+	}), resources.Allocatable)
+
+	// Update the manager with some nodes
+	m.updateAvailableResources([]*apiv1.Node{
+		sampleNode(
+			"p2-xlarge-1", "p2.xlarge",
+			parseResourceList(map[apiv1.ResourceName]string{
+				apiv1.ResourceCPU:     "4",
+				apiv1.ResourceMemory:  "62000Mi",
+				apiv1.ResourcePods:    "100",
+				gpu.ResourceNvidiaGPU: "1",
+			}),
+			parseResourceList(map[apiv1.ResourceName]string{
+				apiv1.ResourceCPU:     "3700m",
+				apiv1.ResourceMemory:  "61800Mi",
+				apiv1.ResourcePods:    "100",
+				gpu.ResourceNvidiaGPU: "1",
+			})),
+		sampleNode(
+			"p2-xlarge-2", "p2.xlarge",
+			parseResourceList(map[apiv1.ResourceName]string{
+				apiv1.ResourceCPU:     "4",
+				apiv1.ResourceMemory:  "61700Mi",
+				apiv1.ResourcePods:    "99",
+				gpu.ResourceNvidiaGPU: "1",
+			}),
+			parseResourceList(map[apiv1.ResourceName]string{
+				apiv1.ResourceCPU:     "3800m",
+				apiv1.ResourceMemory:  "61600Mi",
+				apiv1.ResourcePods:    "99",
+				gpu.ResourceNvidiaGPU: "1",
+			})),
+	})
+
+	// Information for p2.xlarge should now be based on existing nodes
+	expectedCapacity := parseResourceList(map[apiv1.ResourceName]string{
+		apiv1.ResourceCPU:     "4",
+		apiv1.ResourceMemory:  "61700Mi",
+		apiv1.ResourcePods:    "99",
+		gpu.ResourceNvidiaGPU: "1",
+	})
+	expectedAllocatable := parseResourceList(map[apiv1.ResourceName]string{
+		apiv1.ResourceCPU:     "3700m",
+		apiv1.ResourceMemory:  "61600Mi",
+		apiv1.ResourcePods:    "99",
+		gpu.ResourceNvidiaGPU: "1",
+	})
+
+	updatedResources, err := m.availableResources("p2.xlarge")
+	assert.NoError(t, err)
+	assertResourcesEqual(t, expectedCapacity, updatedResources.Capacity)
+	assertResourcesEqual(t, expectedAllocatable, updatedResources.Allocatable)
+
+	// Allocatable information for other instance types should include data from the existing nodes
+	otherTypeResources, err := m.availableResources("p2.16xlarge")
+	assert.NoError(t, err)
+	assertResourcesEqual(t, parseResourceList(map[apiv1.ResourceName]string{
+		apiv1.ResourceCPU:     "64",
+		apiv1.ResourceMemory:  "768Gi",
+		apiv1.ResourcePods:    "110",
+		gpu.ResourceNvidiaGPU: "16",
+	}), otherTypeResources.Capacity)
+	assertResourcesEqual(t, parseResourceList(map[apiv1.ResourceName]string{
+		apiv1.ResourceCPU:     "63700m",   // 64 - 300m
+		apiv1.ResourceMemory:  "786232Mi", // 768Gi - 200Mi
+		apiv1.ResourcePods:    "110",
+		gpu.ResourceNvidiaGPU: "16",
+	}), otherTypeResources.Allocatable)
+}
+
+func assertResourcesEqual(t *testing.T, expected, actual apiv1.ResourceList) {
+	for resourceName, resourceValue := range expected {
+		actualValue, ok := actual[resourceName]
+		assert.True(t, ok, "expected resource %s to be %s, found none", resourceName, &resourceValue)
+		if ok {
+			assert.True(t, resourceValue.Cmp(actualValue) == 0, "expected resource %s to be %s, found %s", resourceName, &resourceValue, &actualValue)
+		}
+	}
+
+	for resourceName := range actual {
+		_, ok := expected[resourceName]
+		assert.True(t, ok, "found unexpected value for resource %s", resourceName)
+	}
+}
+
+func parseResourceList(from map[apiv1.ResourceName]string) apiv1.ResourceList {
+	result := make(apiv1.ResourceList, len(from))
+	for resourceName, value := range from {
+		result[resourceName] = resource.MustParse(value)
+	}
+	return result
+}
+
+func sampleNode(nodeName string, instanceType string, capacity, allocatable apiv1.ResourceList) *apiv1.Node {
+	return &apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{kubeletapis.LabelInstanceType: instanceType},
+		},
+		Status: apiv1.NodeStatus{
+			Capacity:    capacity,
+			Allocatable: allocatable,
+		},
+	}
 }
 
 func tagsMatcher(expected *autoscaling.DescribeTagsInput) func(*autoscaling.DescribeTagsInput) bool {

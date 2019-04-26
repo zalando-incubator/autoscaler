@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"strings"
 	"time"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
@@ -218,9 +219,14 @@ func CheckPodsSchedulableOnNode(context *context.AutoscalingContext, pods []*api
 // TODO(mwielgus): This returns map keyed by url, while most code (including scheduler) uses node.Name for a key.
 //
 // TODO(mwielgus): Review error policy - sometimes we may continue with partial errors.
-func GetNodeInfosForGroups(nodes []*apiv1.Node, cloudProvider cloudprovider.CloudProvider, kubeClient kube_client.Interface,
+func GetNodeInfosForGroups(nodes []*apiv1.Node, forceTemplateFromCloudProvider bool, cloudProvider cloudprovider.CloudProvider, kubeClient kube_client.Interface,
 	daemonsets []*extensionsv1.DaemonSet, predicateChecker *simulator.PredicateChecker) (map[string]*schedulercache.NodeInfo, errors.AutoscalerError) {
 	result := make(map[string]*schedulercache.NodeInfo)
+
+	// If this is enabled, always construct a sample node from the provider template node
+	if forceTemplateFromCloudProvider {
+		nodes = []*apiv1.Node{}
+	}
 
 	// processNode returns information whether the nodeTemplate was generated and if there was an error.
 	processNode := func(node *apiv1.Node) (bool, errors.AutoscalerError) {
@@ -276,14 +282,15 @@ func GetNodeInfosForGroups(nodes []*apiv1.Node, cloudProvider cloudprovider.Clou
 					errors.CloudProviderError, err)
 			}
 		}
-		pods := daemonset.GetDaemonSetPodsForNode(baseNodeInfo, daemonsets, predicateChecker)
-		pods = append(pods, baseNodeInfo.Pods()...)
+		daemonsetPods := daemonset.GetDaemonSetPodsForNode(baseNodeInfo, daemonsets, predicateChecker)
+		pods := effectiveNodePods(daemonsetPods, baseNodeInfo.Pods())
 		fullNodeInfo := schedulercache.NewNodeInfo(pods...)
 		fullNodeInfo.SetNode(baseNodeInfo.Node())
 		sanitizedNodeInfo, typedErr := sanitizeNodeInfo(fullNodeInfo, id)
 		if typedErr != nil {
 			return map[string]*schedulercache.NodeInfo{}, typedErr
 		}
+		glog.V(2).Infof("Node template for %s: %v", id, sanitizedNodeInfo)
 		result[id] = sanitizedNodeInfo
 	}
 
@@ -307,6 +314,29 @@ func GetNodeInfosForGroups(nodes []*apiv1.Node, cloudProvider cloudprovider.Clou
 	}
 
 	return result, nil
+}
+
+// effectiveNodePods tries to remove the hardcoded kube-proxy mirror pod for AWS cloud provider
+// that is assumed to be present if kube-proxy is running as a daemonset. This is a ridiculous hack,
+// but so is the hardcoding itself, so whatever. Returns a concatenation of daemonsetPods and nodePods,
+// with nodePods either including the fake kube-proxy pod or not.
+func effectiveNodePods(daemonsetPods, nodePods []*apiv1.Pod) []*apiv1.Pod {
+	foundDaemonsetKubeProxy := false
+	for _, pod := range daemonsetPods {
+		if pod.Namespace == "kube-system" && strings.Contains(pod.Name, "kube-proxy") {
+			foundDaemonsetKubeProxy = true
+		}
+	}
+
+	result := make([]*apiv1.Pod, len(daemonsetPods))
+	copy(result, daemonsetPods)
+	for _, pod := range nodePods {
+		if cloudprovider.IsFakeKubeProxyPod(pod) && foundDaemonsetKubeProxy {
+			continue
+		}
+		result = append(result, pod)
+	}
+	return result
 }
 
 // FilterOutNodesFromNotAutoscaledGroups return subset of input nodes for which cloud provider does not

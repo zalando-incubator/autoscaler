@@ -344,7 +344,7 @@ func TestGetNodeInfosForGroups(t *testing.T) {
 
 	predicateChecker := simulator.NewTestPredicateChecker()
 
-	res, err := GetNodeInfosForGroups([]*apiv1.Node{n1, n2, n3, n4}, provider1, fakeClient,
+	res, err := GetNodeInfosForGroups([]*apiv1.Node{n1, n2, n3, n4}, false, provider1, fakeClient,
 		[]*extensionsv1.DaemonSet{}, predicateChecker)
 	assert.NoError(t, err)
 	assert.Equal(t, 4, len(res))
@@ -358,7 +358,7 @@ func TestGetNodeInfosForGroups(t *testing.T) {
 	assert.True(t, found)
 
 	// Test for a nodegroup without nodes and TemplateNodeInfo not implemented by cloud proivder
-	res, err = GetNodeInfosForGroups([]*apiv1.Node{}, provider2, fakeClient,
+	res, err = GetNodeInfosForGroups([]*apiv1.Node{}, false, provider2, fakeClient,
 		[]*extensionsv1.DaemonSet{}, predicateChecker)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, len(res))

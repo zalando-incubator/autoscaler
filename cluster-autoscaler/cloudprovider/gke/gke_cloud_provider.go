@@ -196,7 +196,7 @@ func (gke *GkeCloudProvider) GetResourceLimiter() (*cloudprovider.ResourceLimite
 
 // Refresh is called before every main loop and can be used to dynamically update cloud provider state.
 // In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
-func (gke *GkeCloudProvider) Refresh() error {
+func (gke *GkeCloudProvider) Refresh(existingNodes []*apiv1.Node) error {
 	return gke.gkeManager.Refresh()
 }
 

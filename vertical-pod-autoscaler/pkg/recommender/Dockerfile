@@ -18,4 +18,5 @@ MAINTAINER Krzysztof Grygiel "kgrygiel@google.com"
 ARG TARGETARCH=amd64
 ADD build/${TARGETARCH}/recommender recommender
 
-ENTRYPOINT ./recommender --v=4 --stderrthreshold=info --prometheus-address=http://prometheus.monitoring.svc
+ENTRYPOINT ["./recommender"]
+CMD ["--v=4 --stderrthreshold=info --prometheus-address=http://prometheus.monitoring.svc"]

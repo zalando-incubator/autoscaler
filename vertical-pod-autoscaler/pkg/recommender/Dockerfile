@@ -19,4 +19,4 @@ ARG TARGETARCH=amd64
 ADD build/${TARGETARCH}/recommender recommender
 
 ENTRYPOINT ["./recommender"]
-CMD ["--v=4 --stderrthreshold=info --prometheus-address=http://prometheus.monitoring.svc"]
+CMD ["--v=4", "--stderrthreshold=info", "--prometheus-address=http://prometheus.monitoring.svc"]

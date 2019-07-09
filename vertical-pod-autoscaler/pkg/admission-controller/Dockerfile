@@ -18,4 +18,5 @@ MAINTAINER Tomasz Kulczynski "tkulczynski@google.com"
 ARG TARGETARCH=amd64
 ADD build/${TARGETARCH}/admission-controller admission-controller
 
-ENTRYPOINT ./admission-controller --v=4 --stderrthreshold=info
+ENTRYPOINT ["./admission-controller"]
+CMD ["--v=4 --stderrthreshold=info"]

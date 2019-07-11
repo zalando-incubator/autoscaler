@@ -19,4 +19,4 @@ ARG TARGETARCH=amd64
 ADD build/${TARGETARCH}/updater updater
 
 ENTRYPOINT ["./updater"]
-CMD ["--v=4 --stderrthreshold=info"]
+CMD ["--v=4", "--stderrthreshold=info"]

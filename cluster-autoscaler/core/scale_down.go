@@ -910,6 +910,9 @@ func evictPod(podToEvict *apiv1.Pod, client kube_client.Interface, recorder kube
 			},
 			DeleteOptions: &metav1.DeleteOptions{
 				GracePeriodSeconds: &maxTermination,
+				Preconditions: &metav1.Preconditions{
+					UID: &podToEvict.UID,
+				},
 			},
 		}
 		lastError = client.CoreV1().Pods(podToEvict.Namespace).Evict(eviction)

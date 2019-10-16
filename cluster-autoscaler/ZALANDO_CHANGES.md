@@ -1,6 +1,6 @@
 # Zalando Changes
 
-The current version of the autoscaler is based on **v1.12.2** of Cluster Autoscaler with a number of
+The current version of the autoscaler is based on **v1.14.5** of Cluster Autoscaler with a number of
 changes that we've found useful when running a significant number of autoscaling clusters on AWS.
 
 ## More robust template node generation

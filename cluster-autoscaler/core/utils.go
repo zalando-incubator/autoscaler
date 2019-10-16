@@ -21,6 +21,7 @@ import (
 	"math/rand"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"k8s.io/kubernetes/pkg/scheduler/util"
@@ -361,7 +362,8 @@ func getNodeInfoFromTemplate(nodeGroup cloudprovider.NodeGroup, daemonsets []*ap
 		return nil, errors.ToAutoscalerError(errors.CloudProviderError, err)
 	}
 
-	pods := daemonset.GetDaemonSetPodsForNode(baseNodeInfo, daemonsets, predicateChecker)
+	daemonsetPods := daemonset.GetDaemonSetPodsForNode(baseNodeInfo, daemonsets, predicateChecker)
+	pods := effectiveNodePods(daemonsetPods, baseNodeInfo.Pods())
 	pods = append(pods, baseNodeInfo.Pods()...)
 	fullNodeInfo := schedulernodeinfo.NewNodeInfo(pods...)
 	fullNodeInfo.SetNode(baseNodeInfo.Node())
@@ -370,6 +372,29 @@ func getNodeInfoFromTemplate(nodeGroup cloudprovider.NodeGroup, daemonsets []*ap
 		return nil, typedErr
 	}
 	return sanitizedNodeInfo, nil
+}
+
+// effectiveNodePods tries to remove the hardcoded kube-proxy mirror pod for AWS cloud provider
+// that is assumed to be present if kube-proxy is running as a daemonset. This is a ridiculous hack,
+// but so is the hardcoding itself, so whatever. Returns a concatenation of daemonsetPods and nodePods,
+// with nodePods either including the fake kube-proxy pod or not.
+func effectiveNodePods(daemonsetPods, nodePods []*apiv1.Pod) []*apiv1.Pod {
+	foundDaemonsetKubeProxy := false
+	for _, pod := range daemonsetPods {
+		if pod.Namespace == "kube-system" && strings.Contains(pod.Name, "kube-proxy") {
+			foundDaemonsetKubeProxy = true
+		}
+	}
+
+	result := make([]*apiv1.Pod, len(daemonsetPods))
+	copy(result, daemonsetPods)
+	for _, pod := range nodePods {
+		if cloudprovider.IsFakeKubeProxyPod(pod) && foundDaemonsetKubeProxy {
+			continue
+		}
+		result = append(result, pod)
+	}
+	return result
 }
 
 // filterOutNodesFromNotAutoscaledGroups return subset of input nodes for which cloud provider does not

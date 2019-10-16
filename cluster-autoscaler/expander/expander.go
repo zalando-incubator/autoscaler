@@ -19,12 +19,12 @@ package expander
 import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
 var (
 	// AvailableExpanders is a list of available expander options
-	AvailableExpanders = []string{RandomExpanderName, MostPodsExpanderName, LeastWasteExpanderName, PriceBasedExpanderName, PreferSpotExpanderName}
+	AvailableExpanders = []string{RandomExpanderName, MostPodsExpanderName, LeastWasteExpanderName, PriceBasedExpanderName}
 	// RandomExpanderName selects a node group at random
 	RandomExpanderName = "random"
 	// MostPodsExpanderName selects a node group that fits the most pods
@@ -34,9 +34,6 @@ var (
 	// PriceBasedExpanderName selects a node group that is the most cost-effective and consistent with
 	// the preferred node size for the cluster
 	PriceBasedExpanderName = "price"
-	// PreferSpotExpanderName selects a random node group with spot instances if possible, or any random node group
-	// otherwise
-	PreferSpotExpanderName = "prefer-spot"
 )
 
 // Option describes an option to expand the cluster.
@@ -49,5 +46,5 @@ type Option struct {
 
 // Strategy describes an interface for selecting the best option when scaling up
 type Strategy interface {
-	BestOption(options []Option, nodeInfo map[string]*schedulercache.NodeInfo) *Option
+	BestOption(options []Option, nodeInfo map[string]*schedulernodeinfo.NodeInfo) *Option
 }

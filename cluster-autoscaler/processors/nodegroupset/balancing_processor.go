@@ -22,9 +22,9 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 
-	"github.com/golang/glog"
+	"k8s.io/klog"
 )
 
 // BalancingNodeGroupSetProcessor tries to keep similar node groups balanced on scale-up.
@@ -35,7 +35,7 @@ type BalancingNodeGroupSetProcessor struct {
 // FindSimilarNodeGroups returns a list of NodeGroups similar to the given one.
 // Two groups are similar if the NodeInfos for them compare equal using IsNodeInfoSimilar.
 func (b *BalancingNodeGroupSetProcessor) FindSimilarNodeGroups(context *context.AutoscalingContext, nodeGroup cloudprovider.NodeGroup,
-	nodeInfosForGroups map[string]*schedulercache.NodeInfo) ([]cloudprovider.NodeGroup, errors.AutoscalerError) {
+	nodeInfosForGroups map[string]*schedulernodeinfo.NodeInfo) ([]cloudprovider.NodeGroup, errors.AutoscalerError) {
 
 	result := []cloudprovider.NodeGroup{}
 	nodeGroupId := nodeGroup.Id()
@@ -53,7 +53,7 @@ func (b *BalancingNodeGroupSetProcessor) FindSimilarNodeGroups(context *context.
 		}
 		ngNodeInfo, found := nodeInfosForGroups[ngId]
 		if !found {
-			glog.Warningf("Failed to find nodeInfo for group %v", ngId)
+			klog.Warningf("Failed to find nodeInfo for group %v", ngId)
 			continue
 		}
 		comparator := b.Comparator
@@ -106,7 +106,7 @@ func (b *BalancingNodeGroupSetProcessor) BalanceScaleUpBetweenGroups(context *co
 		totalCapacity += maxSize - currentSize
 	}
 	if totalCapacity < newNodes {
-		glog.V(2).Infof("Requested scale-up (%v) exceeds node group set capacity, capping to %v", newNodes, totalCapacity)
+		klog.V(2).Infof("Requested scale-up (%v) exceeds node group set capacity, capping to %v", newNodes, totalCapacity)
 		newNodes = totalCapacity
 	}
 

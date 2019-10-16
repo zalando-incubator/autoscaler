@@ -18,16 +18,19 @@ package gke
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/gce"
+	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
-	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	"k8s.io/klog"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
 const (
@@ -122,7 +125,7 @@ func (gke *GkeCloudProvider) GetAvailableMachineTypes() ([]string, error) {
 func (gke *GkeCloudProvider) NewNodeGroup(machineType string, labels map[string]string, systemLabels map[string]string,
 	taints []apiv1.Taint, extraResources map[string]resource.Quantity) (cloudprovider.NodeGroup, error) {
 	nodePoolName := fmt.Sprintf("%s-%s-%d", nodeAutoprovisioningPrefix, machineType, time.Now().Unix())
-	zone, found := systemLabels[kubeletapis.LabelZoneFailureDomain]
+	zone, found := systemLabels[apiv1.LabelZoneFailureDomain]
 	if !found {
 		return nil, cloudprovider.ErrIllegalConfiguration
 	}
@@ -176,7 +179,7 @@ func (gke *GkeCloudProvider) NewNodeGroup(machineType string, labels map[string]
 	// but if it fails later, we'd end up with a node group we can't scale anyway,
 	// so there's no point creating it.
 	if _, err := gke.gkeManager.GetMigTemplateNode(mig); err != nil {
-		return nil, fmt.Errorf("Failed to build node from spec: %v", err)
+		return nil, fmt.Errorf("failed to build node from spec: %v", err)
 	}
 
 	return mig, nil
@@ -196,7 +199,7 @@ func (gke *GkeCloudProvider) GetResourceLimiter() (*cloudprovider.ResourceLimite
 
 // Refresh is called before every main loop and can be used to dynamically update cloud provider state.
 // In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
-func (gke *GkeCloudProvider) Refresh(existingNodes []*apiv1.Node) error {
+func (gke *GkeCloudProvider) Refresh() error {
 	return gke.gkeManager.Refresh()
 }
 
@@ -361,8 +364,16 @@ func (mig *GkeMig) Debug() string {
 }
 
 // Nodes returns a list of all nodes that belong to this node group.
-func (mig *GkeMig) Nodes() ([]string, error) {
-	return mig.gkeManager.GetMigNodes(mig)
+func (mig *GkeMig) Nodes() ([]cloudprovider.Instance, error) {
+	instanceNames, err := mig.gkeManager.GetMigNodes(mig)
+	if err != nil {
+		return nil, err
+	}
+	instances := make([]cloudprovider.Instance, 0, len(instanceNames))
+	for _, instanceName := range instanceNames {
+		instances = append(instances, cloudprovider.Instance{Id: instanceName})
+	}
+	return instances, nil
 }
 
 // Exist checks if the node group really exists on the cloud provider side. Allows to tell the
@@ -376,7 +387,7 @@ func (mig *GkeMig) Create() (cloudprovider.NodeGroup, error) {
 	if !mig.exist && mig.autoprovisioned {
 		return mig.gkeManager.CreateNodePool(mig)
 	}
-	return nil, fmt.Errorf("Cannot create non-autoprovisioned node group")
+	return nil, fmt.Errorf("cannot create non-autoprovisioned node group")
 }
 
 // Delete deletes the node group on the cloud provider side.
@@ -385,7 +396,7 @@ func (mig *GkeMig) Delete() error {
 	if mig.exist && mig.autoprovisioned {
 		return mig.gkeManager.DeleteNodePool(mig)
 	}
-	return fmt.Errorf("Cannot delete non-autoprovisioned node group")
+	return fmt.Errorf("cannot delete non-autoprovisioned node group")
 }
 
 // Autoprovisioned returns true if the node group is autoprovisioned.
@@ -394,12 +405,46 @@ func (mig *GkeMig) Autoprovisioned() bool {
 }
 
 // TemplateNodeInfo returns a node template for this node group.
-func (mig *GkeMig) TemplateNodeInfo() (*schedulercache.NodeInfo, error) {
+func (mig *GkeMig) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
 	node, err := mig.gkeManager.GetMigTemplateNode(mig)
 	if err != nil {
 		return nil, err
 	}
-	nodeInfo := schedulercache.NewNodeInfo(cloudprovider.BuildKubeProxy(mig.Id()))
+	nodeInfo := schedulernodeinfo.NewNodeInfo(cloudprovider.BuildKubeProxy(mig.Id()))
 	nodeInfo.SetNode(node)
 	return nodeInfo, nil
+}
+
+// BuildGKE builds a new GKE cloud provider, manager etc.
+func BuildGKE(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
+	if do.DiscoverySpecified() {
+		klog.Fatal("GKE gets nodegroup specification via API, command line specs are not allowed")
+	}
+	var config io.ReadCloser
+	if opts.CloudConfig != "" {
+		var err error
+		config, err = os.Open(opts.CloudConfig)
+		if err != nil {
+			klog.Fatalf("Couldn't open cloud provider configuration %s: %#v", opts.CloudConfig, err)
+		}
+		defer config.Close()
+	}
+
+	mode := ModeGKE
+	if opts.NodeAutoprovisioningEnabled {
+		mode = ModeGKENAP
+	}
+	manager, err := CreateGkeManager(config, mode, opts.ClusterName, opts.Regional)
+	if err != nil {
+		klog.Fatalf("Failed to create GKE Manager: %v", err)
+	}
+
+	provider, err := BuildGkeCloudProvider(manager, rl)
+	if err != nil {
+		klog.Fatalf("Failed to create GKE cloud provider: %v", err)
+	}
+	// Register GKE & GCE API usage metrics.
+	registerMetrics()
+	gce.RegisterMetrics()
+	return provider
 }

@@ -66,7 +66,7 @@ func (e *EC2Mock) DescribeLaunchTemplateVersions(i *ec2.DescribeLaunchTemplateVe
 	return args.Get(0).(*ec2.DescribeLaunchTemplateVersionsOutput), nil
 }
 
-var testService = autoScalingWrapper{&AutoScalingMock{}}
+var testService = autoScalingWrapper{&AutoScalingMock{}, map[string]string{}}
 
 var testAwsManager = &AwsManager{
 	asgCache: &asgCache{
@@ -80,7 +80,7 @@ var testAwsManager = &AwsManager{
 }
 
 func newTestAwsManagerWithService(service autoScaling, autoDiscoverySpecs []cloudprovider.ASGAutoDiscoveryConfig) *AwsManager {
-	wrapper := autoScalingWrapper{service}
+	wrapper := autoScalingWrapper{service, map[string]string{}}
 	return &AwsManager{
 		autoScalingService: wrapper,
 		asgCache: &asgCache{
@@ -197,7 +197,7 @@ func TestAutoDiscoveredNodeGroups(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("auto-asg", 1, "test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh(nil)
+	provider.Refresh()
 
 	nodeGroups := provider.NodeGroups()
 	assert.Equal(t, len(nodeGroups), 1)
@@ -226,7 +226,7 @@ func TestNodeGroupForNode(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 1, "test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh(nil)
+	provider.Refresh()
 
 	group, err := provider.NodeGroupForNode(node)
 
@@ -239,7 +239,7 @@ func TestNodeGroupForNode(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	assert.Equal(t, nodes, []string{"aws:///us-east-1a/test-instance-id"})
+	assert.Equal(t, []cloudprovider.Instance{{Id: "aws:///us-east-1a/test-instance-id"}}, nodes)
 	service.AssertNumberOfCalls(t, "DescribeAutoScalingGroupsPages", 1)
 
 	// test node in cluster that is not in a group managed by cluster autoscaler
@@ -297,7 +297,7 @@ func TestTargetSize(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 2, "test-instance-id", "second-test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh(nil)
+	provider.Refresh()
 
 	targetSize, err := asgs[0].TargetSize()
 	assert.Equal(t, targetSize, 2)
@@ -328,7 +328,7 @@ func TestIncreaseSize(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 2, "test-instance-id", "second-test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh(nil)
+	provider.Refresh()
 
 	initialSize, err := asgs[0].TargetSize()
 	assert.NoError(t, err)
@@ -360,7 +360,7 @@ func TestBelongs(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 1, "test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh(nil)
+	provider.Refresh()
 
 	invalidNode := &apiv1.Node{
 		Spec: apiv1.NodeSpec{
@@ -398,6 +398,7 @@ func TestDeleteNodes(t *testing.T) {
 	})
 
 	// Look up the current number of instances...
+	var expectedInstancesCount int64 = 2
 	service.On("DescribeAutoScalingGroupsPages",
 		&autoscaling.DescribeAutoScalingGroupsInput{
 			AutoScalingGroupNames: aws.StringSlice([]string{"test-asg"}),
@@ -406,10 +407,12 @@ func TestDeleteNodes(t *testing.T) {
 		mock.AnythingOfType("func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool"),
 	).Run(func(args mock.Arguments) {
 		fn := args.Get(1).(func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool)
-		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 2, "test-instance-id", "second-test-instance-id"), false)
+		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", expectedInstancesCount, "test-instance-id", "second-test-instance-id"), false)
+		// we expect the instance count to be 1 after the call to DeleteNodes
+		expectedInstancesCount = 1
 	}).Return(nil)
 
-	provider.Refresh(nil)
+	provider.Refresh()
 
 	initialSize, err := asgs[0].TargetSize()
 	assert.NoError(t, err)
@@ -423,7 +426,7 @@ func TestDeleteNodes(t *testing.T) {
 	err = asgs[0].DeleteNodes([]*apiv1.Node{node})
 	assert.NoError(t, err)
 	service.AssertNumberOfCalls(t, "TerminateInstanceInAutoScalingGroup", 1)
-	service.AssertNumberOfCalls(t, "DescribeAutoScalingGroupsPages", 1)
+	service.AssertNumberOfCalls(t, "DescribeAutoScalingGroupsPages", 2)
 
 	newSize, err := asgs[0].TargetSize()
 	assert.NoError(t, err)
@@ -455,7 +458,7 @@ func TestDeleteNodesAfterMultipleRefreshes(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 2, "test-instance-id", "second-test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh(nil)
+	provider.Refresh()
 	// Call the manager directly as otherwise the call would be a noop as its within less then 60s
 	manager.forceRefresh()
 

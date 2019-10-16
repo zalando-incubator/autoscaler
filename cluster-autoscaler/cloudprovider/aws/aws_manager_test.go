@@ -18,6 +18,10 @@ package aws
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -30,22 +34,79 @@ import (
 	"github.com/stretchr/testify/mock"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
+	provider_aws "k8s.io/kubernetes/pkg/cloudprovider/providers/aws"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 )
 
+// resetAWSRegion resets AWS_REGION environment variable key to its pre-test
+// value, but only if it was originally present among environment variables.
+func resetAWSRegion(value string, present bool) {
+	os.Unsetenv("AWS_REGION")
+	if present {
+		os.Setenv("AWS_REGION", value)
+	}
+}
+
+// TestGetRegion ensures correct source supplies AWS Region.
+func TestGetRegion(t *testing.T) {
+	key := "AWS_REGION"
+	defer resetAWSRegion(os.LookupEnv(key))
+	// Ensure environment variable retains precedence.
+	expected1 := "the-shire-1"
+	os.Setenv(key, expected1)
+	assert.Equal(t, expected1, getRegion())
+	// Ensure without environment variable, EC2 Metadata used... and it merely
+	// chops the last character off the Availability Zone.
+	expected2 := "mordor-2"
+	expected2a := expected2 + "a"
+	os.Unsetenv(key)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(expected2a))
+	}))
+	cfg := aws.NewConfig().WithEndpoint(server.URL)
+	assert.Equal(t, expected2, getRegion(cfg))
+}
+
 func TestBuildGenericLabels(t *testing.T) {
 	labels := buildGenericLabels(&asgTemplate{
-		AvailableResources: []*instanceResourceInfo{{InstanceType: "c4.large"}},
-		Region:             "us-east-1",
+		InstanceType: &instanceType{
+			InstanceType: "c4.large",
+			VCPU:         2,
+			MemoryMb:     3840,
+		},
+		Region: "us-east-1",
 	}, "sillyname")
-	assert.Equal(t, "us-east-1", labels[kubeletapis.LabelZoneRegion])
-	assert.Equal(t, "sillyname", labels[kubeletapis.LabelHostname])
-	assert.Equal(t, "c4.large", labels[kubeletapis.LabelInstanceType])
+	assert.Equal(t, "us-east-1", labels[apiv1.LabelZoneRegion])
+	assert.Equal(t, "sillyname", labels[apiv1.LabelHostname])
+	assert.Equal(t, "c4.large", labels[apiv1.LabelInstanceType])
 	assert.Equal(t, cloudprovider.DefaultArch, labels[kubeletapis.LabelArch])
 	assert.Equal(t, cloudprovider.DefaultOS, labels[kubeletapis.LabelOS])
+}
+
+func TestExtractAllocatableResourcesFromAsg(t *testing.T) {
+	tags := []*autoscaling.TagDescription{
+		{
+			Key:   aws.String("k8s.io/cluster-autoscaler/node-template/resources/cpu"),
+			Value: aws.String("100m"),
+		},
+		{
+			Key:   aws.String("k8s.io/cluster-autoscaler/node-template/resources/memory"),
+			Value: aws.String("100M"),
+		},
+		{
+			Key:   aws.String("k8s.io/cluster-autoscaler/node-template/resources/ephemeral-storage"),
+			Value: aws.String("20G"),
+		},
+	}
+
+	labels := extractAllocatableResourcesFromAsg(tags)
+
+	assert.Equal(t, resource.NewMilliQuantity(100, resource.DecimalSI).String(), labels["cpu"].String())
+	expectedMemory := resource.MustParse("100M")
+	assert.Equal(t, (&expectedMemory).String(), labels["memory"].String())
+	expectedEphemeralStorage := resource.MustParse("20G")
+	assert.Equal(t, (&expectedEphemeralStorage).String(), labels["ephemeral-storage"].String())
 }
 
 func TestExtractLabelsFromAsg(t *testing.T) {
@@ -146,9 +207,16 @@ func TestFetchExplicitAsgs(t *testing.T) {
 		mock.AnythingOfType("func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool"),
 	).Run(func(args mock.Arguments) {
 		fn := args.Get(1).(func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool)
+		zone := "test-1a"
 		fn(&autoscaling.DescribeAutoScalingGroupsOutput{
 			AutoScalingGroups: []*autoscaling.Group{
-				{AutoScalingGroupName: aws.String(groupname)},
+				{
+					AvailabilityZones:    []*string{&zone},
+					AutoScalingGroupName: aws.String(groupname),
+					MinSize:              aws.Int64(int64(min)),
+					MaxSize:              aws.Int64(int64(max)),
+					DesiredCapacity:      aws.Int64(int64(min)),
+				},
 			}}, false)
 	}).Return(nil)
 
@@ -161,8 +229,11 @@ func TestFetchExplicitAsgs(t *testing.T) {
 			fmt.Sprintf("%d:%d:%s", min, max-1, groupname),
 		},
 	}
+	// #1449 Without AWS_REGION getRegion() lookup runs till timeout during tests.
+	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
+	os.Setenv("AWS_REGION", "fanghorn")
 	// fetchExplicitASGs is called at manager creation time.
-	m, err := createAWSManagerInternal(nil, do, &autoScalingWrapper{s}, nil)
+	m, err := createAWSManagerInternal(nil, do, &autoScalingWrapper{s, map[string]string{}}, nil)
 	assert.NoError(t, err)
 
 	asgs := m.asgCache.Get()
@@ -170,8 +241,8 @@ func TestFetchExplicitAsgs(t *testing.T) {
 	validateAsg(t, asgs[0], groupname, min, max)
 }
 
-func TestBuildInstanceTypes(t *testing.T) {
-	ltName, ltVersion, instanceType := "launcher", "1", []string{"t2.large"}
+func TestBuildInstanceType(t *testing.T) {
+	ltName, ltVersion, instanceType := "launcher", "1", "t2.large"
 
 	s := &EC2Mock{}
 	s.On("DescribeLaunchTemplateVersions", &ec2.DescribeLaunchTemplateVersionsInput{
@@ -181,12 +252,15 @@ func TestBuildInstanceTypes(t *testing.T) {
 		LaunchTemplateVersions: []*ec2.LaunchTemplateVersion{
 			{
 				LaunchTemplateData: &ec2.ResponseLaunchTemplateData{
-					InstanceType: aws.String(instanceType[0]),
+					InstanceType: aws.String(instanceType),
 				},
 			},
 		},
 	})
 
+	// #1449 Without AWS_REGION getRegion() lookup runs till timeout during tests.
+	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
+	os.Setenv("AWS_REGION", "fanghorn")
 	m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, &ec2Wrapper{s})
 	assert.NoError(t, err)
 
@@ -195,10 +269,88 @@ func TestBuildInstanceTypes(t *testing.T) {
 		LaunchTemplateVersion: ltVersion,
 	}
 
-	builtInstanceType, err := m.buildInstanceTypes(&asg)
+	builtInstanceType, err := m.buildInstanceType(&asg)
 
 	assert.NoError(t, err)
 	assert.Equal(t, instanceType, builtInstanceType)
+}
+
+func TestGetASGTemplate(t *testing.T) {
+	const (
+		knownInstanceType = "t3.micro"
+		region            = "us-east-1"
+		az                = region + "a"
+		ltName            = "launcher"
+		ltVersion         = "1"
+	)
+
+	tags := []*autoscaling.TagDescription{
+		{
+			Key:   aws.String("k8s.io/cluster-autoscaler/node-template/taint/dedicated"),
+			Value: aws.String("foo:NoSchedule"),
+		},
+	}
+
+	tests := []struct {
+		description       string
+		instanceType      string
+		availabilityZones []string
+		error             bool
+	}{
+		{"insufficient availability zones",
+			knownInstanceType, []string{}, true},
+		{"single availability zone",
+			knownInstanceType, []string{az}, false},
+		{"multiple availability zones",
+			knownInstanceType, []string{az, "us-west-1b"}, false},
+		{"unknown instance type",
+			"nonexistent.xlarge", []string{az}, true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.description, func(t *testing.T) {
+			s := &EC2Mock{}
+			s.On("DescribeLaunchTemplateVersions", &ec2.DescribeLaunchTemplateVersionsInput{
+				LaunchTemplateName: aws.String(ltName),
+				Versions:           []*string{aws.String(ltVersion)},
+			}).Return(&ec2.DescribeLaunchTemplateVersionsOutput{
+				LaunchTemplateVersions: []*ec2.LaunchTemplateVersion{
+					{
+						LaunchTemplateData: &ec2.ResponseLaunchTemplateData{
+							InstanceType: aws.String(test.instanceType),
+						},
+					},
+				},
+			})
+
+			// #1449 Without AWS_REGION getRegion() lookup runs till timeout during tests.
+			defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
+			os.Setenv("AWS_REGION", "fanghorn")
+			m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, &ec2Wrapper{s})
+			assert.NoError(t, err)
+
+			asg := &asg{
+				AwsRef:                AwsRef{Name: "sample"},
+				AvailabilityZones:     test.availabilityZones,
+				LaunchTemplateName:    ltName,
+				LaunchTemplateVersion: ltVersion,
+				Tags:                  tags,
+			}
+
+			template, err := m.getAsgTemplate(asg)
+			if test.error {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				if assert.NotNil(t, template) {
+					assert.Equal(t, test.instanceType, template.InstanceType.InstanceType)
+					assert.Equal(t, region, template.Region)
+					assert.Equal(t, test.availabilityZones[0], template.Zone)
+					assert.Equal(t, tags, template.Tags)
+				}
+			}
+		})
+	}
 }
 
 func TestFetchAutoAsgs(t *testing.T) {
@@ -236,11 +388,14 @@ func TestFetchAutoAsgs(t *testing.T) {
 		mock.AnythingOfType("func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool"),
 	).Run(func(args mock.Arguments) {
 		fn := args.Get(1).(func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool)
+		zone := "test-1a"
 		fn(&autoscaling.DescribeAutoScalingGroupsOutput{
 			AutoScalingGroups: []*autoscaling.Group{{
+				AvailabilityZones:    []*string{&zone},
 				AutoScalingGroupName: aws.String(groupname),
 				MinSize:              aws.Int64(int64(min)),
 				MaxSize:              aws.Int64(int64(max)),
+				DesiredCapacity:      aws.Int64(int64(min)),
 			}}}, false)
 	}).Return(nil).Twice()
 
@@ -248,8 +403,11 @@ func TestFetchAutoAsgs(t *testing.T) {
 		NodeGroupAutoDiscoverySpecs: []string{fmt.Sprintf("asg:tag=%s", strings.Join(tags, ","))},
 	}
 
+	// #1449 Without AWS_REGION getRegion() lookup runs till timeout during tests.
+	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
+	os.Setenv("AWS_REGION", "fanghorn")
 	// fetchAutoASGs is called at manager creation time, via forceRefresh
-	m, err := createAWSManagerInternal(nil, do, &autoScalingWrapper{s}, nil)
+	m, err := createAWSManagerInternal(nil, do, &autoScalingWrapper{s, map[string]string{}}, nil)
 	assert.NoError(t, err)
 
 	asgs := m.asgCache.Get()
@@ -269,127 +427,275 @@ func TestFetchAutoAsgs(t *testing.T) {
 	assert.Empty(t, m.asgCache.Get())
 }
 
-func TestTemplateNodes(t *testing.T) {
-	m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, nil)
-	assert.NoError(t, err)
-
-	// No data and no nodes, use raw AWS data
-	resources, err := m.availableResources("p2.xlarge")
-	assert.NoError(t, err)
-	assertResourcesEqual(t, parseResourceList(map[apiv1.ResourceName]string{
-		apiv1.ResourceCPU:     "4",
-		apiv1.ResourceMemory:  "62464Mi",
-		apiv1.ResourcePods:    "110",
-		gpu.ResourceNvidiaGPU: "1",
-	}), resources.Capacity)
-	assertResourcesEqual(t, parseResourceList(map[apiv1.ResourceName]string{
-		apiv1.ResourceCPU:     "4",
-		apiv1.ResourceMemory:  "62464Mi",
-		apiv1.ResourcePods:    "110",
-		gpu.ResourceNvidiaGPU: "1",
-	}), resources.Allocatable)
-
-	// Update the manager with some nodes
-	m.updateAvailableResources([]*apiv1.Node{
-		sampleNode(
-			"p2-xlarge-1", "p2.xlarge",
-			parseResourceList(map[apiv1.ResourceName]string{
-				apiv1.ResourceCPU:     "4",
-				apiv1.ResourceMemory:  "62000Mi",
-				apiv1.ResourcePods:    "100",
-				gpu.ResourceNvidiaGPU: "1",
-			}),
-			parseResourceList(map[apiv1.ResourceName]string{
-				apiv1.ResourceCPU:     "3700m",
-				apiv1.ResourceMemory:  "61800Mi",
-				apiv1.ResourcePods:    "100",
-				gpu.ResourceNvidiaGPU: "1",
-			})),
-		sampleNode(
-			"p2-xlarge-2", "p2.xlarge",
-			parseResourceList(map[apiv1.ResourceName]string{
-				apiv1.ResourceCPU:     "4",
-				apiv1.ResourceMemory:  "61700Mi",
-				apiv1.ResourcePods:    "99",
-				gpu.ResourceNvidiaGPU: "1",
-			}),
-			parseResourceList(map[apiv1.ResourceName]string{
-				apiv1.ResourceCPU:     "3800m",
-				apiv1.ResourceMemory:  "61600Mi",
-				apiv1.ResourcePods:    "99",
-				gpu.ResourceNvidiaGPU: "1",
-			})),
-	})
-
-	// Information for p2.xlarge should now be based on existing nodes
-	expectedCapacity := parseResourceList(map[apiv1.ResourceName]string{
-		apiv1.ResourceCPU:     "4",
-		apiv1.ResourceMemory:  "61700Mi",
-		apiv1.ResourcePods:    "99",
-		gpu.ResourceNvidiaGPU: "1",
-	})
-	expectedAllocatable := parseResourceList(map[apiv1.ResourceName]string{
-		apiv1.ResourceCPU:     "3700m",
-		apiv1.ResourceMemory:  "61600Mi",
-		apiv1.ResourcePods:    "99",
-		gpu.ResourceNvidiaGPU: "1",
-	})
-
-	updatedResources, err := m.availableResources("p2.xlarge")
-	assert.NoError(t, err)
-	assertResourcesEqual(t, expectedCapacity, updatedResources.Capacity)
-	assertResourcesEqual(t, expectedAllocatable, updatedResources.Allocatable)
-
-	// Allocatable information for other instance types should include data from the existing nodes
-	otherTypeResources, err := m.availableResources("p2.16xlarge")
-	assert.NoError(t, err)
-	assertResourcesEqual(t, parseResourceList(map[apiv1.ResourceName]string{
-		apiv1.ResourceCPU:     "64",
-		apiv1.ResourceMemory:  "768Gi",
-		apiv1.ResourcePods:    "110",
-		gpu.ResourceNvidiaGPU: "16",
-	}), otherTypeResources.Capacity)
-	assertResourcesEqual(t, parseResourceList(map[apiv1.ResourceName]string{
-		apiv1.ResourceCPU:     "63700m",   // 64 - 300m
-		apiv1.ResourceMemory:  "786232Mi", // 768Gi - 200Mi
-		apiv1.ResourcePods:    "110",
-		gpu.ResourceNvidiaGPU: "16",
-	}), otherTypeResources.Allocatable)
+type ServiceDescriptor struct {
+	name                         string
+	region                       string
+	signingRegion, signingMethod string
+	signingName                  string
 }
 
-func assertResourcesEqual(t *testing.T, expected, actual apiv1.ResourceList) {
-	for resourceName, resourceValue := range expected {
-		actualValue, ok := actual[resourceName]
-		assert.True(t, ok, "expected resource %s to be %s, found none", resourceName, &resourceValue)
-		if ok {
-			assert.True(t, resourceValue.Cmp(actualValue) == 0, "expected resource %s to be %s, found %s", resourceName, &resourceValue, &actualValue)
+func TestOverridesActiveConfig(t *testing.T) {
+	tests := []struct {
+		name string
+
+		reader io.Reader
+		aws    provider_aws.Services
+
+		expectError        bool
+		active             bool
+		servicesOverridden []ServiceDescriptor
+	}{
+		{
+			"No overrides",
+			strings.NewReader(`
+				[global]
+				`),
+			nil,
+			false, false,
+			[]ServiceDescriptor{},
+		},
+		{
+			"Missing Service Name",
+			strings.NewReader(`
+				[global]
+				[ServiceOverride "1"]
+				Region=sregion
+				URL=https://s3.foo.bar
+				SigningRegion=sregion
+				SigningMethod = sign
+				`),
+			nil,
+			true, false,
+			[]ServiceDescriptor{},
+		},
+		{
+			"Missing Service Region",
+			strings.NewReader(`
+				[global]
+				[ServiceOverride "1"]
+				Service=s3
+				URL=https://s3.foo.bar
+				SigningRegion=sregion
+				SigningMethod = sign
+				`),
+			nil,
+			true, false,
+			[]ServiceDescriptor{},
+		},
+		{
+			"Missing URL",
+			strings.NewReader(`
+				[global]
+				[ServiceOverride "1"]
+				Service="s3"
+				Region=sregion
+				SigningRegion=sregion
+				SigningMethod = sign
+				`),
+			nil,
+			true, false,
+			[]ServiceDescriptor{},
+		},
+		{
+			"Missing Signing Region",
+			strings.NewReader(`
+				[global]
+				[ServiceOverride "1"]
+				Service=s3
+				Region=sregion
+				URL=https://s3.foo.bar
+				SigningMethod = sign
+				`),
+			nil,
+			true, false,
+			[]ServiceDescriptor{},
+		},
+		{
+			"Active Overrides",
+			strings.NewReader(`
+				[Global]
+				[ServiceOverride "1"]
+				Service = "s3      "
+				Region = sregion
+				URL = https://s3.foo.bar
+				SigningRegion = sregion
+				SigningMethod = v4
+				`),
+			nil,
+			false, true,
+			[]ServiceDescriptor{{name: "s3", region: "sregion", signingRegion: "sregion", signingMethod: "v4"}},
+		},
+		{
+			"Multiple Overridden Services",
+			strings.NewReader(`
+				[Global]
+				vpc = vpc-abc1234567
+				[ServiceOverride "1"]
+				Service=s3
+				Region=sregion1
+				URL=https://s3.foo.bar
+				SigningRegion=sregion1
+				SigningMethod = v4
+				[ServiceOverride "2"]
+				Service=ec2
+				Region=sregion2
+				URL=https://ec2.foo.bar
+				SigningRegion=sregion2
+				SigningMethod = v4
+				`),
+			nil,
+			false, true,
+			[]ServiceDescriptor{{name: "s3", region: "sregion1", signingRegion: "sregion1", signingMethod: "v4"},
+				{name: "ec2", region: "sregion2", signingRegion: "sregion2", signingMethod: "v4"}},
+		},
+		{
+			"Duplicate Services",
+			strings.NewReader(`
+				[Global]
+				vpc = vpc-abc1234567
+				[ServiceOverride "1"]
+				Service=s3
+				Region=sregion1
+				URL=https://s3.foo.bar
+				SigningRegion=sregion
+				SigningMethod = sign
+				[ServiceOverride "2"]
+				Service=s3
+				Region=sregion1
+				URL=https://s3.foo.bar
+				SigningRegion=sregion
+				SigningMethod = sign
+				`),
+			nil,
+			true, false,
+			[]ServiceDescriptor{},
+		},
+		{
+			"Multiple Overridden Services in Multiple regions",
+			strings.NewReader(`
+				[global]
+				[ServiceOverride "1"]
+			 	Service=s3
+				Region=region1
+				URL=https://s3.foo.bar
+				SigningRegion=sregion1
+				[ServiceOverride "2"]
+				Service=ec2
+				Region=region2
+				URL=https://ec2.foo.bar
+				SigningRegion=sregion
+				SigningMethod = v4
+				`),
+			nil,
+			false, true,
+			[]ServiceDescriptor{{name: "s3", region: "region1", signingRegion: "sregion1", signingMethod: ""},
+				{name: "ec2", region: "region2", signingRegion: "sregion", signingMethod: "v4"}},
+		},
+		{
+			"Multiple regions, Same Service",
+			strings.NewReader(`
+				[global]
+				[ServiceOverride "1"]
+				Service=s3
+				Region=region1
+				URL=https://s3.foo.bar
+				SigningRegion=sregion1
+				SigningMethod = v3
+				[ServiceOverride "2"]
+				Service=s3
+				Region=region2
+				URL=https://s3.foo.bar
+				SigningRegion=sregion1
+				SigningMethod = v4
+				SigningName = "name"
+				`),
+			nil,
+			false, true,
+			[]ServiceDescriptor{{name: "s3", region: "region1", signingRegion: "sregion1", signingMethod: "v3"},
+				{name: "s3", region: "region2", signingRegion: "sregion1", signingMethod: "v4", signingName: "name"}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Logf("Running test case %s", test.name)
+		cfg, err := readAWSCloudConfig(test.reader)
+		if err == nil {
+			err = validateOverrides(cfg)
 		}
-	}
+		if test.expectError {
+			if err == nil {
+				t.Errorf("Should error for case %s (cfg=%v)", test.name, cfg)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("Should succeed for case: %s, got %v", test.name, err)
+			}
 
-	for resourceName := range actual {
-		_, ok := expected[resourceName]
-		assert.True(t, ok, "found unexpected value for resource %s", resourceName)
-	}
-}
+			if len(cfg.ServiceOverride) != len(test.servicesOverridden) {
+				t.Errorf("Expected %d overridden services, received %d for case %s",
+					len(test.servicesOverridden), len(cfg.ServiceOverride), test.name)
+			} else {
+				for _, sd := range test.servicesOverridden {
+					var found *struct {
+						Service       string
+						Region        string
+						URL           string
+						SigningRegion string
+						SigningMethod string
+						SigningName   string
+					}
+					for _, v := range cfg.ServiceOverride {
+						if v.Service == sd.name && v.Region == sd.region {
+							found = v
+							break
+						}
+					}
+					if found == nil {
+						t.Errorf("Missing override for service %s in case %s",
+							sd.name, test.name)
+					} else {
+						if found.SigningRegion != sd.signingRegion {
+							t.Errorf("Expected signing region '%s', received '%s' for case %s",
+								sd.signingRegion, found.SigningRegion, test.name)
+						}
+						if found.SigningMethod != sd.signingMethod {
+							t.Errorf("Expected signing method '%s', received '%s' for case %s",
+								sd.signingMethod, found.SigningRegion, test.name)
+						}
+						targetName := fmt.Sprintf("https://%s.foo.bar", sd.name)
+						if found.URL != targetName {
+							t.Errorf("Expected Endpoint '%s', received '%s' for case %s",
+								targetName, found.URL, test.name)
+						}
+						if found.SigningName != sd.signingName {
+							t.Errorf("Expected signing name '%s', received '%s' for case %s",
+								sd.signingName, found.SigningName, test.name)
+						}
 
-func parseResourceList(from map[apiv1.ResourceName]string) apiv1.ResourceList {
-	result := make(apiv1.ResourceList, len(from))
-	for resourceName, value := range from {
-		result[resourceName] = resource.MustParse(value)
-	}
-	return result
-}
-
-func sampleNode(nodeName string, instanceType string, capacity, allocatable apiv1.ResourceList) *apiv1.Node {
-	return &apiv1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   nodeName,
-			Labels: map[string]string{kubeletapis.LabelInstanceType: instanceType},
-		},
-		Status: apiv1.NodeStatus{
-			Capacity:    capacity,
-			Allocatable: allocatable,
-		},
+						fn := getResolver(cfg)
+						ep1, e := fn(sd.name, sd.region, nil)
+						if e != nil {
+							t.Errorf("Expected a valid endpoint for %s in case %s",
+								sd.name, test.name)
+						} else {
+							targetName := fmt.Sprintf("https://%s.foo.bar", sd.name)
+							if ep1.URL != targetName {
+								t.Errorf("Expected endpoint url: %s, received %s in case %s",
+									targetName, ep1.URL, test.name)
+							}
+							if ep1.SigningRegion != sd.signingRegion {
+								t.Errorf("Expected signing region '%s', received '%s' in case %s",
+									sd.signingRegion, ep1.SigningRegion, test.name)
+							}
+							if ep1.SigningMethod != sd.signingMethod {
+								t.Errorf("Expected signing method '%s', received '%s' in case %s",
+									sd.signingMethod, ep1.SigningRegion, test.name)
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 }
 

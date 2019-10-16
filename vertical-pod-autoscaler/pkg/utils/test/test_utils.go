@@ -23,10 +23,15 @@ import (
 	"github.com/stretchr/testify/mock"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/poc.autoscaling.k8s.io/v1alpha1"
-	vpa_lister "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/listers/poc.autoscaling.k8s.io/v1alpha1"
+	"k8s.io/apimachinery/pkg/runtime"
+	vpa_types_v1beta1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta1"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	vpa_lister_v1beta1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/listers/autoscaling.k8s.io/v1beta1"
+	vpa_lister "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/listers/autoscaling.k8s.io/v1beta2"
 	v1 "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/record"
 )
 
 var (
@@ -125,8 +130,8 @@ type PodsEvictionRestrictionMock struct {
 }
 
 // Evict is a mock implementation of PodsEvictionRestriction.Evict
-func (m *PodsEvictionRestrictionMock) Evict(pod *apiv1.Pod) error {
-	args := m.Called(pod)
+func (m *PodsEvictionRestrictionMock) Evict(pod *apiv1.Pod, eventRecorder record.EventRecorder) error {
+	args := m.Called(pod, eventRecorder)
 	return args.Error(0)
 }
 
@@ -197,6 +202,37 @@ func (m *VerticalPodAutoscalerListerMock) Get(name string) (*vpa_types.VerticalP
 	return nil, fmt.Errorf("unimplemented")
 }
 
+// VerticalPodAutoscalerV1Beta1ListerMock is a mock of VerticalPodAutoscalerLister or
+// VerticalPodAutoscalerNamespaceLister - the crucial List method is the same.
+type VerticalPodAutoscalerV1Beta1ListerMock struct {
+	mock.Mock
+}
+
+// List is a mock implementation of VerticalPodAutoscalerLister.List
+func (m *VerticalPodAutoscalerV1Beta1ListerMock) List(selector labels.Selector) (ret []*vpa_types_v1beta1.VerticalPodAutoscaler, err error) {
+	args := m.Called()
+	var returnArg []*vpa_types_v1beta1.VerticalPodAutoscaler
+	if args.Get(0) != nil {
+		returnArg = args.Get(0).([]*vpa_types_v1beta1.VerticalPodAutoscaler)
+	}
+	return returnArg, args.Error(1)
+}
+
+// VerticalPodAutoscalers is a mock implementation of returning a lister for namespace.
+func (m *VerticalPodAutoscalerV1Beta1ListerMock) VerticalPodAutoscalers(namespace string) vpa_lister_v1beta1.VerticalPodAutoscalerNamespaceLister {
+	args := m.Called(namespace)
+	var returnArg vpa_lister_v1beta1.VerticalPodAutoscalerNamespaceLister
+	if args.Get(0) != nil {
+		returnArg = args.Get(0).(vpa_lister_v1beta1.VerticalPodAutoscalerNamespaceLister)
+	}
+	return returnArg
+}
+
+// Get is not implemented for this mock
+func (m *VerticalPodAutoscalerV1Beta1ListerMock) Get(name string) (*vpa_types_v1beta1.VerticalPodAutoscaler, error) {
+	return nil, fmt.Errorf("unimplemented")
+}
+
 // RecommendationProcessorMock is mock implementation of RecommendationProcessor
 type RecommendationProcessorMock struct {
 	mock.Mock
@@ -228,4 +264,27 @@ func (f *FakeRecommendationProcessor) Apply(podRecommendation *vpa_types.Recomme
 	conditions []vpa_types.VerticalPodAutoscalerCondition,
 	pod *apiv1.Pod) (*vpa_types.RecommendedPodResources, map[string][]string, error) {
 	return podRecommendation, nil, nil
+}
+
+// fakeEventRecorder is a dummy implementation of record.EventRecorder.
+type fakeEventRecorder struct{}
+
+// Event is a dummy implementation of record.EventRecorder interface.
+func (f *fakeEventRecorder) Event(object runtime.Object, eventtype, reason, message string) {}
+
+// Eventf is a dummy implementation of record.EventRecorder interface.
+func (f *fakeEventRecorder) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...interface{}) {
+}
+
+// PastEventf is a dummy implementation of record.EventRecorder interface.
+func (f *fakeEventRecorder) PastEventf(object runtime.Object, timestamp metav1.Time, eventtype, reason, messageFmt string, args ...interface{}) {
+}
+
+// AnnotatedEventf is a dummy implementation of record.EventRecorder interface.
+func (f *fakeEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...interface{}) {
+}
+
+// FakeEventRecorder returns a dummy implementation of record.EventRecorder.
+func FakeEventRecorder() record.EventRecorder {
+	return &fakeEventRecorder{}
 }

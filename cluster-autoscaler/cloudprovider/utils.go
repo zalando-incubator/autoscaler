@@ -113,11 +113,6 @@ func BuildKubeProxy(name string) *apiv1.Pod {
 	}
 }
 
-// IsFakeKubeProxyPod returns true if the pod is a fake KubeProxy pod created by BuildKubeProxy
-func IsFakeKubeProxyPod(pod *apiv1.Pod) bool {
-	return pod.Namespace == "kube-system" && pod.Labels["component"] == "kube-proxy" && pod.Annotations[kubetypes.ConfigMirrorAnnotationKey] == "1234567890abcdef"
-}
-
 // JoinStringMaps joins node labels
 func JoinStringMaps(items ...map[string]string) map[string]string {
 	result := make(map[string]string)

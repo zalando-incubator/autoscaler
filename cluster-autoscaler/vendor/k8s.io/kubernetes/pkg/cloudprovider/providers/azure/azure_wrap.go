@@ -23,12 +23,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-04-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-10-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2017-09-01/network"
 	"github.com/Azure/go-autorest/autorest"
-	"github.com/golang/glog"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/kubernetes/pkg/cloudprovider"
+	cloudprovider "k8s.io/cloud-provider"
+	"k8s.io/klog"
 )
 
 var (
@@ -37,7 +37,8 @@ var (
 	nsgCacheTTL = 2 * time.Minute
 	rtCacheTTL  = 2 * time.Minute
 
-	azureNodeProviderIDRE = regexp.MustCompile(`^azure:///subscriptions/(?:.*)/resourceGroups/(?:.*)/providers/Microsoft.Compute/(?:.*)`)
+	azureNodeProviderIDRE    = regexp.MustCompile(`^azure:///subscriptions/(?:.*)/resourceGroups/(?:.*)/providers/Microsoft.Compute/(?:.*)`)
+	azureResourceGroupNameRE = regexp.MustCompile(`.*/subscriptions/(?:.*)/resourceGroups/(.+)/providers/(?:.*)`)
 )
 
 // checkExistsFromError inspects an error and returns a true if err is nil,
@@ -117,7 +118,7 @@ func (az *Cloud) getPublicIPAddress(pipResourceGroup string, pipName string) (pi
 	}
 
 	if !exists {
-		glog.V(2).Infof("Public IP %q not found with message: %q", pipName, message)
+		klog.V(2).Infof("Public IP %q not found with message: %q", pipName, message)
 		return pip, false, nil
 	}
 
@@ -144,7 +145,7 @@ func (az *Cloud) getSubnet(virtualNetworkName string, subnetName string) (subnet
 	}
 
 	if !exists {
-		glog.V(2).Infof("Subnet %q not found with message: %q", subnetName, message)
+		klog.V(2).Infof("Subnet %q not found with message: %q", subnetName, message)
 		return subnet, false, nil
 	}
 
@@ -204,7 +205,7 @@ func (az *Cloud) newVMCache() (*timedCache, error) {
 		}
 
 		if !exists {
-			glog.V(2).Infof("Virtual machine %q not found with message: %q", key, message)
+			klog.V(2).Infof("Virtual machine %q not found with message: %q", key, message)
 			return nil, nil
 		}
 
@@ -226,7 +227,7 @@ func (az *Cloud) newLBCache() (*timedCache, error) {
 		}
 
 		if !exists {
-			glog.V(2).Infof("Load balancer %q not found with message: %q", key, message)
+			klog.V(2).Infof("Load balancer %q not found with message: %q", key, message)
 			return nil, nil
 		}
 
@@ -247,7 +248,7 @@ func (az *Cloud) newNSGCache() (*timedCache, error) {
 		}
 
 		if !exists {
-			glog.V(2).Infof("Security group %q not found with message: %q", key, message)
+			klog.V(2).Infof("Security group %q not found with message: %q", key, message)
 			return nil, nil
 		}
 
@@ -268,7 +269,7 @@ func (az *Cloud) newRouteTableCache() (*timedCache, error) {
 		}
 
 		if !exists {
-			glog.V(2).Infof("Route table %q not found with message: %q", key, message)
+			klog.V(2).Infof("Route table %q not found with message: %q", key, message)
 			return nil, nil
 		}
 
@@ -302,4 +303,15 @@ func (az *Cloud) IsNodeUnmanaged(nodeName string) (bool, error) {
 // All managed node's providerIDs are in format 'azure:///subscriptions/<id>/resourceGroups/<rg>/providers/Microsoft.Compute/.*'
 func (az *Cloud) IsNodeUnmanagedByProviderID(providerID string) bool {
 	return !azureNodeProviderIDRE.Match([]byte(providerID))
+}
+
+// convertResourceGroupNameToLower converts the resource group name in the resource ID to be lowered.
+func convertResourceGroupNameToLower(resourceID string) (string, error) {
+	matches := azureResourceGroupNameRE.FindStringSubmatch(resourceID)
+	if len(matches) != 2 {
+		return "", fmt.Errorf("%q isn't in Azure resource ID format %q", resourceID, azureResourceGroupNameRE.String())
+	}
+
+	resourceGroup := matches[1]
+	return strings.Replace(resourceID, resourceGroup, strings.ToLower(resourceGroup), 1), nil
 }

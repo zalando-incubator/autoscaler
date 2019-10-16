@@ -26,17 +26,18 @@ import (
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/units"
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	provider_gce "k8s.io/kubernetes/pkg/cloudprovider/providers/gce"
 
 	"cloud.google.com/go/compute/metadata"
-	"github.com/golang/glog"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	gce "google.golang.org/api/compute/v1"
 	gcfg "gopkg.in/gcfg.v1"
+	"k8s.io/klog"
 )
 
 const (
@@ -47,7 +48,7 @@ const (
 )
 
 var (
-	defaultOAuthScopes []string = []string{
+	defaultOAuthScopes = []string{
 		"https://www.googleapis.com/auth/compute",
 		"https://www.googleapis.com/auth/devstorage.read_only",
 		"https://www.googleapis.com/auth/service.management.readonly",
@@ -65,7 +66,7 @@ type GceManager interface {
 	// GetMigs returns list of registered MIGs.
 	GetMigs() []*MigInformation
 	// GetMigNodes returns mig nodes.
-	GetMigNodes(mig Mig) ([]string, error)
+	GetMigNodes(mig Mig) ([]cloudprovider.Instance, error)
 	// GetMigForInstance returns MIG to which the given instance belongs.
 	GetMigForInstance(instance *GceRef) (Mig, error)
 	// GetMigTemplateNode returns a template node for MIG.
@@ -112,19 +113,19 @@ func CreateGceManager(configReader io.Reader, discoveryOpts cloudprovider.NodeGr
 	if configReader != nil {
 		var cfg provider_gce.ConfigFile
 		if err := gcfg.ReadInto(&cfg, configReader); err != nil {
-			glog.Errorf("Couldn't read config: %v", err)
+			klog.Errorf("Couldn't read config: %v", err)
 			return nil, err
 		}
 		if cfg.Global.TokenURL == "" {
-			glog.Warning("Empty tokenUrl in cloud config")
+			klog.Warning("Empty tokenUrl in cloud config")
 		} else {
 			tokenSource = provider_gce.NewAltTokenSource(cfg.Global.TokenURL, cfg.Global.TokenBody)
-			glog.V(1).Infof("Using TokenSource from config %#v", tokenSource)
+			klog.V(1).Infof("Using TokenSource from config %#v", tokenSource)
 		}
 		projectId = cfg.Global.ProjectID
 		location = cfg.Global.LocalZone
 	} else {
-		glog.V(1).Infof("Using default TokenSource %#v", tokenSource)
+		klog.V(1).Infof("Using default TokenSource %#v", tokenSource)
 	}
 	if len(projectId) == 0 || len(location) == 0 {
 		// XXX: On GKE discoveredProjectId is hosted master project and
@@ -143,7 +144,7 @@ func CreateGceManager(configReader io.Reader, discoveryOpts cloudprovider.NodeGr
 			location = discoveredLocation
 		}
 	}
-	glog.V(1).Infof("GCE projectId=%s location=%s", projectId, location)
+	klog.V(1).Infof("GCE projectId=%s location=%s", projectId, location)
 
 	// Create Google Compute Engine service.
 	client := oauth2.NewClient(oauth2.NoContext, tokenSource)
@@ -176,7 +177,7 @@ func CreateGceManager(configReader io.Reader, discoveryOpts cloudprovider.NodeGr
 
 	go wait.Until(func() {
 		if err := manager.cache.RegenerateInstancesCache(); err != nil {
-			glog.Errorf("Error while regenerating Mig cache: %v", err)
+			klog.Errorf("Error while regenerating Mig cache: %v", err)
 		}
 	}, time.Hour, manager.interrupt)
 
@@ -197,7 +198,7 @@ func (m *gceManagerImpl) registerMig(mig Mig) bool {
 		// can be scaled up from 0 nodes.
 		// We may never need to do it, so just log error if it fails.
 		if _, err := m.GetMigTemplateNode(mig); err != nil {
-			glog.Errorf("Can't build node from template for %s, won't be able to scale from 0: %v", mig.GceRef().String(), err)
+			klog.Errorf("Can't build node from template for %s, won't be able to scale from 0: %v", mig.GceRef().String(), err)
 		}
 	}
 	return changed
@@ -205,16 +206,21 @@ func (m *gceManagerImpl) registerMig(mig Mig) bool {
 
 // GetMigSize gets MIG size.
 func (m *gceManagerImpl) GetMigSize(mig Mig) (int64, error) {
+	if migSize, found := m.cache.GetMigTargetSize(mig.GceRef()); found {
+		return migSize, nil
+	}
 	targetSize, err := m.GceService.FetchMigTargetSize(mig.GceRef())
 	if err != nil {
 		return -1, err
 	}
+	m.cache.SetMigTargetSize(mig.GceRef(), targetSize)
 	return targetSize, nil
 }
 
 // SetMigSize sets MIG size.
 func (m *gceManagerImpl) SetMigSize(mig Mig, size int64) error {
-	glog.V(0).Infof("Setting mig size %s to %d", mig.Id(), size)
+	klog.V(0).Infof("Setting mig size %s to %d", mig.Id(), size)
+	m.cache.InvalidateTargetSizeCacheForMig(mig.GceRef())
 	return m.GceService.ResizeMig(mig.GceRef(), size)
 }
 
@@ -233,10 +239,10 @@ func (m *gceManagerImpl) DeleteInstances(instances []*GceRef) error {
 			return err
 		}
 		if mig != commonMig {
-			return fmt.Errorf("Cannot delete instances which don't belong to the same MIG.")
+			return fmt.Errorf("cannot delete instances which don't belong to the same MIG.")
 		}
 	}
-
+	m.cache.InvalidateTargetSizeCacheForMig(commonMig.GceRef())
 	return m.GceService.DeleteInstances(commonMig.GceRef(), instances)
 }
 
@@ -251,20 +257,13 @@ func (m *gceManagerImpl) GetMigForInstance(instance *GceRef) (Mig, error) {
 }
 
 // GetMigNodes returns mig nodes.
-func (m *gceManagerImpl) GetMigNodes(mig Mig) ([]string, error) {
-	instances, err := m.GceService.FetchMigInstances(mig.GceRef())
-	if err != nil {
-		return []string{}, err
-	}
-	result := make([]string, 0)
-	for _, ref := range instances {
-		result = append(result, fmt.Sprintf("gce://%s/%s/%s", ref.Project, ref.Zone, ref.Name))
-	}
-	return result, nil
+func (m *gceManagerImpl) GetMigNodes(mig Mig) ([]cloudprovider.Instance, error) {
+	return m.GceService.FetchMigInstances(mig.GceRef())
 }
 
 // Refresh triggers refresh of cached resources.
 func (m *gceManagerImpl) Refresh() error {
+	m.cache.InvalidateTargetSizeCache()
 	if m.lastRefresh.Add(refreshInterval).After(time.Now()) {
 		return nil
 	}
@@ -274,11 +273,11 @@ func (m *gceManagerImpl) Refresh() error {
 func (m *gceManagerImpl) forceRefresh() error {
 	m.clearMachinesCache()
 	if err := m.fetchAutoMigs(); err != nil {
-		glog.Errorf("Failed to fetch MIGs: %v", err)
+		klog.Errorf("Failed to fetch MIGs: %v", err)
 		return err
 	}
 	m.lastRefresh = time.Now()
-	glog.V(2).Infof("Refreshed GCE resources, next refresh after %v", m.lastRefresh.Add(refreshInterval))
+	klog.V(2).Infof("Refreshed GCE resources, next refresh after %v", m.lastRefresh.Add(refreshInterval))
 	return nil
 }
 
@@ -362,11 +361,11 @@ func (m *gceManagerImpl) fetchAutoMigs() error {
 				// This MIG was explicitly configured, but would also be
 				// autodiscovered. We want the explicitly configured min and max
 				// nodes to take precedence.
-				glog.V(3).Infof("Ignoring explicitly configured MIG %s in autodiscovery.", mig.GceRef().String())
+				klog.V(3).Infof("Ignoring explicitly configured MIG %s in autodiscovery.", mig.GceRef().String())
 				continue
 			}
 			if m.registerMig(mig) {
-				glog.V(3).Infof("Autodiscovered MIG %s using regexp %s", mig.GceRef().String(), cfg.Re.String())
+				klog.V(3).Infof("Autodiscovered MIG %s using regexp %s", mig.GceRef().String(), cfg.Re.String())
 				changed = true
 			}
 		}
@@ -400,7 +399,7 @@ func (m *gceManagerImpl) clearMachinesCache() {
 	m.cache.SetMachinesCache(machinesCache)
 	nextRefresh := time.Now()
 	m.machinesCacheLastRefresh = nextRefresh
-	glog.V(2).Infof("Cleared machine types cache, next clear after %v", nextRefresh)
+	klog.V(2).Infof("Cleared machine types cache, next clear after %v", nextRefresh)
 }
 
 // Code borrowed from gce cloud provider. Reuse the original as soon as it becomes public.
@@ -486,7 +485,7 @@ func (m *gceManagerImpl) getCpuAndMemoryForMachineType(machineType string, zone 
 		}
 		m.cache.AddMachineToCache(machineType, zone, machine)
 	}
-	return machine.GuestCpus, machine.MemoryMb * bytesPerMB, nil
+	return machine.GuestCpus, machine.MemoryMb * units.MiB, nil
 }
 
 func parseCustomMachineType(machineType string) (cpu, mem int64, err error) {
@@ -500,6 +499,6 @@ func parseCustomMachineType(machineType string) (cpu, mem int64, err error) {
 		return 0, 0, fmt.Errorf("failed to parse all params in %s", machineType)
 	}
 	// Mb to bytes
-	mem = mem * bytesPerMB
+	mem = mem * units.MiB
 	return
 }

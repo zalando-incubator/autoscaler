@@ -220,7 +220,7 @@ func (tcp *TestCloudProvider) Cleanup() error {
 
 // Refresh is called before every main loop and can be used to dynamically update cloud provider state.
 // In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
-func (tcp *TestCloudProvider) Refresh() error {
+func (tcp *TestCloudProvider) Refresh(existingNodes []*apiv1.Node) error {
 	return nil
 }
 

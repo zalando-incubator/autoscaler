@@ -131,7 +131,7 @@ func (kubemark *KubemarkCloudProvider) GetResourceLimiter() (*cloudprovider.Reso
 
 // Refresh is called before every main loop and can be used to dynamically update cloud provider state.
 // In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
-func (kubemark *KubemarkCloudProvider) Refresh() error {
+func (kubemark *KubemarkCloudProvider) Refresh(existingNodes []*apiv1.Node) error {
 	return nil
 }
 

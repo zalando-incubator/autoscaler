@@ -77,6 +77,6 @@ func TestCleanup(t *testing.T) {
 
 func TestRefresh(t *testing.T) {
 	provider := testProvider(t, testBaiducloudManager)
-	err := provider.Refresh()
+	err := provider.Refresh(nil)
 	assert.NoError(t, err)
 }

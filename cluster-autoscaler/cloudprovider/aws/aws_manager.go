@@ -19,7 +19,6 @@ limitations under the License.
 package aws
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -51,6 +50,7 @@ const (
 	maxRecordsReturnedByAPI = 100
 	maxAsgNamesPerDescribe  = 50
 	refreshInterval         = 1 * time.Minute
+	megabyte                = 1024 * 1024
 )
 
 // AwsManager is handles aws communication and data caching.
@@ -59,13 +59,28 @@ type AwsManager struct {
 	ec2Service         ec2Wrapper
 	asgCache           *asgCache
 	lastRefresh        time.Time
+
+	// Node capacity/allocatable by instance type. Currently doesn't expire because it won't grow uncontrollably,
+	// it's updated when there are nodes with this size, and the fallback case depends on the data that doesn't change
+	// that often.
+	instanceResourceCache map[string]*instanceResourceInfo
+
+	// The current maximum of reserved resources (<capacity> - <allocatable>) across the whole cluster. Updated on every
+	// Refresh() call
+	reservedResources apiv1.ResourceList
+}
+
+type instanceResourceInfo struct {
+	InstanceType string
+	Capacity     apiv1.ResourceList
+	Allocatable  apiv1.ResourceList
 }
 
 type asgTemplate struct {
-	InstanceType *instanceType
-	Region       string
-	Zone         string
-	Tags         []*autoscaling.TagDescription
+	AvailableResources []*instanceResourceInfo
+	Region             string
+	Zone               string
+	Tags               []*autoscaling.TagDescription
 }
 
 func validateOverrides(cfg *provider_aws.CloudConfig) error {
@@ -205,9 +220,11 @@ func createAWSManagerInternal(
 	}
 
 	manager := &AwsManager{
-		autoScalingService: *autoScalingService,
-		ec2Service:         *ec2Service,
-		asgCache:           cache,
+		autoScalingService:    *autoScalingService,
+		ec2Service:            *ec2Service,
+		asgCache:              cache,
+		instanceResourceCache: make(map[string]*instanceResourceInfo),
+		reservedResources:     make(apiv1.ResourceList),
 	}
 
 	if err := manager.forceRefresh(); err != nil {
@@ -239,7 +256,8 @@ func CreateAwsManager(configReader io.Reader, discoveryOpts cloudprovider.NodeGr
 
 // Refresh is called before every main loop and can be used to dynamically update cloud provider state.
 // In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
-func (m *AwsManager) Refresh() error {
+func (m *AwsManager) Refresh(existingNodes []*apiv1.Node) error {
+	m.updateAvailableResources(existingNodes)
 	if m.lastRefresh.Add(refreshInterval).After(time.Now()) {
 		return nil
 	}
@@ -301,30 +319,42 @@ func (m *AwsManager) getAsgTemplate(asg *asg) (*asgTemplate, error) {
 		klog.Warningf("Found multiple availability zones for ASG %q; using %s\n", asg.Name, az)
 	}
 
-	instanceTypeName, err := m.buildInstanceType(asg)
+	instanceTypeNames, err := m.buildInstanceTypes(asg)
 	if err != nil {
 		return nil, err
 	}
 
-	if t, ok := InstanceTypes[instanceTypeName]; ok {
-		return &asgTemplate{
-			InstanceType: t,
-			Region:       region,
-			Zone:         az,
-			Tags:         asg.Tags,
-		}, nil
+	var resources []*instanceResourceInfo
+	for _, name := range instanceTypeNames {
+		instanceResources, err := m.availableResources(name)
+		if err != nil {
+			return nil, err
+		}
+		resources = append(resources, instanceResources)
 	}
-	return nil, fmt.Errorf("ASG %q uses the unknown EC2 instance type %q", asg.Name, instanceTypeName)
+
+	return &asgTemplate{
+		AvailableResources: resources,
+		Region:             region,
+		Zone:               az,
+		Tags:               asg.Tags,
+	}, nil
 }
 
-func (m *AwsManager) buildInstanceType(asg *asg) (string, error) {
-	if asg.LaunchConfigurationName != "" {
-		return m.autoScalingService.getInstanceTypeByLCName(asg.LaunchConfigurationName)
-	} else if asg.LaunchTemplateName != "" && asg.LaunchTemplateVersion != "" {
-		return m.ec2Service.getInstanceTypeByLT(asg.LaunchTemplateName, asg.LaunchTemplateVersion)
+func (m *AwsManager) buildInstanceTypes(asg *asg) ([]string, error) {
+	if len(asg.InstanceTypeOverrides) > 0 {
+		return asg.InstanceTypeOverrides, nil
 	}
 
-	return "", errors.New("Unable to get instance type from launch config or launch template")
+	if asg.LaunchConfigurationName != "" {
+		result, err := m.autoScalingService.getInstanceTypeByLCName(asg.LaunchConfigurationName)
+		return []string{result}, err
+	} else if asg.LaunchTemplateName != "" && asg.LaunchTemplateVersion != "" {
+		result, err := m.ec2Service.getInstanceTypeByLT(asg.LaunchTemplateName, asg.LaunchTemplateVersion)
+		return []string{result}, err
+	}
+
+	return nil, fmt.Errorf("Unable to get instance type from launch config or launch template")
 }
 
 func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*apiv1.Node, error) {
@@ -338,22 +368,24 @@ func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*ap
 	}
 
 	node.Status = apiv1.NodeStatus{
-		Capacity: apiv1.ResourceList{},
+		Capacity:    apiv1.ResourceList{},
+		Allocatable: apiv1.ResourceList{},
 	}
 
-	// TODO: get a real value.
-	node.Status.Capacity[apiv1.ResourcePods] = *resource.NewQuantity(110, resource.DecimalSI)
-	node.Status.Capacity[apiv1.ResourceCPU] = *resource.NewQuantity(template.InstanceType.VCPU, resource.DecimalSI)
-	node.Status.Capacity[gpu.ResourceNvidiaGPU] = *resource.NewQuantity(template.InstanceType.GPU, resource.DecimalSI)
-	node.Status.Capacity[apiv1.ResourceMemory] = *resource.NewQuantity(template.InstanceType.MemoryMb*1024*1024, resource.DecimalSI)
+	for _, instanceResources := range template.AvailableResources {
+		for resourceName, capacity := range instanceResources.Capacity {
+			updateMinResource(node.Status.Capacity, resourceName, capacity)
+		}
+		for resourceName, allocatable := range instanceResources.Allocatable {
+			updateMinResource(node.Status.Allocatable, resourceName, allocatable)
+		}
+	}
 
 	resourcesFromTags := extractAllocatableResourcesFromAsg(template.Tags)
 	if val, ok := resourcesFromTags["ephemeral-storage"]; ok {
 		node.Status.Capacity[apiv1.ResourceEphemeralStorage] = *val
+		node.Status.Allocatable[apiv1.ResourceEphemeralStorage] = *val
 	}
-
-	// TODO: use proper allocatable!!
-	node.Status.Allocatable = node.Status.Capacity
 
 	// NodeLabels
 	node.Labels = cloudprovider.JoinStringMaps(node.Labels, extractLabelsFromAsg(template.Tags))
@@ -366,13 +398,123 @@ func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*ap
 	return &node, nil
 }
 
+// availableResources returns information about node resources (capacity/allocatable) for a particular instance type
+func (m *AwsManager) availableResources(instanceType string) (*instanceResourceInfo, error) {
+	// The cache either contains data collected from live nodes or we've already constructed something
+	// from the AWS information
+	if cached, ok := m.instanceResourceCache[instanceType]; ok {
+		return cached, nil
+	}
+
+	awsTemplate, ok := InstanceTypes[instanceType]
+	if !ok {
+		return nil, fmt.Errorf("unknown instance type %s", instanceType)
+	}
+
+	cpuCapacity := *resource.NewQuantity(awsTemplate.VCPU, resource.DecimalSI)
+	memCapacity := *resource.NewQuantity(awsTemplate.MemoryMb*megabyte, resource.DecimalSI)
+	gpuCapacity := *resource.NewQuantity(awsTemplate.GPU, resource.DecimalSI)
+	// TODO: get a real value.
+	podCapacity := *resource.NewQuantity(110, resource.DecimalSI)
+
+	// Build a node from the template. We set the capacity to the static AWS template data,
+	// and subtract the maximum reserved CPU/memory across all the nodes in the cluster to get
+	// the allocatable value.
+	template := &instanceResourceInfo{
+		InstanceType: awsTemplate.InstanceType,
+		Capacity: apiv1.ResourceList{
+			apiv1.ResourceCPU:     cpuCapacity,
+			apiv1.ResourceMemory:  memCapacity,
+			gpu.ResourceNvidiaGPU: gpuCapacity,
+			apiv1.ResourcePods:    podCapacity,
+		},
+		Allocatable: apiv1.ResourceList{
+			apiv1.ResourceCPU:    sub(cpuCapacity, m.reservedResources[apiv1.ResourceCPU]),
+			apiv1.ResourceMemory: sub(memCapacity, m.reservedResources[apiv1.ResourceMemory]),
+			// No reservations for GPU/Pods
+			gpu.ResourceNvidiaGPU: gpuCapacity,
+			apiv1.ResourcePods:    podCapacity,
+		},
+	}
+	m.instanceResourceCache[instanceType] = template
+	return template, nil
+}
+
+// updateAvailableResources collects information about resource availability from existing nodes and updates
+// the cache and the reservation information
+func (m *AwsManager) updateAvailableResources(nodes []*apiv1.Node) {
+	globalReserved := make(apiv1.ResourceList)
+	instanceResources := make(map[string]*instanceResourceInfo)
+
+	// Collect information from the existing nodes in the cluster. We take a minimum of
+	// all resources for every resource when we compute capacity and allocatable, and a
+	// global maximum across all nodes when we compute resource reservations
+	for _, node := range nodes {
+		instanceType, ok := node.GetLabels()[apiv1.LabelInstanceType]
+		if !ok {
+			continue
+		}
+
+		resources, ok := instanceResources[instanceType]
+		if !ok {
+			resources = &instanceResourceInfo{
+				InstanceType: instanceType,
+				Capacity:     make(apiv1.ResourceList),
+				Allocatable:  make(apiv1.ResourceList),
+			}
+			instanceResources[instanceType] = resources
+		}
+
+		for resourceName, capacity := range node.Status.Capacity {
+			updateMinResource(resources.Capacity, resourceName, capacity)
+		}
+		for resourceName, allocatable := range node.Status.Allocatable {
+			updateMinResource(resources.Allocatable, resourceName, allocatable)
+			if capacity, ok := resources.Capacity[resourceName]; ok {
+				reserved := sub(capacity, allocatable)
+				updateMaxResource(globalReserved, resourceName, reserved)
+			}
+		}
+	}
+
+	// Overwrite the cached data with up-to-date values
+	for instanceType, resources := range instanceResources {
+		m.instanceResourceCache[instanceType] = resources
+	}
+	m.reservedResources = globalReserved
+}
+
+func updateMinResource(resourceList apiv1.ResourceList, resourceName apiv1.ResourceName, quantity resource.Quantity) {
+	current, ok := resourceList[resourceName]
+	if !ok || quantity.Cmp(current) < 0 {
+		resourceList[resourceName] = quantity
+	}
+}
+
+func updateMaxResource(resourceList apiv1.ResourceList, resourceName apiv1.ResourceName, quantity resource.Quantity) {
+	current, ok := resourceList[resourceName]
+	if !ok || quantity.Cmp(current) > 0 {
+		resourceList[resourceName] = quantity
+	}
+}
+
+func sub(q1, q2 resource.Quantity) resource.Quantity {
+	result := q1.DeepCopy()
+	result.Sub(q2)
+	return result
+}
+
 func buildGenericLabels(template *asgTemplate, nodeName string) map[string]string {
 	result := make(map[string]string)
 	// TODO: extract it somehow
 	result[kubeletapis.LabelArch] = cloudprovider.DefaultArch
 	result[kubeletapis.LabelOS] = cloudprovider.DefaultOS
 
-	result[apiv1.LabelInstanceType] = template.InstanceType.InstanceType
+	if len(template.AvailableResources) == 1 {
+		result[apiv1.LabelInstanceType] = template.AvailableResources[0].InstanceType
+	} else {
+		result[apiv1.LabelInstanceType] = "<multiple>"
+	}
 
 	result[apiv1.LabelZoneRegion] = template.Region
 	result[apiv1.LabelZoneFailureDomain] = template.Zone

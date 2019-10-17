@@ -188,13 +188,13 @@ func (_m *CloudProvider) Pricing() (cloudprovider.PricingModel, errors.Autoscale
 	return r0, r1
 }
 
-// Refresh provides a mock function with given fields:
-func (_m *CloudProvider) Refresh() error {
-	ret := _m.Called()
+// Refresh provides a mock function with given fields: existingNodes
+func (_m *CloudProvider) Refresh(existingNodes []*v1.Node) error {
+	ret := _m.Called(existingNodes)
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func() error); ok {
-		r0 = rf()
+	if rf, ok := ret.Get(0).(func([]*v1.Node) error); ok {
+		r0 = rf(existingNodes)
 	} else {
 		r0 = ret.Error(0)
 	}

@@ -197,7 +197,7 @@ func TestAutoDiscoveredNodeGroups(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("auto-asg", 1, "test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	nodeGroups := provider.NodeGroups()
 	assert.Equal(t, len(nodeGroups), 1)
@@ -226,7 +226,7 @@ func TestNodeGroupForNode(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 1, "test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	group, err := provider.NodeGroupForNode(node)
 
@@ -297,7 +297,7 @@ func TestTargetSize(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 2, "test-instance-id", "second-test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	targetSize, err := asgs[0].TargetSize()
 	assert.Equal(t, targetSize, 2)
@@ -328,7 +328,7 @@ func TestIncreaseSize(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 2, "test-instance-id", "second-test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	initialSize, err := asgs[0].TargetSize()
 	assert.NoError(t, err)
@@ -360,7 +360,7 @@ func TestBelongs(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 1, "test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	invalidNode := &apiv1.Node{
 		Spec: apiv1.NodeSpec{
@@ -412,7 +412,7 @@ func TestDeleteNodes(t *testing.T) {
 		expectedInstancesCount = 1
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	initialSize, err := asgs[0].TargetSize()
 	assert.NoError(t, err)
@@ -458,7 +458,7 @@ func TestDeleteNodesAfterMultipleRefreshes(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 2, "test-instance-id", "second-test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 	// Call the manager directly as otherwise the call would be a noop as its within less then 60s
 	manager.forceRefresh()
 

@@ -131,7 +131,7 @@ func (ali *aliCloudProvider) GetResourceLimiter() (*cloudprovider.ResourceLimite
 
 // Refresh is called before every main loop and can be used to dynamically update cloud provider state.
 // In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
-func (ali *aliCloudProvider) Refresh() error {
+func (ali *aliCloudProvider) Refresh(existingNodes []*apiv1.Node) error {
 	return nil
 }
 

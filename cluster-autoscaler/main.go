@@ -162,6 +162,8 @@ var (
 		"Filtering out schedulable pods before CA scale up by trying to pack the schedulable pods on free capacity on existing nodes."+
 			"Setting it to false employs a more lenient filtering approach that does not try to pack the pods on the nodes."+
 			"Pods with nominatedNodeName set are always filtered out.")
+	scaleUpTemplateFromCloudProvider = flag.Bool("scale-up-cloud-provider-template", false,
+		"Should CA build the template nodes using up-to-date cloud provider configuration instead of a random existing node.")
 )
 
 func createAutoscalingOptions() config.AutoscalingOptions {
@@ -225,6 +227,7 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		Regional:                            *regional,
 		NewPodScaleUpDelay:                  *newPodScaleUpDelay,
 		FilterOutSchedulablePodsUsesPacking: *filterOutSchedulablePodsUsesPacking,
+		ScaleUpTemplateFromCloudProvider:    *scaleUpTemplateFromCloudProvider,
 	}
 }
 

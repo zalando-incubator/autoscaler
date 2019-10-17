@@ -224,6 +224,17 @@ func (tcp *TestCloudProvider) Refresh(existingNodes []*apiv1.Node) error {
 	return nil
 }
 
+// SetNodeTemplate changes the node template for a non-autoprovisioned node group
+func (tcp *TestCloudProvider) SetNodeTemplate(nodeGroupId string, template *schedulernodeinfo.NodeInfo) {
+	tcp.Lock()
+	defer tcp.Unlock()
+
+	if tcp.machineTemplates == nil {
+		tcp.machineTemplates = make(map[string]*schedulernodeinfo.NodeInfo)
+	}
+	tcp.machineTemplates[nodeGroupId] = template
+}
+
 // TestNodeGroup is a node group used by TestCloudProvider.
 type TestNodeGroup struct {
 	sync.Mutex

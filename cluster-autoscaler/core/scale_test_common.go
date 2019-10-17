@@ -74,6 +74,9 @@ type scaleTestConfig struct {
 	expectedFinalScaleUp   groupSizeChange   // we expect this to be delivered via scale-up event
 	expectedScaleDowns     []string
 	options                config.AutoscalingOptions
+
+	reservedResources map[string]apiv1.ResourceList // separate so we don't have to modify nodeConfig and constantly deal with conflicts later
+	templateNodes     []nodeConfig
 }
 
 // NewScaleTestAutoscalingContext creates a new test autoscaling context for scaling tests.

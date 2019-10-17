@@ -249,7 +249,7 @@ func checkPodsSchedulableOnNode(context *context.AutoscalingContext, pods []*api
 //
 // TODO(mwielgus): Review error policy - sometimes we may continue with partial errors.
 func getNodeInfosForGroups(nodes []*apiv1.Node, nodeInfoCache map[string]*schedulernodeinfo.NodeInfo, cloudProvider cloudprovider.CloudProvider, listers kube_util.ListerRegistry,
-	daemonsets []*appsv1.DaemonSet, predicateChecker *simulator.PredicateChecker) (map[string]*schedulernodeinfo.NodeInfo, errors.AutoscalerError) {
+	daemonsets []*appsv1.DaemonSet, predicateChecker *simulator.PredicateChecker, forceTemplateFromCloudProvider bool) (map[string]*schedulernodeinfo.NodeInfo, errors.AutoscalerError) {
 	result := make(map[string]*schedulernodeinfo.NodeInfo)
 	seenGroups := make(map[string]bool)
 
@@ -277,6 +277,13 @@ func getNodeInfosForGroups(nodes []*apiv1.Node, nodeInfoCache map[string]*schedu
 			return true, id, nil
 		}
 		return false, "", nil
+	}
+
+	// If this is enabled, always construct a sample node from the provider template node
+	if forceTemplateFromCloudProvider {
+		processNode = func(node *apiv1.Node) (bool, string, errors.AutoscalerError) {
+			return false, "", nil
+		}
 	}
 
 	for _, node := range nodes {
@@ -322,6 +329,7 @@ func getNodeInfosForGroups(nodes []*apiv1.Node, nodeInfoCache map[string]*schedu
 				return map[string]*schedulernodeinfo.NodeInfo{}, errors.ToAutoscalerError(errors.CloudProviderError, err)
 			}
 		}
+		klog.Infof("Node template for %s: %v", id, nodeInfo)
 		result[id] = nodeInfo
 	}
 

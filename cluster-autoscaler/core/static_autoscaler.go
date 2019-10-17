@@ -92,6 +92,12 @@ func NewStaticAutoscaler(
 
 	scaleDown := NewScaleDown(autoscalingContext, clusterStateRegistry)
 
+	// Disable node info cache since it'll produce worse results than our implementation
+	var nodeInfoCache map[string]*schedulernodeinfo.NodeInfo
+	if !autoscalingContext.ScaleUpTemplateFromCloudProvider {
+		nodeInfoCache = make(map[string]*schedulernodeinfo.NodeInfo)
+	}
+
 	return &StaticAutoscaler{
 		AutoscalingContext:      autoscalingContext,
 		startTime:               time.Now(),
@@ -101,7 +107,7 @@ func NewStaticAutoscaler(
 		scaleDown:               scaleDown,
 		processors:              processors,
 		clusterStateRegistry:    clusterStateRegistry,
-		nodeInfoCache:           make(map[string]*schedulernodeinfo.NodeInfo),
+		nodeInfoCache:           nodeInfoCache,
 	}
 }
 
@@ -160,7 +166,8 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) errors.AutoscalerError
 	}
 
 	nodeInfosForGroups, autoscalerError := getNodeInfosForGroups(
-		readyNodes, a.nodeInfoCache, autoscalingContext.CloudProvider, autoscalingContext.ListerRegistry, daemonsets, autoscalingContext.PredicateChecker)
+		readyNodes, a.nodeInfoCache, autoscalingContext.CloudProvider, autoscalingContext.ListerRegistry, daemonsets, autoscalingContext.PredicateChecker,
+		autoscalingContext.AutoscalingOptions.ScaleUpTemplateFromCloudProvider)
 	if autoscalerError != nil {
 		return autoscalerError.AddPrefix("failed to build node infos for node groups: ")
 	}

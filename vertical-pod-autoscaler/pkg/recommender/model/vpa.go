@@ -17,12 +17,14 @@ limitations under the License.
 package model
 
 import (
+	"sort"
 	"time"
 
+	autoscaling "k8s.io/api/autoscaling/v1"
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/poc.autoscaling.k8s.io/v1alpha1"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
 )
 
 // Map from VPA condition type to condition.
@@ -56,6 +58,12 @@ func (conditionsMap *vpaConditionsMap) AsList() []vpa_types.VerticalPodAutoscale
 	for _, condition := range *conditionsMap {
 		conditions = append(conditions, condition)
 	}
+
+	// Sort conditions by type to avoid elements floating on the list
+	sort.Slice(conditions, func(i, j int) bool {
+		return conditions[i].Type < conditions[j].Type
+	})
+
 	return conditions
 }
 
@@ -82,6 +90,12 @@ type Vpa struct {
 	UpdateMode *vpa_types.UpdateMode
 	// Created denotes timestamp of the original VPA object creation
 	Created time.Time
+	// CheckpointWritten indicates when last checkpoint for the VPA object was stored.
+	CheckpointWritten time.Time
+	// IsV1Beta1API is set to true if VPA object has labelSelector defined as in v1beta1 api.
+	IsV1Beta1API bool
+	// TargetRef points to the controller managing the set of pods.
+	TargetRef *autoscaling.CrossVersionObjectReference
 }
 
 // NewVpa returns a new Vpa with a given ID and pod selector. Doesn't set the
@@ -92,8 +106,9 @@ func NewVpa(id VpaID, selector labels.Selector, created time.Time) *Vpa {
 		PodSelector:                     selector,
 		aggregateContainerStates:        make(aggregateContainerStatesMap),
 		ContainersInitialAggregateState: make(ContainerNameToAggregateStateMap),
-		Created:    created,
-		Conditions: make(vpaConditionsMap),
+		Created:                         created,
+		Conditions:                      make(vpaConditionsMap),
+		IsV1Beta1API:                    false,
 	}
 	return vpa
 }

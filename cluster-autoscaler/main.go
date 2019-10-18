@@ -30,8 +30,6 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	apiserverconfig "k8s.io/apiserver/pkg/apis/config"
-	kube_flag "k8s.io/apiserver/pkg/util/flag"
 	cloudBuilder "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/builder"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/core"
@@ -48,11 +46,13 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	kube_flag "k8s.io/component-base/cli/flag"
+	componentbaseconfig "k8s.io/component-base/config"
 	"k8s.io/kubernetes/pkg/client/leaderelectionconfig"
 
-	"github.com/golang/glog"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/pflag"
+	"k8s.io/klog"
 )
 
 // MultiStringFlag is a flag for passing multiple parameters using same flag
@@ -99,7 +99,7 @@ var (
 		"Maximum number of non empty nodes considered in one iteration as candidates for scale down with drain."+
 			"Lower value means better CA responsiveness but possible slower scale down latency."+
 			"Higher value can affect CA performance with big clusters (hundreds of nodes)."+
-			"Set to non posistive value to turn this heuristic off - CA will not limit the number of nodes it considers.")
+			"Set to non positive value to turn this heuristic off - CA will not limit the number of nodes it considers.")
 	scaleDownCandidatesPoolRatio = flag.Float64("scale-down-candidates-pool-ratio", 0.1,
 		"A ratio of nodes that are considered as additional non empty candidates for"+
 			"scale down when some candidates from previous iteration are no longer valid."+
@@ -118,6 +118,8 @@ var (
 	gpuTotal          = multiStringFlag("gpu-total", "Minimum and maximum number of different GPUs in cluster, in the format <gpu_type>:<min>:<max>. Cluster autoscaler will not scale the cluster beyond these numbers. Can be passed multiple times. CURRENTLY THIS FLAG ONLY WORKS ON GKE.")
 	cloudProviderFlag = flag.String("cloud-provider", cloudBuilder.DefaultCloudProvider,
 		"Cloud provider type. Available values: ["+strings.Join(cloudBuilder.AvailableCloudProviders, ",")+"]")
+	maxBulkSoftTaintCount      = flag.Int("max-bulk-soft-taint-count", 10, "Maximum number of nodes that can be tainted/untainted PreferNoSchedule at the same time. Set to 0 to turn off such tainting.")
+	maxBulkSoftTaintTime       = flag.Duration("max-bulk-soft-taint-time", 3*time.Second, "Maximum duration of tainting/untainting nodes as PreferNoSchedule at the same time.")
 	maxEmptyBulkDeleteFlag     = flag.Int("max-empty-bulk-delete", 10, "Maximum number of empty nodes that can be deleted at the same time.")
 	maxGracefulTerminationFlag = flag.Int("max-graceful-termination-sec", 10*60, "Maximum number of seconds CA waits for pod termination when trying to scale down a node.")
 	maxTotalUnreadyPercentage  = flag.Float64("max-total-unready-percentage", 45, "Maximum percentage of unready nodes in the cluster.  After this is exceeded, CA halts operations")
@@ -140,6 +142,11 @@ var (
 	expanderFlag = flag.String("expander", expander.RandomExpanderName,
 		"Type of node group expander to be used in scale up. Available values: ["+strings.Join(expander.AvailableExpanders, ",")+"]")
 
+	ignoreDaemonSetsUtilization = flag.Bool("ignore-daemonsets-utilization", false,
+		"Should CA ignore DaemonSet pods when calculating resource utilization for scaling down")
+	ignoreMirrorPodsUtilization = flag.Bool("ignore-mirror-pods-utilization", false,
+		"Should CA ignore Mirror pods when calculating resource utilization for scaling down")
+
 	writeStatusConfigMapFlag         = flag.Bool("write-status-configmap", true, "Should CA write status information to a configmap")
 	maxInactivityTimeFlag            = flag.Duration("max-inactivity", 10*time.Minute, "Maximum time from last recorded autoscaler activity before automatic restart")
 	maxFailingTimeFlag               = flag.Duration("max-failing-time", 15*time.Minute, "Maximum time from last recorded successful autoscaler run before automatic restart")
@@ -147,9 +154,14 @@ var (
 	nodeAutoprovisioningEnabled      = flag.Bool("node-autoprovisioning-enabled", false, "Should CA autoprovision node groups when needed")
 	maxAutoprovisionedNodeGroupCount = flag.Int("max-autoprovisioned-node-group-count", 15, "The maximum number of autoprovisioned groups in the cluster.")
 
-	unremovableNodeRecheckTimeout    = flag.Duration("unremovable-node-recheck-timeout", 5*time.Minute, "The timeout before we check again a node that couldn't be removed before")
-	expendablePodsPriorityCutoff     = flag.Int("expendable-pods-priority-cutoff", -10, "Pods with priority below cutoff will be expendable. They can be killed without any consideration during scale down and they don't cause scale up. Pods with null priority (PodPriority disabled) are non expendable.")
-	regional                         = flag.Bool("regional", false, "Cluster is regional.")
+	unremovableNodeRecheckTimeout       = flag.Duration("unremovable-node-recheck-timeout", 5*time.Minute, "The timeout before we check again a node that couldn't be removed before")
+	expendablePodsPriorityCutoff        = flag.Int("expendable-pods-priority-cutoff", -10, "Pods with priority below cutoff will be expendable. They can be killed without any consideration during scale down and they don't cause scale up. Pods with null priority (PodPriority disabled) are non expendable.")
+	regional                            = flag.Bool("regional", false, "Cluster is regional.")
+	newPodScaleUpDelay                  = flag.Duration("new-pod-scale-up-delay", 0*time.Second, "Pods less than this old will not be considered for scale-up.")
+	filterOutSchedulablePodsUsesPacking = flag.Bool("filter-out-schedulable-pods-uses-packing", true,
+		"Filtering out schedulable pods before CA scale up by trying to pack the schedulable pods on free capacity on existing nodes."+
+			"Setting it to false employs a more lenient filtering approach that does not try to pack the pods on the nodes."+
+			"Pods with nominatedNodeName set are always filtered out.")
 	scaleUpTemplateFromCloudProvider = flag.Bool("scale-up-cloud-provider-template", false,
 		"Should CA build the template nodes using up-to-date cloud provider configuration instead of a random existing node.")
 )
@@ -157,80 +169,86 @@ var (
 func createAutoscalingOptions() config.AutoscalingOptions {
 	minCoresTotal, maxCoresTotal, err := parseMinMaxFlag(*coresTotal)
 	if err != nil {
-		glog.Fatalf("Failed to parse flags: %v", err)
+		klog.Fatalf("Failed to parse flags: %v", err)
 	}
 	minMemoryTotal, maxMemoryTotal, err := parseMinMaxFlag(*memoryTotal)
 	if err != nil {
-		glog.Fatalf("Failed to parse flags: %v", err)
+		klog.Fatalf("Failed to parse flags: %v", err)
 	}
 	// Convert memory limits to bytes.
-	minMemoryTotal = minMemoryTotal * units.Gigabyte
-	maxMemoryTotal = maxMemoryTotal * units.Gigabyte
+	minMemoryTotal = minMemoryTotal * units.GiB
+	maxMemoryTotal = maxMemoryTotal * units.GiB
 
 	parsedGpuTotal, err := parseMultipleGpuLimits(*gpuTotal)
 	if err != nil {
-		glog.Fatalf("Failed to parse flags: %v", err)
+		klog.Fatalf("Failed to parse flags: %v", err)
 	}
 
 	return config.AutoscalingOptions{
-		CloudConfig:                      *cloudConfig,
-		CloudProviderName:                *cloudProviderFlag,
-		NodeGroupAutoDiscovery:           *nodeGroupAutoDiscoveryFlag,
-		MaxTotalUnreadyPercentage:        *maxTotalUnreadyPercentage,
-		OkTotalUnreadyCount:              *okTotalUnreadyCount,
-		EstimatorName:                    *estimatorFlag,
-		ExpanderName:                     *expanderFlag,
-		MaxEmptyBulkDelete:               *maxEmptyBulkDeleteFlag,
-		MaxGracefulTerminationSec:        *maxGracefulTerminationFlag,
-		MaxNodeProvisionTime:             *maxNodeProvisionTime,
-		MaxNodesTotal:                    *maxNodesTotal,
-		MaxCoresTotal:                    maxCoresTotal,
-		MinCoresTotal:                    minCoresTotal,
-		MaxMemoryTotal:                   maxMemoryTotal,
-		MinMemoryTotal:                   minMemoryTotal,
-		GpuTotal:                         parsedGpuTotal,
-		NodeGroups:                       *nodeGroupsFlag,
-		ScaleDownDelayAfterAdd:           *scaleDownDelayAfterAdd,
-		ScaleDownDelayAfterDelete:        *scaleDownDelayAfterDelete,
-		ScaleDownDelayAfterFailure:       *scaleDownDelayAfterFailure,
-		ScaleDownEnabled:                 *scaleDownEnabled,
-		ScaleDownUnneededTime:            *scaleDownUnneededTime,
-		ScaleDownUnreadyTime:             *scaleDownUnreadyTime,
-		ScaleDownUtilizationThreshold:    *scaleDownUtilizationThreshold,
-		ScaleDownNonEmptyCandidatesCount: *scaleDownNonEmptyCandidatesCount,
-		ScaleDownCandidatesPoolRatio:     *scaleDownCandidatesPoolRatio,
-		ScaleDownCandidatesPoolMinCount:  *scaleDownCandidatesPoolMinCount,
-		WriteStatusConfigMap:             *writeStatusConfigMapFlag,
-		BalanceSimilarNodeGroups:         *balanceSimilarNodeGroupsFlag,
-		ConfigNamespace:                  *namespace,
-		ClusterName:                      *clusterName,
-		NodeAutoprovisioningEnabled:      *nodeAutoprovisioningEnabled,
-		MaxAutoprovisionedNodeGroupCount: *maxAutoprovisionedNodeGroupCount,
-		UnremovableNodeRecheckTimeout:    *unremovableNodeRecheckTimeout,
-		ExpendablePodsPriorityCutoff:     *expendablePodsPriorityCutoff,
-		Regional:                         *regional,
-		ScaleUpTemplateFromCloudProvider: *scaleUpTemplateFromCloudProvider,
+		CloudConfig:                         *cloudConfig,
+		CloudProviderName:                   *cloudProviderFlag,
+		NodeGroupAutoDiscovery:              *nodeGroupAutoDiscoveryFlag,
+		MaxTotalUnreadyPercentage:           *maxTotalUnreadyPercentage,
+		OkTotalUnreadyCount:                 *okTotalUnreadyCount,
+		EstimatorName:                       *estimatorFlag,
+		ExpanderName:                        *expanderFlag,
+		IgnoreDaemonSetsUtilization:         *ignoreDaemonSetsUtilization,
+		IgnoreMirrorPodsUtilization:         *ignoreMirrorPodsUtilization,
+		MaxBulkSoftTaintCount:               *maxBulkSoftTaintCount,
+		MaxBulkSoftTaintTime:                *maxBulkSoftTaintTime,
+		MaxEmptyBulkDelete:                  *maxEmptyBulkDeleteFlag,
+		MaxGracefulTerminationSec:           *maxGracefulTerminationFlag,
+		MaxNodeProvisionTime:                *maxNodeProvisionTime,
+		MaxNodesTotal:                       *maxNodesTotal,
+		MaxCoresTotal:                       maxCoresTotal,
+		MinCoresTotal:                       minCoresTotal,
+		MaxMemoryTotal:                      maxMemoryTotal,
+		MinMemoryTotal:                      minMemoryTotal,
+		GpuTotal:                            parsedGpuTotal,
+		NodeGroups:                          *nodeGroupsFlag,
+		ScaleDownDelayAfterAdd:              *scaleDownDelayAfterAdd,
+		ScaleDownDelayAfterDelete:           *scaleDownDelayAfterDelete,
+		ScaleDownDelayAfterFailure:          *scaleDownDelayAfterFailure,
+		ScaleDownEnabled:                    *scaleDownEnabled,
+		ScaleDownUnneededTime:               *scaleDownUnneededTime,
+		ScaleDownUnreadyTime:                *scaleDownUnreadyTime,
+		ScaleDownUtilizationThreshold:       *scaleDownUtilizationThreshold,
+		ScaleDownNonEmptyCandidatesCount:    *scaleDownNonEmptyCandidatesCount,
+		ScaleDownCandidatesPoolRatio:        *scaleDownCandidatesPoolRatio,
+		ScaleDownCandidatesPoolMinCount:     *scaleDownCandidatesPoolMinCount,
+		WriteStatusConfigMap:                *writeStatusConfigMapFlag,
+		BalanceSimilarNodeGroups:            *balanceSimilarNodeGroupsFlag,
+		ConfigNamespace:                     *namespace,
+		ClusterName:                         *clusterName,
+		NodeAutoprovisioningEnabled:         *nodeAutoprovisioningEnabled,
+		MaxAutoprovisionedNodeGroupCount:    *maxAutoprovisionedNodeGroupCount,
+		UnremovableNodeRecheckTimeout:       *unremovableNodeRecheckTimeout,
+		ExpendablePodsPriorityCutoff:        *expendablePodsPriorityCutoff,
+		Regional:                            *regional,
+		NewPodScaleUpDelay:                  *newPodScaleUpDelay,
+		FilterOutSchedulablePodsUsesPacking: *filterOutSchedulablePodsUsesPacking,
+		ScaleUpTemplateFromCloudProvider:    *scaleUpTemplateFromCloudProvider,
 	}
 }
 
 func getKubeConfig() *rest.Config {
 	if *kubeConfigFile != "" {
-		glog.V(1).Infof("Using kubeconfig file: %s", *kubeConfigFile)
+		klog.V(1).Infof("Using kubeconfig file: %s", *kubeConfigFile)
 		// use the current context in kubeconfig
 		config, err := clientcmd.BuildConfigFromFlags("", *kubeConfigFile)
 		if err != nil {
-			glog.Fatalf("Failed to build config: %v", err)
+			klog.Fatalf("Failed to build config: %v", err)
 		}
 		return config
 	}
 	url, err := url.Parse(*kubernetes)
 	if err != nil {
-		glog.Fatalf("Failed to parse Kubernetes url: %v", err)
+		klog.Fatalf("Failed to parse Kubernetes url: %v", err)
 	}
 
 	kubeConfig, err := config.GetKubeClientConfig(url)
 	if err != nil {
-		glog.Fatalf("Failed to build Kubernetes client configuration: %v", err)
+		klog.Fatalf("Failed to build Kubernetes client configuration: %v", err)
 	}
 
 	return kubeConfig
@@ -243,14 +261,14 @@ func createKubeClient(kubeConfig *rest.Config) kube_client.Interface {
 func registerSignalHandlers(autoscaler core.Autoscaler) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGQUIT)
-	glog.V(1).Info("Registered cleanup signal handler")
+	klog.V(1).Info("Registered cleanup signal handler")
 
 	go func() {
 		<-sigs
-		glog.V(1).Info("Received signal, attempting cleanup")
+		klog.V(1).Info("Received signal, attempting cleanup")
 		autoscaler.ExitCleanUp()
-		glog.V(1).Info("Cleaned up, exiting...")
-		glog.Flush()
+		klog.V(1).Info("Cleaned up, exiting...")
+		klog.Flush()
 		os.Exit(0)
 	}()
 }
@@ -259,7 +277,7 @@ func buildAutoscaler() (core.Autoscaler, error) {
 	// Create basic config from flags.
 	autoscalingOptions := createAutoscalingOptions()
 	kubeClient := createKubeClient(getKubeConfig())
-
+	eventsKubeClient := createKubeClient(getKubeConfig())
 	processors := ca_processors.DefaultProcessors()
 	if autoscalingOptions.CloudProviderName == "gke" {
 		processors.NodeGroupSetProcessor = &nodegroupset.BalancingNodeGroupSetProcessor{
@@ -269,6 +287,7 @@ func buildAutoscaler() (core.Autoscaler, error) {
 	opts := core.AutoscalerOptions{
 		AutoscalingOptions: autoscalingOptions,
 		KubeClient:         kubeClient,
+		EventsKubeClient:   eventsKubeClient,
 		Processors:         processors,
 	}
 
@@ -284,7 +303,7 @@ func run(healthCheck *metrics.HealthCheck) {
 
 	autoscaler, err := buildAutoscaler()
 	if err != nil {
-		glog.Fatalf("Failed to create autoscaler: %v", err)
+		klog.Fatalf("Failed to create autoscaler: %v", err)
 	}
 
 	// Register signal handlers for graceful shutdown.
@@ -316,6 +335,8 @@ func run(healthCheck *metrics.HealthCheck) {
 }
 
 func main() {
+	klog.InitFlags(nil)
+
 	leaderElection := defaultLeaderElectionConfiguration()
 	leaderElection.LeaderElect = true
 
@@ -323,23 +344,13 @@ func main() {
 	kube_flag.InitFlags()
 	healthCheck := metrics.NewHealthCheck(*maxInactivityTimeFlag, *maxFailingTimeFlag)
 
-	glog.V(1).Infof("Cluster Autoscaler %s", ClusterAutoscalerVersion)
-
-	correctEstimator := false
-	for _, availableEstimator := range estimator.AvailableEstimators {
-		if *estimatorFlag == availableEstimator {
-			correctEstimator = true
-		}
-	}
-	if !correctEstimator {
-		glog.Fatalf("Unrecognized estimator: %v", *estimatorFlag)
-	}
+	klog.V(1).Infof("Cluster Autoscaler %s", ClusterAutoscalerVersion)
 
 	go func() {
 		http.Handle("/metrics", prometheus.Handler())
 		http.Handle("/health-check", healthCheck)
 		err := http.ListenAndServe(*address, nil)
-		glog.Fatalf("Failed to start metrics: %v", err)
+		klog.Fatalf("Failed to start metrics: %v", err)
 	}()
 
 	if !leaderElection.LeaderElect {
@@ -347,7 +358,7 @@ func main() {
 	} else {
 		id, err := os.Hostname()
 		if err != nil {
-			glog.Fatalf("Unable to get hostname: %v", err)
+			klog.Fatalf("Unable to get hostname: %v", err)
 		}
 
 		kubeClient := createKubeClient(getKubeConfig())
@@ -355,7 +366,7 @@ func main() {
 		// Validate that the client is ok.
 		_, err = kubeClient.CoreV1().Nodes().List(metav1.ListOptions{})
 		if err != nil {
-			glog.Fatalf("Failed to get nodes from apiserver: %v", err)
+			klog.Fatalf("Failed to get nodes from apiserver: %v", err)
 		}
 
 		lock, err := resourcelock.New(
@@ -363,13 +374,14 @@ func main() {
 			*namespace,
 			"cluster-autoscaler",
 			kubeClient.CoreV1(),
+			kubeClient.CoordinationV1(),
 			resourcelock.ResourceLockConfig{
 				Identity:      id,
 				EventRecorder: kube_util.CreateEventRecorder(kubeClient),
 			},
 		)
 		if err != nil {
-			glog.Fatalf("Unable to create leader election lock: %v", err)
+			klog.Fatalf("Unable to create leader election lock: %v", err)
 		}
 
 		leaderelection.RunOrDie(ctx.TODO(), leaderelection.LeaderElectionConfig{
@@ -384,15 +396,15 @@ func main() {
 					run(healthCheck)
 				},
 				OnStoppedLeading: func() {
-					glog.Fatalf("lost master")
+					klog.Fatalf("lost master")
 				},
 			},
 		})
 	}
 }
 
-func defaultLeaderElectionConfiguration() apiserverconfig.LeaderElectionConfiguration {
-	return apiserverconfig.LeaderElectionConfiguration{
+func defaultLeaderElectionConfiguration() componentbaseconfig.LeaderElectionConfiguration {
+	return componentbaseconfig.LeaderElectionConfiguration{
 		LeaderElect:   false,
 		LeaseDuration: metav1.Duration{Duration: defaultLeaseDuration},
 		RenewDeadline: metav1.Duration{Duration: defaultRenewDeadline},
@@ -460,25 +472,25 @@ func parseMultipleGpuLimits(flags MultiStringFlag) ([]config.GpuLimits, error) {
 func parseSingleGpuLimit(limits string) (config.GpuLimits, error) {
 	parts := strings.Split(limits, ":")
 	if len(parts) != 3 {
-		return config.GpuLimits{}, fmt.Errorf("Incorrect gpu limit specification: %v", limits)
+		return config.GpuLimits{}, fmt.Errorf("incorrect gpu limit specification: %v", limits)
 	}
 	gpuType := parts[0]
 	minVal, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
-		return config.GpuLimits{}, fmt.Errorf("Incorrect gpu limit - min is not integer: %v", limits)
+		return config.GpuLimits{}, fmt.Errorf("incorrect gpu limit - min is not integer: %v", limits)
 	}
 	maxVal, err := strconv.ParseInt(parts[2], 10, 64)
 	if err != nil {
-		return config.GpuLimits{}, fmt.Errorf("Incorrect gpu limit - max is not integer: %v", limits)
+		return config.GpuLimits{}, fmt.Errorf("incorrect gpu limit - max is not integer: %v", limits)
 	}
 	if minVal < 0 {
-		return config.GpuLimits{}, fmt.Errorf("Incorrect gpu limit - min is less than 0; %v", limits)
+		return config.GpuLimits{}, fmt.Errorf("incorrect gpu limit - min is less than 0; %v", limits)
 	}
 	if maxVal < 0 {
-		return config.GpuLimits{}, fmt.Errorf("Incorrect gpu limit - max is less than 0; %v", limits)
+		return config.GpuLimits{}, fmt.Errorf("incorrect gpu limit - max is less than 0; %v", limits)
 	}
 	if minVal > maxVal {
-		return config.GpuLimits{}, fmt.Errorf("Incorrect gpu limit - min is greater than max; %v", limits)
+		return config.GpuLimits{}, fmt.Errorf("incorrect gpu limit - min is greater than max; %v", limits)
 	}
 	parsedGpuLimits := config.GpuLimits{
 		GpuType: gpuType,

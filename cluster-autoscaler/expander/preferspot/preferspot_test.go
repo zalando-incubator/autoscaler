@@ -24,14 +24,14 @@ import (
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
 func TestPreferSpot(t *testing.T) {
 	provider := testprovider.NewTestCloudProvider(nil, nil)
 
 	groupOptions := make(map[string]expander.Option)
-	nodeInfos := make(map[string]*schedulercache.NodeInfo)
+	nodeInfos := make(map[string]*schedulernodeinfo.NodeInfo)
 
 	for ngId, spot := range map[string]bool{
 		"ondemand1": false,
@@ -45,7 +45,7 @@ func TestPreferSpot(t *testing.T) {
 		provider.AddNode(ngId, node)
 
 		nodeGroup, _ := provider.NodeGroupForNode(node)
-		nodeInfo := schedulercache.NewNodeInfo()
+		nodeInfo := schedulernodeinfo.NewNodeInfo()
 		_ = nodeInfo.SetNode(node)
 
 		groupOptions[ngId] = expander.Option{

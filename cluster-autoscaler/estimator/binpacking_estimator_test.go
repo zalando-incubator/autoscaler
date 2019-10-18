@@ -24,7 +24,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/units"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -33,7 +34,7 @@ func TestBinpackingEstimate(t *testing.T) {
 	estimator := NewBinpackingNodeEstimator(simulator.NewTestPredicateChecker())
 
 	cpuPerPod := int64(350)
-	memoryPerPod := int64(1000 * 1024 * 1024)
+	memoryPerPod := int64(1000 * units.MiB)
 	pod := makePod(cpuPerPod, memoryPerPod)
 
 	pods := make([]*apiv1.Pod, 0)
@@ -52,9 +53,9 @@ func TestBinpackingEstimate(t *testing.T) {
 	node.Status.Allocatable = node.Status.Capacity
 	SetNodeReadyState(node, true, time.Time{})
 
-	nodeInfo := schedulercache.NewNodeInfo()
+	nodeInfo := schedulernodeinfo.NewNodeInfo()
 	nodeInfo.SetNode(node)
-	estimate := estimator.Estimate(pods, nodeInfo, []*schedulercache.NodeInfo{})
+	estimate := estimator.Estimate(pods, nodeInfo, []*schedulernodeinfo.NodeInfo{})
 	assert.Equal(t, 5, estimate)
 }
 
@@ -62,7 +63,7 @@ func TestBinpackingEstimateComingNodes(t *testing.T) {
 	estimator := NewBinpackingNodeEstimator(simulator.NewTestPredicateChecker())
 
 	cpuPerPod := int64(350)
-	memoryPerPod := int64(1000 * 1024 * 1024)
+	memoryPerPod := int64(1000 * units.MiB)
 	pod := makePod(cpuPerPod, memoryPerPod)
 
 	pods := make([]*apiv1.Pod, 0)
@@ -81,9 +82,9 @@ func TestBinpackingEstimateComingNodes(t *testing.T) {
 	node.Status.Allocatable = node.Status.Capacity
 	SetNodeReadyState(node, true, time.Time{})
 
-	nodeInfo := schedulercache.NewNodeInfo()
+	nodeInfo := schedulernodeinfo.NewNodeInfo()
 	nodeInfo.SetNode(node)
-	estimate := estimator.Estimate(pods, nodeInfo, []*schedulercache.NodeInfo{nodeInfo, nodeInfo})
+	estimate := estimator.Estimate(pods, nodeInfo, []*schedulernodeinfo.NodeInfo{nodeInfo, nodeInfo})
 	// 5 - 2 nodes that are coming.
 	assert.Equal(t, 3, estimate)
 }
@@ -92,7 +93,7 @@ func TestBinpackingEstimateWithPorts(t *testing.T) {
 	estimator := NewBinpackingNodeEstimator(simulator.NewTestPredicateChecker())
 
 	cpuPerPod := int64(200)
-	memoryPerPod := int64(1000 * 1024 * 1024)
+	memoryPerPod := int64(1000 * units.MiB)
 	pod := makePod(cpuPerPod, memoryPerPod)
 	pod.Spec.Containers[0].Ports = []apiv1.ContainerPort{
 		{
@@ -115,8 +116,8 @@ func TestBinpackingEstimateWithPorts(t *testing.T) {
 	node.Status.Allocatable = node.Status.Capacity
 	SetNodeReadyState(node, true, time.Time{})
 
-	nodeInfo := schedulercache.NewNodeInfo()
+	nodeInfo := schedulernodeinfo.NewNodeInfo()
 	nodeInfo.SetNode(node)
-	estimate := estimator.Estimate(pods, nodeInfo, []*schedulercache.NodeInfo{})
+	estimate := estimator.Estimate(pods, nodeInfo, []*schedulernodeinfo.NodeInfo{})
 	assert.Equal(t, 8, estimate)
 }

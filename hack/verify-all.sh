@@ -23,12 +23,13 @@ source "${KUBE_ROOT}/hack/kube-env.sh"
 ${KUBE_ROOT}/hack/check-go-version.sh
 
 SILENT=true
+EXCLUDE=${EXCLUDE:-} # nothing excluded by default
 
 function is-excluded {
+  if [[ $1 -ef ${BASH_SOURCE} ]]; then
+    return
+  fi
   for e in $EXCLUDE; do
-    if [[ $1 -ef ${BASH_SOURCE} ]]; then
-      return
-    fi
     if [[ $1 -ef "$KUBE_ROOT/hack/$e" ]]; then
       return
     fi
@@ -52,8 +53,6 @@ if $SILENT ; then
   echo "Running in the silent mode, run with -v if you want to see script logs."
 fi
 
-EXCLUDE="verify-godeps.sh"
-
 ret=0
 for t in `ls $KUBE_ROOT/hack/verify-*.sh`
 do
@@ -61,16 +60,16 @@ do
     echo "Skipping $t"
     continue
   fi
-  if $SILENT ; then
+  if ! $SILENT ; then
     echo -e "Verifying $t"
-    if bash "$t" &> /dev/null; then
+    if bash "$t"; then
       echo -e "${color_green}SUCCESS${color_norm}"
     else
       echo -e "${color_red}FAILED${color_norm}"
       ret=1
     fi
   else
-    bash "$t" || ret=1
+    bash "$t" &> /dev/null || ret=1
   fi
 done
 

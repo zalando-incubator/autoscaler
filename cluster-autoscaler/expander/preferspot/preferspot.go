@@ -17,10 +17,11 @@ limitations under the License.
 package preferspot
 
 import (
-	"github.com/golang/glog"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/random"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+
+	"k8s.io/klog"
 )
 
 const (
@@ -40,12 +41,12 @@ func NewStrategy() expander.Strategy {
 }
 
 // BestOption selects the expansion option based on whether a spot group exists
-func (ps *preferspot) BestOption(options []expander.Option, nodeInfo map[string]*schedulercache.NodeInfo) *expander.Option {
+func (ps *preferspot) BestOption(options []expander.Option, nodeInfo map[string]*schedulernodeinfo.NodeInfo) *expander.Option {
 	var spotOptions []expander.Option
 	for _, option := range options {
 		info, found := nodeInfo[option.NodeGroup.Id()]
 		if !found {
-			glog.Warningf("No node info for %s", option.NodeGroup.Id())
+			klog.Warningf("No node info for %s", option.NodeGroup.Id())
 			continue
 		}
 		if info.Node().Labels[spotLabel] == "true" {

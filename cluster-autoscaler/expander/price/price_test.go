@@ -22,11 +22,12 @@ import (
 	"time"
 
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/units"
 
 	apiv1 "k8s.io/api/core/v1"
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -75,13 +76,13 @@ func TestPriceExpander(t *testing.T) {
 	ng2, _ := provider.NodeGroupForNode(n2)
 	ng3, _ := provider.NewNodeGroup("MT1", nil, nil, nil, nil)
 
-	ni1 := schedulercache.NewNodeInfo()
+	ni1 := schedulernodeinfo.NewNodeInfo()
 	ni1.SetNode(n1)
-	ni2 := schedulercache.NewNodeInfo()
+	ni2 := schedulernodeinfo.NewNodeInfo()
 	ni2.SetNode(n2)
-	ni3 := schedulercache.NewNodeInfo()
+	ni3 := schedulernodeinfo.NewNodeInfo()
 	ni3.SetNode(n3)
-	nodeInfosForGroups := map[string]*schedulercache.NodeInfo{
+	nodeInfosForGroups := map[string]*schedulernodeinfo.NodeInfo{
 		"ng1": ni1, "ng2": ni2,
 	}
 
@@ -115,7 +116,7 @@ func TestPriceExpander(t *testing.T) {
 			},
 		},
 		&testPreferredNodeProvider{
-			preferred: buildNode(2000, 1024*1024*1024),
+			preferred: buildNode(2000, units.GiB),
 		},
 		SimpleNodeUnfitness,
 	).BestOption(options, nodeInfosForGroups).Debug, "ng1")
@@ -134,7 +135,7 @@ func TestPriceExpander(t *testing.T) {
 			},
 		},
 		&testPreferredNodeProvider{
-			preferred: buildNode(4000, 1024*1024*1024),
+			preferred: buildNode(4000, units.GiB),
 		},
 		SimpleNodeUnfitness,
 	).BestOption(options, nodeInfosForGroups).Debug, "ng2")
@@ -169,7 +170,7 @@ func TestPriceExpander(t *testing.T) {
 			},
 		},
 		&testPreferredNodeProvider{
-			preferred: buildNode(4000, 1024*1024*1024),
+			preferred: buildNode(4000, units.GiB),
 		},
 		SimpleNodeUnfitness,
 	).BestOption(options1b, nodeInfosForGroups).Debug, "ng1")
@@ -188,7 +189,7 @@ func TestPriceExpander(t *testing.T) {
 			},
 		},
 		&testPreferredNodeProvider{
-			preferred: buildNode(2000, 1024*1024*1024),
+			preferred: buildNode(2000, units.GiB),
 		},
 		SimpleNodeUnfitness,
 	).BestOption(options, nodeInfosForGroups).Debug, "ng2")
@@ -224,7 +225,7 @@ func TestPriceExpander(t *testing.T) {
 			},
 		},
 		&testPreferredNodeProvider{
-			preferred: buildNode(2000, 1024*1024*1024),
+			preferred: buildNode(2000, units.GiB),
 		},
 		SimpleNodeUnfitness,
 	).BestOption(options2, nodeInfosForGroups).Debug, "ng2")
@@ -236,7 +237,7 @@ func TestPriceExpander(t *testing.T) {
 			nodePrice: map[string]float64{},
 		},
 		&testPreferredNodeProvider{
-			preferred: buildNode(2000, 1024*1024*1024),
+			preferred: buildNode(2000, units.GiB),
 		},
 		SimpleNodeUnfitness,
 	).BestOption(options2, nodeInfosForGroups))
@@ -280,7 +281,7 @@ func TestPriceExpander(t *testing.T) {
 			},
 		},
 		&testPreferredNodeProvider{
-			preferred: buildNode(2000, 1024*1024*1024),
+			preferred: buildNode(2000, units.GiB),
 		},
 		SimpleNodeUnfitness,
 	).BestOption(options3, nodeInfosForGroups).Debug, "ng2")
@@ -300,7 +301,7 @@ func TestPriceExpander(t *testing.T) {
 			},
 		},
 		&testPreferredNodeProvider{
-			preferred: buildNode(2000, 1024*1024*1024),
+			preferred: buildNode(2000, units.GiB),
 		},
 		SimpleNodeUnfitness,
 	).BestOption(options3, nodeInfosForGroups).Debug, "ng3")

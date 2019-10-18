@@ -23,19 +23,20 @@ import (
 	"math/rand"
 	"time"
 
+	"k8s.io/autoscaler/cluster-autoscaler/utils/drain"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/glogx"
+	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	scheduler_util "k8s.io/autoscaler/cluster-autoscaler/utils/scheduler"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/tpu"
+	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
 
 	apiv1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1beta1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	client "k8s.io/client-go/kubernetes"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 
-	"github.com/golang/glog"
+	"k8s.io/klog"
 )
 
 var (
@@ -57,10 +58,18 @@ type NodeToBeRemoved struct {
 	PodsToReschedule []*apiv1.Pod
 }
 
+// UtilizationInfo contains utilization information for a node.
+type UtilizationInfo struct {
+	CpuUtil float64
+	MemUtil float64
+	// Max(CpuUtil, MemUtil).
+	Utilization float64
+}
+
 // FindNodesToRemove finds nodes that can be removed. Returns also an information about good
 // rescheduling location for each of the pods.
 func FindNodesToRemove(candidates []*apiv1.Node, allNodes []*apiv1.Node, pods []*apiv1.Pod,
-	client client.Interface, predicateChecker *PredicateChecker, maxCount int,
+	listers kube_util.ListerRegistry, predicateChecker *PredicateChecker, maxCount int,
 	fastCheck bool, oldHints map[string]string, usageTracker *UsageTracker,
 	timestamp time.Time,
 	podDisruptionBudgets []*policyv1.PodDisruptionBudget,
@@ -78,7 +87,7 @@ func FindNodesToRemove(candidates []*apiv1.Node, allNodes []*apiv1.Node, pods []
 
 candidateloop:
 	for _, node := range candidates {
-		glog.V(2).Infof("%s: %s for removal", evaluationType, node.Name)
+		klog.V(2).Infof("%s: %s for removal", evaluationType, node.Name)
 
 		var podsToRemove []*apiv1.Pod
 		var err error
@@ -88,16 +97,16 @@ candidateloop:
 				podsToRemove, err = FastGetPodsToMove(nodeInfo, *skipNodesWithSystemPods, *skipNodesWithLocalStorage,
 					podDisruptionBudgets)
 			} else {
-				podsToRemove, err = DetailedGetPodsForMove(nodeInfo, *skipNodesWithSystemPods, *skipNodesWithLocalStorage, client, int32(*minReplicaCount),
+				podsToRemove, err = DetailedGetPodsForMove(nodeInfo, *skipNodesWithSystemPods, *skipNodesWithLocalStorage, listers, int32(*minReplicaCount),
 					podDisruptionBudgets)
 			}
 			if err != nil {
-				glog.V(2).Infof("%s: node %s cannot be removed: %v", evaluationType, node.Name, err)
+				klog.V(2).Infof("%s: node %s cannot be removed: %v", evaluationType, node.Name, err)
 				unremovable = append(unremovable, node)
 				continue candidateloop
 			}
 		} else {
-			glog.V(2).Infof("%s: nodeInfo for %s not found", evaluationType, node.Name)
+			klog.V(2).Infof("%s: nodeInfo for %s not found", evaluationType, node.Name)
 			unremovable = append(unremovable, node)
 			continue candidateloop
 		}
@@ -109,12 +118,12 @@ candidateloop:
 				Node:             node,
 				PodsToReschedule: podsToRemove,
 			})
-			glog.V(2).Infof("%s: node %s may be removed", evaluationType, node.Name)
+			klog.V(2).Infof("%s: node %s may be removed", evaluationType, node.Name)
 			if len(result) >= maxCount {
 				break candidateloop
 			}
 		} else {
-			glog.V(2).Infof("%s: node %s is not suitable for removal: %v", evaluationType, node.Name, findProblems)
+			klog.V(2).Infof("%s: node %s is not suitable for removal: %v", evaluationType, node.Name, findProblems)
 			unremovable = append(unremovable, node)
 		}
 	}
@@ -141,29 +150,38 @@ func FindEmptyNodesToRemove(candidates []*apiv1.Node, pods []*apiv1.Pod) []*apiv
 }
 
 // CalculateUtilization calculates utilization of a node, defined as maximum of (cpu, memory) utilization.
-// Per resource utilization is the sum of requests for it divided by allocatable.
-func CalculateUtilization(node *apiv1.Node, nodeInfo *schedulercache.NodeInfo) (float64, error) {
-	cpu, err := calculateUtilizationOfResource(node, nodeInfo, apiv1.ResourceCPU)
+// Per resource utilization is the sum of requests for it divided by allocatable. It also returns the individual
+// cpu and memory utilization.
+func CalculateUtilization(node *apiv1.Node, nodeInfo *schedulernodeinfo.NodeInfo, skipDaemonSetPods, skipMirrorPods bool) (utilInfo UtilizationInfo, err error) {
+	cpu, err := calculateUtilizationOfResource(node, nodeInfo, apiv1.ResourceCPU, skipDaemonSetPods, skipMirrorPods)
 	if err != nil {
-		return 0, err
+		return UtilizationInfo{}, err
 	}
-	mem, err := calculateUtilizationOfResource(node, nodeInfo, apiv1.ResourceMemory)
+	mem, err := calculateUtilizationOfResource(node, nodeInfo, apiv1.ResourceMemory, skipDaemonSetPods, skipMirrorPods)
 	if err != nil {
-		return 0, err
+		return UtilizationInfo{}, err
 	}
-	return math.Max(cpu, mem), nil
+	return UtilizationInfo{CpuUtil: cpu, MemUtil: mem, Utilization: math.Max(cpu, mem)}, nil
 }
 
-func calculateUtilizationOfResource(node *apiv1.Node, nodeInfo *schedulercache.NodeInfo, resourceName apiv1.ResourceName) (float64, error) {
+func calculateUtilizationOfResource(node *apiv1.Node, nodeInfo *schedulernodeinfo.NodeInfo, resourceName apiv1.ResourceName, skipDaemonSetPods, skipMirrorPods bool) (float64, error) {
 	nodeAllocatable, found := node.Status.Allocatable[resourceName]
 	if !found {
-		return 0, fmt.Errorf("Failed to get %v from %s", resourceName, node.Name)
+		return 0, fmt.Errorf("failed to get %v from %s", resourceName, node.Name)
 	}
 	if nodeAllocatable.MilliValue() == 0 {
 		return 0, fmt.Errorf("%v is 0 at %s", resourceName, node.Name)
 	}
 	podsRequest := resource.MustParse("0")
 	for _, pod := range nodeInfo.Pods() {
+		// factor daemonset pods out of the utilization calculations
+		if skipDaemonSetPods && isDaemonSet(pod) {
+			continue
+		}
+		// factor mirror pods out of the utilization calculations
+		if skipMirrorPods && drain.IsMirrorPod(pod) {
+			continue
+		}
 		for _, container := range pod.Spec.Containers {
 			if resourceValue, found := container.Resources.Requests[resourceName]; found {
 				podsRequest.Add(resourceValue)
@@ -174,11 +192,11 @@ func calculateUtilizationOfResource(node *apiv1.Node, nodeInfo *schedulercache.N
 }
 
 // TODO: We don't need to pass list of nodes here as they are already available in nodeInfos.
-func findPlaceFor(removedNode string, pods []*apiv1.Pod, nodes []*apiv1.Node, nodeInfos map[string]*schedulercache.NodeInfo,
+func findPlaceFor(removedNode string, pods []*apiv1.Pod, nodes []*apiv1.Node, nodeInfos map[string]*schedulernodeinfo.NodeInfo,
 	predicateChecker *PredicateChecker, oldHints map[string]string, newHints map[string]string, usageTracker *UsageTracker,
 	timestamp time.Time) error {
 
-	newNodeInfos := make(map[string]*schedulercache.NodeInfo)
+	newNodeInfos := make(map[string]*schedulernodeinfo.NodeInfo)
 	for k, v := range nodeInfos {
 		newNodeInfos[k] = v
 	}
@@ -189,14 +207,14 @@ func findPlaceFor(removedNode string, pods []*apiv1.Pod, nodes []*apiv1.Node, no
 
 	loggingQuota := glogx.PodsLoggingQuota()
 
-	tryNodeForPod := func(nodename string, pod *apiv1.Pod, predicateMeta algorithm.PredicateMetadata) bool {
+	tryNodeForPod := func(nodename string, pod *apiv1.Pod, predicateMeta predicates.PredicateMetadata) bool {
 		nodeInfo, found := newNodeInfos[nodename]
 		if found {
 			if nodeInfo.Node() == nil {
 				// NodeInfo is generated based on pods. It is possible that node is removed from
 				// an api server faster than the pod that were running on them. In such a case
 				// we have to skip this nodeInfo. It should go away pretty soon.
-				glog.Warningf("No node in nodeInfo %s -> %v", nodename, nodeInfo)
+				klog.Warningf("No node in nodeInfo %s -> %v", nodename, nodeInfo)
 				return false
 			}
 			err := predicateChecker.CheckPredicates(pod, predicateMeta, nodeInfo)
@@ -204,10 +222,10 @@ func findPlaceFor(removedNode string, pods []*apiv1.Pod, nodes []*apiv1.Node, no
 				glogx.V(4).UpTo(loggingQuota).Infof("Evaluation %s for %s/%s -> %v", nodename, pod.Namespace, pod.Name, err.VerboseError())
 			} else {
 				// TODO(mwielgus): Optimize it.
-				glog.V(4).Infof("Pod %s/%s can be moved to %s", pod.Namespace, pod.Name, nodename)
+				klog.V(4).Infof("Pod %s/%s can be moved to %s", pod.Namespace, pod.Name, nodename)
 				podsOnNode := nodeInfo.Pods()
 				podsOnNode = append(podsOnNode, pod)
-				newNodeInfo := schedulercache.NewNodeInfo(podsOnNode...)
+				newNodeInfo := schedulernodeinfo.NewNodeInfo(podsOnNode...)
 				newNodeInfo.SetNode(nodeInfo.Node())
 				newNodeInfos[nodename] = newNodeInfo
 				newHints[podKey(pod)] = nodename
@@ -232,7 +250,7 @@ func findPlaceFor(removedNode string, pods []*apiv1.Pod, nodes []*apiv1.Node, no
 		predicateMeta := predicateChecker.GetPredicateMetadata(pod, newNodeInfos)
 		loggingQuota.Reset()
 
-		glog.V(5).Infof("Looking for place for %s/%s", pod.Namespace, pod.Name)
+		klog.V(5).Infof("Looking for place for %s/%s", pod.Namespace, pod.Name)
 
 		hintedNode, hasHint := oldHints[podKey(pod)]
 		if hasHint {
@@ -273,4 +291,13 @@ func shuffleNodes(nodes []*apiv1.Node) []*apiv1.Node {
 		result[i], result[j] = result[j], result[i]
 	}
 	return result
+}
+
+func isDaemonSet(pod *apiv1.Pod) bool {
+	for _, ownerReference := range pod.ObjectMeta.OwnerReferences {
+		if ownerReference.Kind == "DaemonSet" {
+			return true
+		}
+	}
+	return false
 }

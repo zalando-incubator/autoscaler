@@ -60,6 +60,10 @@ type AutoscalingOptions struct {
 	EstimatorName string
 	// ExpanderName sets the type of node group expander to be used in scale up
 	ExpanderName string
+	// IgnoreDaemonSetsUtilization is whether CA will ignore DaemonSet pods when calculating resource utilization for scaling down
+	IgnoreDaemonSetsUtilization bool
+	// IgnoreMirrorPodsUtilization is whether CA will ignore Mirror pods when calculating resource utilization for scaling down
+	IgnoreMirrorPodsUtilization bool
 	// MaxGracefulTerminationSec is maximum number of seconds scale down waits for pods to terminate before
 	// removing the node from cloud provider.
 	MaxGracefulTerminationSec int
@@ -115,6 +119,17 @@ type AutoscalingOptions struct {
 	ExpendablePodsPriorityCutoff int
 	// Regional tells whether the cluster is regional.
 	Regional bool
+	// Pods newer than this will not be considered as unschedulable for scale-up.
+	NewPodScaleUpDelay time.Duration
+	// MaxBulkSoftTaint sets the maximum number of nodes that can be (un)tainted PreferNoSchedule during single scaling down run.
+	// Value of 0 turns turn off such tainting.
+	MaxBulkSoftTaintCount int
+	// MaxBulkSoftTaintTime sets the maximum duration of single run of PreferNoSchedule tainting.
+	MaxBulkSoftTaintTime time.Duration
+	// Filtering out schedulable pods before CA scale up by trying to pack the schedulable pods on free capacity on existing nodes.
+	// Setting it to false employs a more lenient filtering approach that does not try to pack the pods on the nodes.
+	// Pods with nominatedNodeName set are always filtered out.
+	FilterOutSchedulablePodsUsesPacking bool
 	// ScaleUpTemplateFromCloudProvider tells if template node should be built from the up-to-date provider configuration (e.g. ASG launch configuration)
 	// instead of a random existing node.
 	ScaleUpTemplateFromCloudProvider bool

@@ -21,7 +21,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
-	"github.com/golang/glog"
+	"k8s.io/klog"
 )
 
 // autoScaling is the interface represents a specific aspect of the auto-scaling service provided by AWS SDK for use in CA
@@ -36,42 +36,61 @@ type autoScaling interface {
 // autoScalingWrapper provides several utility methods over the auto-scaling service provided by AWS SDK
 type autoScalingWrapper struct {
 	autoScaling
+	launchConfigurationInstanceTypeCache map[string]string
 }
 
 func (m autoScalingWrapper) getInstanceTypeByLCName(name string) (string, error) {
+	if instanceType, found := m.launchConfigurationInstanceTypeCache[name]; found {
+		return instanceType, nil
+	}
+
 	params := &autoscaling.DescribeLaunchConfigurationsInput{
 		LaunchConfigurationNames: []*string{aws.String(name)},
 		MaxRecords:               aws.Int64(1),
 	}
 	launchConfigurations, err := m.DescribeLaunchConfigurations(params)
 	if err != nil {
-		glog.V(4).Infof("Failed LaunchConfiguration info request for %s: %v", name, err)
+		klog.V(4).Infof("Failed LaunchConfiguration info request for %s: %v", name, err)
 		return "", err
 	}
 	if len(launchConfigurations.LaunchConfigurations) < 1 {
-		return "", fmt.Errorf("Unable to get first LaunchConfiguration for %s", name)
+		return "", fmt.Errorf("unable to get first LaunchConfiguration for %s", name)
 	}
 
-	return *launchConfigurations.LaunchConfigurations[0].InstanceType, nil
+	instanceType := *launchConfigurations.LaunchConfigurations[0].InstanceType
+	m.launchConfigurationInstanceTypeCache[name] = instanceType
+	return instanceType, nil
 }
 
 func (m *autoScalingWrapper) getAutoscalingGroupsByNames(names []string) ([]*autoscaling.Group, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}
-	input := &autoscaling.DescribeAutoScalingGroupsInput{
-		AutoScalingGroupNames: aws.StringSlice(names),
-		MaxRecords:            aws.Int64(maxRecordsReturnedByAPI),
-	}
+
 	asgs := make([]*autoscaling.Group, 0)
-	if err := m.DescribeAutoScalingGroupsPages(input, func(output *autoscaling.DescribeAutoScalingGroupsOutput, _ bool) bool {
-		asgs = append(asgs, output.AutoScalingGroups...)
-		// We return true while we want to be called with the next page of
-		// results, if any.
-		return true
-	}); err != nil {
-		return nil, err
+
+	// AWS only accepts up to 50 ASG names as input, describe them in batches
+	for i := 0; i < len(names); i += maxAsgNamesPerDescribe {
+		end := i + maxAsgNamesPerDescribe
+
+		if end > len(names) {
+			end = len(names)
+		}
+
+		input := &autoscaling.DescribeAutoScalingGroupsInput{
+			AutoScalingGroupNames: aws.StringSlice(names[i:end]),
+			MaxRecords:            aws.Int64(maxRecordsReturnedByAPI),
+		}
+		if err := m.DescribeAutoScalingGroupsPages(input, func(output *autoscaling.DescribeAutoScalingGroupsOutput, _ bool) bool {
+			asgs = append(asgs, output.AutoScalingGroups...)
+			// We return true while we want to be called with the next page of
+			// results, if any.
+			return true
+		}); err != nil {
+			return nil, err
+		}
 	}
+
 	return asgs, nil
 }
 

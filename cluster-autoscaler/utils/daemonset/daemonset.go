@@ -22,13 +22,13 @@ import (
 
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
 
+	appsv1 "k8s.io/api/apps/v1"
 	apiv1 "k8s.io/api/core/v1"
-	extensionsv1 "k8s.io/api/extensions/v1beta1"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
 // GetDaemonSetPodsForNode returns daemonset nodes for the given pod.
-func GetDaemonSetPodsForNode(nodeInfo *schedulercache.NodeInfo, daemonsets []*extensionsv1.DaemonSet, predicateChecker *simulator.PredicateChecker) []*apiv1.Pod {
+func GetDaemonSetPodsForNode(nodeInfo *schedulernodeinfo.NodeInfo, daemonsets []*appsv1.DaemonSet, predicateChecker *simulator.PredicateChecker) []*apiv1.Pod {
 	result := make([]*apiv1.Pod, 0)
 	for _, ds := range daemonsets {
 		pod := newPod(ds, nodeInfo.Node().Name)
@@ -58,7 +58,7 @@ func fixupContainers(spec *apiv1.PodSpec) *apiv1.PodSpec {
 	return newSpec
 }
 
-func newPod(ds *extensionsv1.DaemonSet, nodeName string) *apiv1.Pod {
+func newPod(ds *appsv1.DaemonSet, nodeName string) *apiv1.Pod {
 	podSpec := fixupContainers(&ds.Spec.Template.Spec)
 	newPod := &apiv1.Pod{Spec: *podSpec, ObjectMeta: ds.Spec.Template.ObjectMeta}
 	newPod.Namespace = ds.Namespace

@@ -18,9 +18,12 @@ package azure
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-04-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-10-01/compute"
+	"github.com/Azure/go-autorest/autorest"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestSplitBlobURI(t *testing.T) {
@@ -71,26 +74,33 @@ func TestK8sLinuxVMNameParts(t *testing.T) {
 }
 
 func TestWindowsVMNameParts(t *testing.T) {
-	expectedPoolPrefix := "38988"
-	expectedAcs := "k8s"
-	expectedPoolIndex := 903
-	expectedAgentIndex := 12
+	data := []struct {
+		VMName, expectedPoolPrefix, expectedOrch string
+		expectedPoolIndex, expectedAgentIndex    int
+	}{
+		{"38988k8s90312", "38988", "k8s", 3, 12},
+		{"4506k8s010", "4506", "k8s", 1, 0},
+		{"2314k8s03000001", "2314", "k8s", 3, 1},
+		{"2314k8s0310", "2314", "k8s", 3, 10},
+	}
 
-	poolPrefix, acs, poolIndex, agentIndex, err := windowsVMNameParts("38988k8s90312")
-	if poolPrefix != expectedPoolPrefix {
-		t.Fatalf("incorrect poolPrefix. expected=%s actual=%s", expectedPoolPrefix, poolPrefix)
-	}
-	if acs != expectedAcs {
-		t.Fatalf("incorrect acs string. expected=%s actual=%s", expectedAcs, acs)
-	}
-	if poolIndex != expectedPoolIndex {
-		t.Fatalf("incorrect poolIndex. expected=%d actual=%d", expectedPoolIndex, poolIndex)
-	}
-	if agentIndex != expectedAgentIndex {
-		t.Fatalf("incorrect agentIndex. expected=%d actual=%d", expectedAgentIndex, agentIndex)
-	}
-	if err != nil {
-		t.Fatalf("unexpected error: %s", err)
+	for _, d := range data {
+		poolPrefix, orch, poolIndex, agentIndex, err := windowsVMNameParts(d.VMName)
+		if poolPrefix != d.expectedPoolPrefix {
+			t.Fatalf("incorrect poolPrefix. expected=%s actual=%s", d.expectedPoolPrefix, poolPrefix)
+		}
+		if orch != d.expectedOrch {
+			t.Fatalf("incorrect acs string. expected=%s actual=%s", d.expectedOrch, orch)
+		}
+		if poolIndex != d.expectedPoolIndex {
+			t.Fatalf("incorrect poolIndex. expected=%d actual=%d", d.expectedPoolIndex, poolIndex)
+		}
+		if agentIndex != d.expectedAgentIndex {
+			t.Fatalf("incorrect agentIndex. expected=%d actual=%d", d.expectedAgentIndex, agentIndex)
+		}
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
 	}
 }
 
@@ -115,5 +125,160 @@ func TestGetVMNameIndexWindows(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("unexpected error: %s", err)
+	}
+}
+
+func TestIsSuccessResponse(t *testing.T) {
+	tests := []struct {
+		name          string
+		resp          *http.Response
+		err           error
+		expected      bool
+		expectedError error
+	}{
+		{
+			name:          "both resp and err nil should report error",
+			expected:      false,
+			expectedError: fmt.Errorf("failed with unknown error"),
+		},
+		{
+			name: "http.StatusNotFound should report error",
+			resp: &http.Response{
+				StatusCode: http.StatusNotFound,
+			},
+			expected:      false,
+			expectedError: fmt.Errorf("failed with HTTP status code %d", http.StatusNotFound),
+		},
+		{
+			name: "http.StatusInternalServerError should report error",
+			resp: &http.Response{
+				StatusCode: http.StatusInternalServerError,
+			},
+			expected:      false,
+			expectedError: fmt.Errorf("failed with HTTP status code %d", http.StatusInternalServerError),
+		},
+		{
+			name: "http.StatusOK shouldn't report error",
+			resp: &http.Response{
+				StatusCode: http.StatusOK,
+			},
+			expected: true,
+		},
+		{
+			name: "non-nil response error with http.StatusOK should report error",
+			resp: &http.Response{
+				StatusCode: http.StatusOK,
+			},
+			err:           fmt.Errorf("test error"),
+			expected:      false,
+			expectedError: fmt.Errorf("test error"),
+		},
+		{
+			name: "non-nil response error with http.StatusInternalServerError should report error",
+			resp: &http.Response{
+				StatusCode: http.StatusInternalServerError,
+			},
+			err:           fmt.Errorf("test error"),
+			expected:      false,
+			expectedError: fmt.Errorf("test error"),
+		},
+	}
+
+	for _, test := range tests {
+		result, realError := isSuccessHTTPResponse(test.resp, test.err)
+		assert.Equal(t, test.expected, result, "[%s] expected: %v, saw: %v", test.name, result, test.expected)
+		assert.Equal(t, test.expectedError, realError, "[%s] expected: %v, saw: %v", test.name, realError, test.expectedError)
+	}
+}
+func TestConvertResourceGroupNameToLower(t *testing.T) {
+	tests := []struct {
+		desc        string
+		resourceID  string
+		expected    string
+		expectError bool
+	}{
+		{
+			desc:        "empty string should report error",
+			resourceID:  "",
+			expectError: true,
+		},
+		{
+			desc:        "resourceID not in Azure format should report error",
+			resourceID:  "invalid-id",
+			expectError: true,
+		},
+		{
+			desc:        "providerID not in Azure format should report error",
+			resourceID:  "azure://invalid-id",
+			expectError: true,
+		},
+		{
+			desc:       "resource group name in VM providerID should be converted",
+			resourceID: "azure:///subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myResourceGroupName/providers/Microsoft.Compute/virtualMachines/k8s-agent-AAAAAAAA-0",
+			expected:   "azure:///subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myresourcegroupname/providers/Microsoft.Compute/virtualMachines/k8s-agent-AAAAAAAA-0",
+		},
+		{
+			desc:       "resource group name in VM resourceID should be converted",
+			resourceID: "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myResourceGroupName/providers/Microsoft.Compute/virtualMachines/k8s-agent-AAAAAAAA-0",
+			expected:   "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myresourcegroupname/providers/Microsoft.Compute/virtualMachines/k8s-agent-AAAAAAAA-0",
+		},
+		{
+			desc:       "resource group name in VMSS providerID should be converted",
+			resourceID: "azure:///subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myResourceGroupName/providers/Microsoft.Compute/virtualMachineScaleSets/myScaleSetName/virtualMachines/156",
+			expected:   "azure:///subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myresourcegroupname/providers/Microsoft.Compute/virtualMachineScaleSets/myScaleSetName/virtualMachines/156",
+		},
+		{
+			desc:       "resource group name in VMSS resourceID should be converted",
+			resourceID: "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myResourceGroupName/providers/Microsoft.Compute/virtualMachineScaleSets/myScaleSetName/virtualMachines/156",
+			expected:   "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/myresourcegroupname/providers/Microsoft.Compute/virtualMachineScaleSets/myScaleSetName/virtualMachines/156",
+		},
+	}
+
+	for _, test := range tests {
+		real, err := convertResourceGroupNameToLower(test.resourceID)
+		if test.expectError {
+			assert.NotNil(t, err, test.desc)
+			continue
+		}
+
+		assert.Nil(t, err, test.desc)
+		assert.Equal(t, test.expected, real, test.desc)
+	}
+}
+
+func TestIsAzureRequestsThrottled(t *testing.T) {
+	tests := []struct {
+		desc     string
+		err      error
+		expected bool
+	}{
+		{
+			desc:     "nil error should return false",
+			expected: false,
+		},
+		{
+			desc:     "non autorest.DetailedError error should return false",
+			err:      fmt.Errorf("unknown error"),
+			expected: false,
+		},
+		{
+			desc: "non http.StatusTooManyRequests error should return false",
+			err: autorest.DetailedError{
+				StatusCode: http.StatusBadRequest,
+			},
+			expected: false,
+		},
+		{
+			desc: "http.StatusTooManyRequests error should return true",
+			err: autorest.DetailedError{
+				StatusCode: http.StatusTooManyRequests,
+			},
+			expected: true,
+		},
+	}
+
+	for _, test := range tests {
+		real := isAzureRequestsThrottled(test.err)
+		assert.Equal(t, test.expected, real, test.desc)
 	}
 }

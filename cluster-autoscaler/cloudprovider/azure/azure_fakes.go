@@ -22,9 +22,9 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-04-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-10-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2017-05-10/resources"
-	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2017-10-01/storage"
+	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2018-07-01/storage"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/stretchr/testify/mock"
 )
@@ -43,12 +43,16 @@ type VirtualMachineScaleSetsClientMock struct {
 // Get gets the VirtualMachineScaleSet by vmScaleSetName.
 func (client *VirtualMachineScaleSetsClientMock) Get(ctx context.Context, resourceGroupName string, vmScaleSetName string) (result compute.VirtualMachineScaleSet, err error) {
 	capacity := int64(2)
+	name := "Standard_D8_V3" // typo to test case-insensitive lookup
+	location := "switzerlandwest"
 	properties := compute.VirtualMachineScaleSetProperties{}
 	return compute.VirtualMachineScaleSet{
 		Name: &vmScaleSetName,
 		Sku: &compute.Sku{
 			Capacity: &capacity,
+			Name:     &name,
 		},
+		Location:                         &location,
 		VirtualMachineScaleSetProperties: &properties,
 	}, nil
 }
@@ -63,7 +67,9 @@ func (client *VirtualMachineScaleSetsClientMock) CreateOrUpdate(ctx context.Cont
 	}
 	client.FakeStore[resourceGroupName][VMScaleSetName] = parameters
 
-	return nil, nil
+	return &http.Response{
+		StatusCode: http.StatusOK,
+	}, nil
 }
 
 // DeleteInstances deletes a set of instances for specified VirtualMachineScaleSet.

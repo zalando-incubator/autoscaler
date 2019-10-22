@@ -30,6 +30,10 @@ Before enabling this, please check the following:
  * All containers in the DaemonSet pods **must** have their resource requests specified. Failing to do so
    will cause the template node size to be calculated incorrectly, and the autoscaler will scale up even
    though the pods will not fit on the newly created nodes.
+   
+Using this option will also disable the node info cache added in v1.13. The cache has some issues, such as
+not handling daemonset changes correctly, and the template nodes represent much more precise information 
+about what upcoming nodes would look like.
 
 ## Support for AWS autoscaling groups with multiple instance types
 
@@ -75,3 +79,12 @@ nodes returned from this ASG to have the `aws.amazon.com/spot` label set to `tru
 
 [autoscaling groups with multiple instance types]: https://aws.amazon.com/blogs/aws/new-ec2-auto-scaling-groups-with-multiple-instance-types-purchase-options/
 [correctly detect]: https://github.com/kubernetes/autoscaler/issues/1133
+
+## Backoff settings are customisable
+
+Upstream version of the autoscaler uses hardcoded settings for managing node backoff. Unfortunately, the current
+settings for the backoff can cause serious issues when some of the node pools cannot provision new instances (for
+example because of quota or availability issues). Since the starting value for the backoff is just 5 minutes, and
+the autoscaler relies on `--max-node-provision-time` (default of `15m`) to detect a broken pool, the autoscaler will
+spend hours jumping between multiple broken node pools instead of trying them all once and proceeding to use a
+working one.   

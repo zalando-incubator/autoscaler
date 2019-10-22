@@ -31,6 +31,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	cloudBuilder "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/builder"
+	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/core"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
@@ -38,6 +39,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
 	ca_processors "k8s.io/autoscaler/cluster-autoscaler/processors"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/backoff"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/units"
@@ -154,6 +156,10 @@ var (
 	nodeAutoprovisioningEnabled      = flag.Bool("node-autoprovisioning-enabled", false, "Should CA autoprovision node groups when needed")
 	maxAutoprovisionedNodeGroupCount = flag.Int("max-autoprovisioned-node-group-count", 15, "The maximum number of autoprovisioned groups in the cluster.")
 
+	nodePoolBackoffInitial = flag.Duration("node-pool-backoff-initial", clusterstate.InitialNodeGroupBackoffDuration, "Duration of first backoff after a new node failed to start.")
+	nodePoolBackoffMax     = flag.Duration("node-pool-backoff-max", clusterstate.MaxNodeGroupBackoffDuration, "Maximum backoff duration after new nodes failed to start.")
+	nodePoolBackoffReset   = flag.Duration("node-pool-backoff-reset", clusterstate.NodeGroupBackoffResetTimeout, "Time after last failed scale-up when the backoff duration is reset.")
+
 	unremovableNodeRecheckTimeout       = flag.Duration("unremovable-node-recheck-timeout", 5*time.Minute, "The timeout before we check again a node that couldn't be removed before")
 	expendablePodsPriorityCutoff        = flag.Int("expendable-pods-priority-cutoff", -10, "Pods with priority below cutoff will be expendable. They can be killed without any consideration during scale down and they don't cause scale up. Pods with null priority (PodPriority disabled) are non expendable.")
 	regional                            = flag.Bool("regional", false, "Cluster is regional.")
@@ -231,6 +237,10 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 	}
 }
 
+func createBackoff() backoff.Backoff {
+	return backoff.NewIdBasedExponentialBackoff(*nodePoolBackoffInitial, *nodePoolBackoffMax, *nodePoolBackoffReset)
+}
+
 func getKubeConfig() *rest.Config {
 	if *kubeConfigFile != "" {
 		klog.V(1).Infof("Using kubeconfig file: %s", *kubeConfigFile)
@@ -289,6 +299,7 @@ func buildAutoscaler() (core.Autoscaler, error) {
 		KubeClient:         kubeClient,
 		EventsKubeClient:   eventsKubeClient,
 		Processors:         processors,
+		Backoff:            createBackoff(),
 	}
 
 	// This metric should be published only once.

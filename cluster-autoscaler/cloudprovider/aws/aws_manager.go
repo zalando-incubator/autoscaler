@@ -161,9 +161,14 @@ func newAWSSDKProvider(cfg *provider_aws.CloudConfig) *awsSDKProvider {
 func getRegion(cfg ...*aws.Config) string {
 	region, present := os.LookupEnv("AWS_REGION")
 	if !present {
-		svc := ec2metadata.New(session.New(), cfg...)
-		if r, err := svc.Region(); err == nil {
-			region = r
+		sess, err := session.NewSession()
+		if err != nil {
+			klog.Errorf("Error getting AWS session while retrieving region: %v", err)
+		} else {
+			svc := ec2metadata.New(sess, cfg...)
+			if r, err := svc.Region(); err == nil {
+				region = r
+			}
 		}
 	}
 	return region
@@ -197,8 +202,11 @@ func createAWSManagerInternal(
 
 	if autoScalingService == nil || ec2Service == nil {
 		awsSdkProvider := newAWSSDKProvider(cfg)
-		sess := session.New(aws.NewConfig().WithRegion(getRegion()).
+		sess, err := session.NewSession(aws.NewConfig().WithRegion(getRegion()).
 			WithEndpointResolver(getResolver(awsSdkProvider.cfg)))
+		if err != nil {
+			return nil, err
+		}
 
 		if autoScalingService == nil {
 			autoScalingService = &autoScalingWrapper{autoscaling.New(sess), map[string]string{}}
@@ -342,16 +350,23 @@ func (m *AwsManager) getAsgTemplate(asg *asg) (*asgTemplate, error) {
 }
 
 func (m *AwsManager) buildInstanceTypes(asg *asg) ([]string, error) {
-	if len(asg.InstanceTypeOverrides) > 0 {
-		return asg.InstanceTypeOverrides, nil
-	}
-
 	if asg.LaunchConfigurationName != "" {
 		result, err := m.autoScalingService.getInstanceTypeByLCName(asg.LaunchConfigurationName)
 		return []string{result}, err
-	} else if asg.LaunchTemplateName != "" && asg.LaunchTemplateVersion != "" {
-		result, err := m.ec2Service.getInstanceTypeByLT(asg.LaunchTemplateName, asg.LaunchTemplateVersion)
-		return []string{result}, err
+	} else if asg.LaunchTemplate != nil || asg.MixedInstancesPolicy != nil {
+		launchTemplate := asg.LaunchTemplate
+		var instanceTypeOverrides []string
+
+		if asg.MixedInstancesPolicy != nil {
+			launchTemplate = asg.MixedInstancesPolicy.launchTemplate
+			instanceTypeOverrides = asg.MixedInstancesPolicy.instanceTypesOverrides
+		}
+
+		if len(instanceTypeOverrides) > 0 {
+			return instanceTypeOverrides, nil
+		}
+		mainType, err := m.ec2Service.getInstanceTypeByLT(launchTemplate)
+		return []string{mainType}, err
 	}
 
 	return nil, fmt.Errorf("Unable to get instance type from launch config or launch template")

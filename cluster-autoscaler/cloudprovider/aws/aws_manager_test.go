@@ -263,14 +263,73 @@ func TestBuildInstanceTypes(t *testing.T) {
 	assert.NoError(t, err)
 
 	asg := asg{
-		LaunchTemplateName:    ltName,
-		LaunchTemplateVersion: ltVersion,
+		LaunchTemplate: &launchTemplate{name: ltName, version: ltVersion},
 	}
 
 	builtInstanceType, err := m.buildInstanceTypes(&asg)
 
 	assert.NoError(t, err)
 	assert.Equal(t, instanceType, builtInstanceType)
+}
+
+func TestBuildInstanceTypeMixedInstancePolicyOverride(t *testing.T) {
+	ltName, ltVersion, instanceType := "launcher", "1", []string{"t2.large"}
+	instanceTypes := []string{}
+
+	s := &EC2Mock{}
+	s.On("DescribeLaunchTemplateVersions", &ec2.DescribeLaunchTemplateVersionsInput{
+		LaunchTemplateName: aws.String(ltName),
+		Versions:           []*string{aws.String(ltVersion)},
+	}).Return(&ec2.DescribeLaunchTemplateVersionsOutput{
+		LaunchTemplateVersions: []*ec2.LaunchTemplateVersion{
+			{
+				LaunchTemplateData: &ec2.ResponseLaunchTemplateData{
+					InstanceType: aws.String(instanceType[0]),
+				},
+			},
+		},
+	})
+
+	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
+	os.Setenv("AWS_REGION", "fanghorn")
+	m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, &ec2Wrapper{s})
+	assert.NoError(t, err)
+
+	lt := &launchTemplate{name: ltName, version: ltVersion}
+	asg := asg{
+		MixedInstancesPolicy: &mixedInstancesPolicy{
+			launchTemplate:         lt,
+			instanceTypesOverrides: instanceTypes,
+		},
+	}
+
+	builtInstanceType, err := m.buildInstanceTypes(&asg)
+
+	assert.NoError(t, err)
+	assert.Equal(t, instanceType, builtInstanceType)
+}
+
+func TestBuildInstanceTypeMixedInstancePolicyNoOverride(t *testing.T) {
+	ltName, ltVersion := "launcher", "1"
+	instanceTypes := []string{"m4.xlarge", "m5.xlarge"}
+
+	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
+	os.Setenv("AWS_REGION", "fanghorn")
+	m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, &ec2Wrapper{})
+	assert.NoError(t, err)
+
+	lt := &launchTemplate{name: ltName, version: ltVersion}
+	asg := asg{
+		MixedInstancesPolicy: &mixedInstancesPolicy{
+			launchTemplate:         lt,
+			instanceTypesOverrides: instanceTypes,
+		},
+	}
+
+	builtInstanceType, err := m.buildInstanceTypes(&asg)
+
+	assert.NoError(t, err)
+	assert.Equal(t, instanceTypes, builtInstanceType)
 }
 
 func TestGetASGTemplate(t *testing.T) {
@@ -328,11 +387,12 @@ func TestGetASGTemplate(t *testing.T) {
 			assert.NoError(t, err)
 
 			asg := &asg{
-				AwsRef:                AwsRef{Name: "sample"},
-				AvailabilityZones:     test.availabilityZones,
-				LaunchTemplateName:    ltName,
-				LaunchTemplateVersion: ltVersion,
-				Tags:                  tags,
+				AwsRef:            AwsRef{Name: "sample"},
+				AvailabilityZones: test.availabilityZones,
+				LaunchTemplate: &launchTemplate{
+					name:    ltName,
+					version: ltVersion},
+				Tags: tags,
 			}
 
 			template, err := m.getAsgTemplate(asg)

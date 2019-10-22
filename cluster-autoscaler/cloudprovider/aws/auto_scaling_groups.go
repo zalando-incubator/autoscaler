@@ -48,6 +48,16 @@ type asgCache struct {
 	explicitlyConfigured  map[AwsRef]bool
 }
 
+type launchTemplate struct {
+	name    string
+	version string
+}
+
+type mixedInstancesPolicy struct {
+	launchTemplate         *launchTemplate
+	instanceTypesOverrides []string
+}
+
 type asg struct {
 	AwsRef
 
@@ -56,10 +66,9 @@ type asg struct {
 	curSize int
 
 	AvailabilityZones       []string
-	LaunchTemplateName      string
-	LaunchTemplateVersion   string
 	LaunchConfigurationName string
-	InstanceTypeOverrides   []string
+	LaunchTemplate          *launchTemplate
+	MixedInstancesPolicy    *mixedInstancesPolicy
 	Tags                    []*autoscaling.TagDescription
 }
 
@@ -119,8 +128,8 @@ func (m *asgCache) register(asg *asg) *asg {
 			// from zero
 			existing.AvailabilityZones = asg.AvailabilityZones
 			existing.LaunchConfigurationName = asg.LaunchConfigurationName
-			existing.LaunchTemplateName = asg.LaunchTemplateName
-			existing.LaunchTemplateVersion = asg.LaunchTemplateVersion
+			existing.LaunchTemplate = asg.LaunchTemplate
+			existing.MixedInstancesPolicy = asg.MixedInstancesPolicy
 			existing.Tags = asg.Tags
 
 			return existing
@@ -268,10 +277,10 @@ func (m *asgCache) DeleteInstances(instances []*AwsInstanceRef) error {
 				return err
 			}
 			klog.V(4).Infof(*resp.Activity.Description)
-		}
 
-		// Proactively decrement the size so autoscaler makes better decisions
-		commonAsg.curSize--
+			// Proactively decrement the size so autoscaler makes better decisions
+			commonAsg.curSize--
+		}
 	}
 	return nil
 }
@@ -418,15 +427,6 @@ func (m *asgCache) buildAsgFromAWS(g *autoscaling.Group) (*asg, error) {
 		return nil, fmt.Errorf("failed to create node group spec: %v", verr)
 	}
 
-	launchTemplateName, launchTemplateVersion := m.buildLaunchTemplateParams(g)
-
-	var instanceTypeOverrides []string
-	if g.MixedInstancesPolicy != nil {
-		for _, override := range g.MixedInstancesPolicy.LaunchTemplate.Overrides {
-			instanceTypeOverrides = append(instanceTypeOverrides, aws.StringValue(override.InstanceType))
-		}
-	}
-
 	asg := &asg{
 		AwsRef:  AwsRef{Name: spec.Name},
 		minSize: spec.MinSize,
@@ -435,24 +435,59 @@ func (m *asgCache) buildAsgFromAWS(g *autoscaling.Group) (*asg, error) {
 		curSize:                 int(aws.Int64Value(g.DesiredCapacity)),
 		AvailabilityZones:       aws.StringValueSlice(g.AvailabilityZones),
 		LaunchConfigurationName: aws.StringValue(g.LaunchConfigurationName),
-		LaunchTemplateName:      launchTemplateName,
-		LaunchTemplateVersion:   launchTemplateVersion,
-		InstanceTypeOverrides:   instanceTypeOverrides,
 		Tags:                    g.Tags,
+	}
+
+	if g.LaunchTemplate != nil {
+		asg.LaunchTemplate = m.buildLaunchTemplateFromSpec(g.LaunchTemplate)
+	}
+
+	if g.MixedInstancesPolicy != nil {
+		getInstanceTypes := func(data []*autoscaling.LaunchTemplateOverrides) []string {
+			res := make([]string, len(data))
+			for i := 0; i < len(data); i++ {
+				res[i] = aws.StringValue(data[i].InstanceType)
+			}
+			return res
+		}
+
+		asg.MixedInstancesPolicy = &mixedInstancesPolicy{
+			launchTemplate:         m.buildLaunchTemplateFromSpec(g.MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification),
+			instanceTypesOverrides: getInstanceTypes(g.MixedInstancesPolicy.LaunchTemplate.Overrides),
+		}
 	}
 
 	return asg, nil
 }
 
-func (m *asgCache) buildLaunchTemplateParams(g *autoscaling.Group) (string, string) {
-	if g.LaunchTemplate != nil {
-		return aws.StringValue(g.LaunchTemplate.LaunchTemplateName), aws.StringValue(g.LaunchTemplate.Version)
-	} else if g.MixedInstancesPolicy != nil && g.MixedInstancesPolicy.LaunchTemplate != nil {
-		return aws.StringValue(g.MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.LaunchTemplateName),
-			aws.StringValue(g.MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification.Version)
+func (m *asgCache) buildLaunchTemplateFromSpec(ltSpec *autoscaling.LaunchTemplateSpecification) *launchTemplate {
+	// NOTE(jaypipes): The LaunchTemplateSpecification.Version is a pointer to
+	// string. When the pointer is nil, EC2 AutoScaling API considers the value
+	// to be "$Default", however aws.StringValue(ltSpec.Version) will return an
+	// empty string (which is not considered the same as "$Default" or a nil
+	// string pointer. So, in order to not pass an empty string as the version
+	// for the launch template when we communicate with the EC2 AutoScaling API
+	// using the information in the launchTemplate, we store the string
+	// "$Default" here when the ltSpec.Version is a nil pointer.
+	//
+	// See:
+	//
+	// https://github.com/kubernetes/autoscaler/issues/1728
+	// https://github.com/aws/aws-sdk-go/blob/81fad3b797f4a9bd1b452a5733dd465eefef1060/service/autoscaling/api.go#L10666-L10671
+	//
+	// A cleaner alternative might be to make launchTemplate.version a string
+	// pointer instead of a string, or even store the aws-sdk-go's
+	// LaunchTemplateSpecification structs directly.
+	var version string
+	if ltSpec.Version == nil {
+		version = "$Default"
+	} else {
+		version = aws.StringValue(ltSpec.Version)
 	}
-
-	return "", ""
+	return &launchTemplate{
+		name:    aws.StringValue(ltSpec.LaunchTemplateName),
+		version: version,
+	}
 }
 
 func (m *asgCache) buildInstanceRefFromAWS(instance *autoscaling.Instance) AwsInstanceRef {

@@ -39,7 +39,7 @@ func TestPriorityBased(t *testing.T) {
 		"veryHighPriority":  intPtr(300),
 		"veryHighPriority2": intPtr(300),
 		"noPriority":        nil,
-		"negativePriority":  intPtr(-100),
+		"zeroPriority":      intPtr(0),
 		"lowPriority":       intPtr(100),
 	} {
 		provider.AddNodeGroup(ngId, 1, 10, 1)
@@ -62,7 +62,7 @@ func TestPriorityBased(t *testing.T) {
 	}
 
 	var (
-		negativePriorityGroup  = groupOptions["negativePriority"]
+		zeroPriorityGroup      = groupOptions["zeroPriority"]
 		noPriorityGroup        = groupOptions["noPriority"]
 		lowPriorityGroup       = groupOptions["lowPriority"]
 		highPriorityGroup      = groupOptions["highPriority"]
@@ -101,15 +101,15 @@ func TestPriorityBased(t *testing.T) {
 	require.NotNil(t, ret)
 	assert.True(t, assert.ObjectsAreEqual(*ret, veryHighPriorityGroup) || assert.ObjectsAreEqual(*ret, veryHighPriorityGroup2))
 
-	// if there's a group with no priority it's assumed to be 0.
+	// if there's a group with no priority it's assumed to be zero and therefore less than low priority.
 	ret = e.BestOption([]expander.Option{lowPriorityGroup, noPriorityGroup}, nodeInfos)
 	require.NotNil(t, ret)
 	assert.True(t, assert.ObjectsAreEqual(*ret, lowPriorityGroup))
 
-	// if there's a group with no priority and it's the highest it gets picked.
-	ret = e.BestOption([]expander.Option{negativePriorityGroup, noPriorityGroup}, nodeInfos)
+	// if there's a group with zero priority it's the same as no priority.
+	ret = e.BestOption([]expander.Option{zeroPriorityGroup, noPriorityGroup}, nodeInfos)
 	require.NotNil(t, ret)
-	assert.True(t, assert.ObjectsAreEqual(*ret, noPriorityGroup))
+	assert.True(t, assert.ObjectsAreEqual(*ret, zeroPriorityGroup) || assert.ObjectsAreEqual(*ret, noPriorityGroup))
 }
 
 func intPtr(v int64) *int64 {

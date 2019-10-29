@@ -43,7 +43,7 @@ func NewStrategy() expander.Strategy {
 // BestOption selects the expansion option based on the highest priority nodes
 func (ps *priority) BestOption(options []expander.Option, nodeInfo map[string]*schedulernodeinfo.NodeInfo) *expander.Option {
 	priorityOptions := map[int][]expander.Option{}
-	highestPriority := -999 // start with minimum priority
+	highestPriority := 0 // start with minimum priority
 
 	for _, option := range options {
 		info, found := nodeInfo[option.NodeGroup.Id()]

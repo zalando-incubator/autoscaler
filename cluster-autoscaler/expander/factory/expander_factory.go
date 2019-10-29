@@ -20,7 +20,6 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/mostpods"
-	"k8s.io/autoscaler/cluster-autoscaler/expander/preferspot"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/price"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/priority"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/random"
@@ -48,8 +47,6 @@ func ExpanderStrategyFromString(expanderFlag string, cloudProvider cloudprovider
 		return price.NewStrategy(pricing,
 			price.NewSimplePreferredNodeProvider(nodeLister),
 			price.SimpleNodeUnfitness), nil
-	case expander.PreferSpotExpanderName:
-		return preferspot.NewStrategy(), nil
 	case expander.HighestPriorityExpanderName:
 		return priority.NewStrategy(), nil
 	}

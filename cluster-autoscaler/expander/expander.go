@@ -24,7 +24,7 @@ import (
 
 var (
 	// AvailableExpanders is a list of available expander options
-	AvailableExpanders = []string{RandomExpanderName, MostPodsExpanderName, LeastWasteExpanderName, PriceBasedExpanderName, PreferSpotExpanderName, PriorityExpanderName}
+	AvailableExpanders = []string{RandomExpanderName, MostPodsExpanderName, LeastWasteExpanderName, PriceBasedExpanderName, PreferSpotExpanderName, HighestPriorityExpanderName}
 	// RandomExpanderName selects a node group at random
 	RandomExpanderName = "random"
 	// MostPodsExpanderName selects a node group that fits the most pods
@@ -37,8 +37,8 @@ var (
 	// PreferSpotExpanderName selects a random node group with spot instances if possible, or any random node group
 	// otherwise
 	PreferSpotExpanderName = "prefer-spot"
-	// PriorityExpanderName selects the node group with the highest priority
-	PriorityExpanderName = "priority"
+	// HighestPriorityExpanderName selects the node group with the highest priority
+	HighestPriorityExpanderName = "highest-priority"
 )
 
 // Option describes an option to expand the cluster.

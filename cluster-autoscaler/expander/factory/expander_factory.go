@@ -50,7 +50,7 @@ func ExpanderStrategyFromString(expanderFlag string, cloudProvider cloudprovider
 			price.SimpleNodeUnfitness), nil
 	case expander.PreferSpotExpanderName:
 		return preferspot.NewStrategy(), nil
-	case expander.PriorityExpanderName:
+	case expander.HighestPriorityExpanderName:
 		return priority.NewStrategy(), nil
 	}
 	return nil, errors.NewAutoscalerError(errors.InternalError, "Expander %s not supported", expanderFlag)

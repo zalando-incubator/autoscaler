@@ -43,7 +43,7 @@ func NewStrategy() expander.Strategy {
 
 // BestOption selects the expansion option based on the highest priority nodes
 func (ps *priority) BestOption(options []expander.Option, nodeInfo map[string]*schedulernodeinfo.NodeInfo) *expander.Option {
-	priorityOptions := map[int][]expander.Option{}
+	priorityOptions := []expander.Option{}
 	highestPriority := math.MinInt64
 
 	for _, option := range options {
@@ -60,18 +60,25 @@ func (ps *priority) BestOption(options []expander.Option, nodeInfo map[string]*s
 			klog.Warningf("Priority not set, using 0 for %s", option.NodeGroup.Id())
 		}
 
-		// keep track of the highest priority in the cluster
-		if scalingPriority > highestPriority {
-			highestPriority = scalingPriority
+		// disregard node group if it has a lower priority than the current highest priority.
+		if scalingPriority < highestPriority {
+			continue
 		}
 
-		// group node groups by priorities
-		priorityOptions[scalingPriority] = append(priorityOptions[scalingPriority], option)
+		// keep track of the highest priority and reset options if we find a node
+		// group with higher priority
+		if scalingPriority > highestPriority {
+			highestPriority = scalingPriority
+			priorityOptions = []expander.Option{}
+		}
+
+		// add node group to options
+		priorityOptions = append(priorityOptions, option)
 	}
 
 	// Pick and forward node group with the highest priority to the fallback strategy
-	if len(priorityOptions[highestPriority]) > 0 {
-		return ps.fallback.BestOption(priorityOptions[highestPriority], nodeInfo)
+	if len(priorityOptions) > 0 {
+		return ps.fallback.BestOption(priorityOptions, nodeInfo)
 	}
 
 	// default to fallback strategy

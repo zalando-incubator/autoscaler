@@ -415,12 +415,6 @@ func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*ap
 
 // availableResources returns information about node resources (capacity/allocatable) for a particular instance type
 func (m *AwsManager) availableResources(instanceType string) (*instanceResourceInfo, error) {
-	// The cache either contains data collected from live nodes or we've already constructed something
-	// from the AWS information
-	if cached, ok := m.instanceResourceCache[instanceType]; ok {
-		return cached, nil
-	}
-
 	awsTemplate, ok := InstanceTypes[instanceType]
 	if !ok {
 		return nil, fmt.Errorf("unknown instance type %s", instanceType)
@@ -431,6 +425,15 @@ func (m *AwsManager) availableResources(instanceType string) (*instanceResourceI
 	gpuCapacity := *resource.NewQuantity(awsTemplate.GPU, resource.DecimalSI)
 	// TODO: get a real value.
 	podCapacity := *resource.NewQuantity(110, resource.DecimalSI)
+
+	// The cache either contains data collected from live nodes or we've already constructed something
+	// from the AWS information. Note that we still fixup the GPU resources since they might be different
+	// on GPU nodes.
+	if cached, ok := m.instanceResourceCache[instanceType]; ok {
+		cached.Capacity[gpu.ResourceNvidiaGPU] = gpuCapacity
+		cached.Allocatable[gpu.ResourceNvidiaGPU] = gpuCapacity
+		return cached, nil
+	}
 
 	// Build a node from the template. We set the capacity to the static AWS template data,
 	// and subtract the maximum reserved CPU/memory across all the nodes in the cluster to get

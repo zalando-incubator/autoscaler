@@ -782,16 +782,14 @@ func TestTemplateNodes(t *testing.T) {
 		sampleNode(
 			"p2-xlarge-1", "p2.xlarge",
 			parseResourceList(map[apiv1.ResourceName]string{
-				apiv1.ResourceCPU:     "4",
-				apiv1.ResourceMemory:  "62000Mi",
-				apiv1.ResourcePods:    "100",
-				gpu.ResourceNvidiaGPU: "1",
+				apiv1.ResourceCPU:    "4",
+				apiv1.ResourceMemory: "62000Mi",
+				apiv1.ResourcePods:   "100",
 			}),
 			parseResourceList(map[apiv1.ResourceName]string{
-				apiv1.ResourceCPU:     "3700m",
-				apiv1.ResourceMemory:  "61800Mi",
-				apiv1.ResourcePods:    "100",
-				gpu.ResourceNvidiaGPU: "1",
+				apiv1.ResourceCPU:    "3700m",
+				apiv1.ResourceMemory: "61800Mi",
+				apiv1.ResourcePods:   "100",
 			})),
 		sampleNode(
 			"p2-xlarge-2", "p2.xlarge",
@@ -809,7 +807,7 @@ func TestTemplateNodes(t *testing.T) {
 			})),
 	})
 
-	// Information for p2.xlarge should now be based on existing nodes
+	// Information for p2.xlarge should now be based on existing nodes, with the exception of GPU
 	expectedCapacity := parseResourceList(map[apiv1.ResourceName]string{
 		apiv1.ResourceCPU:     "4",
 		apiv1.ResourceMemory:  "61700Mi",

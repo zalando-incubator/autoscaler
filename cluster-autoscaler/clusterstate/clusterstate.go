@@ -548,6 +548,14 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 			}
 		} else {
 			perNodeGroup[nodeGroup.Id()] = update(perNodeGroup[nodeGroup.Id()], node, ready)
+
+			if scaleUpRequest, ok := csr.scaleUpRequests[nodeGroup.Id()]; ok {
+				updatedDeadline := node.CreationTimestamp.Add(csr.config.MaxNodeProvisionTime)
+				if updatedDeadline.After(scaleUpRequest.ExpectedAddTime) {
+					klog.Infof("Resetting scale-up timeout for node group %s (new node %s): %s to %s", nodeGroup.Id(), node.Name, scaleUpRequest.ExpectedAddTime, updatedDeadline)
+					scaleUpRequest.ExpectedAddTime = updatedDeadline
+				}
+			}
 		}
 		total = update(total, node, ready)
 	}

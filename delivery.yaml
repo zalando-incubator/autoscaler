@@ -22,7 +22,7 @@ pipeline:
       hack/verify-all.sh -v
   - desc: "Build and release"
     cmd: |
-      if [[ "${CDP_TARGET_BRANCH}" != "zalando-cluster-autoscaler" || -n "${CDP_PULL_REQUEST_NUMBER}" ]]; then
+      if [[ "${CDP_TARGET_BRANCH}" != "zalando-cluster-autoscaler-1-12" || -n "${CDP_PULL_REQUEST_NUMBER}" ]]; then
         VERSION="${VERSION}.dev-${CDP_TARGET_REPOSITORY_COUNTER}"
       else
         VERSION="${VERSION}.${CDP_TARGET_BRANCH_COUNTER}"

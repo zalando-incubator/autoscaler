@@ -20,10 +20,10 @@ import (
 	"math"
 	"strconv"
 
+	"github.com/golang/glog"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/random"
-	"k8s.io/klog"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
 )
 
 const (
@@ -42,14 +42,14 @@ func NewStrategy() expander.Strategy {
 }
 
 // BestOption selects the expansion option based on the highest priority nodes
-func (ps *priority) BestOption(options []expander.Option, nodeInfo map[string]*schedulernodeinfo.NodeInfo) *expander.Option {
+func (ps *priority) BestOption(options []expander.Option, nodeInfo map[string]*schedulercache.NodeInfo) *expander.Option {
 	priorityOptions := []expander.Option{}
 	highestPriority := math.MinInt64
 
 	for _, option := range options {
 		info, found := nodeInfo[option.NodeGroup.Id()]
 		if !found {
-			klog.Warningf("No node info for %s", option.NodeGroup.Id())
+			glog.Warningf("No node info for %s", option.NodeGroup.Id())
 			continue
 		}
 
@@ -57,7 +57,7 @@ func (ps *priority) BestOption(options []expander.Option, nodeInfo map[string]*s
 		scalingPriority, err := strconv.Atoi(info.Node().Labels[scalingPriorityLabel])
 		if err != nil {
 			scalingPriority = 0
-			klog.Warningf("Priority not set, using 0 for %s", option.NodeGroup.Id())
+			glog.Warningf("Priority not set, using 0 for %s", option.NodeGroup.Id())
 		}
 
 		// disregard node group if it has a lower priority than the current highest priority.

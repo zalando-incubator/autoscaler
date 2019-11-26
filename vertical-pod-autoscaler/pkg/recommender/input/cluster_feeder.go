@@ -221,10 +221,14 @@ func (feeder *clusterStateFeeder) InitFromHistoryProvider(historyProvider histor
 				ContainerName: containerName}
 			klog.V(4).Infof("Adding %d samples for container %v", len(sampleList), containerID)
 			for _, sample := range sampleList {
-				if err := feeder.clusterState.AddSample(
+				err := feeder.clusterState.AddSample(
 					&model.ContainerUsageSampleWithKey{
 						ContainerUsageSample: sample,
-						Container:            containerID}); err != nil {
+						Container:            containerID})
+				if _, ok := err.(model.KeyError); ok && feeder.memorySaveMode {
+					continue
+				}
+				if err != nil {
 					klog.Warningf("Error adding metric sample for container %v: %v", containerID, err)
 				}
 			}

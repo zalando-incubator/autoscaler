@@ -1,0 +1,39 @@
+version: "2017-09-20"
+pipeline:
+- id: build
+  overlay: ci/golang-1-11
+  type: script
+  working_dir: /go/src/k8s.io/autoscaler
+  vm: large
+  env:
+    VERSION: "v0.6.1-internal"
+    DOWNSTREAM: "registry-write.opensource.zalan.do/teapot/kube-cluster-autoscaler"
+  commands:
+  - desc: "Installing dependencies"
+    cmd: |
+      apt-get update
+      apt-get install libseccomp-dev -qq
+      hack/install-verify-tools.sh
+      go version
+      export PATH=$GOPATH/bin:$PATH
+  - desc: "Verify"
+    cmd: |
+      rm .zappr.yaml
+      hack/verify-all.sh -v
+  - desc: "Build and release"
+    cmd: |
+      if [[ "${CDP_TARGET_BRANCH}" != "zalando-vertical-pod-autoscaler" || -n "${CDP_PULL_REQUEST_NUMBER}" ]]; then
+        export TAG="${VERSION}.dev-${CDP_TARGET_REPOSITORY_COUNTER}"
+      else
+        export TAG="${VERSION}.${CDP_TARGET_BRANCH_COUNTER}"
+      fi
+
+      export REGISTRY=registry-write.opensource.zalan.do/teapot
+
+      for f in admission-controller recommender updater; do
+        (
+          cd vertical-pod-autoscaler/pkg/$f
+          make test-unit
+          make release
+        )
+      done

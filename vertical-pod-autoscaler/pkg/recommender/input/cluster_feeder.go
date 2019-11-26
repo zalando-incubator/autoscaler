@@ -378,7 +378,10 @@ func (feeder *clusterStateFeeder) LoadPods() {
 		}
 		feeder.clusterState.AddOrUpdatePod(pod.ID, pod.PodLabels, pod.Phase)
 		for _, container := range pod.Containers {
-			feeder.clusterState.AddOrUpdateContainer(container.ID, container.Request)
+			err := feeder.clusterState.AddOrUpdateContainer(container.ID, container.Request)
+			if err != nil {
+				klog.Errorf("Unable to add/update container %s for pod %s/%s: %v", container.ID.ContainerName, pod.ID.Namespace, pod.ID.PodName, err)
+			}
 		}
 	}
 }
@@ -407,7 +410,10 @@ Loop:
 		select {
 		case oomInfo := <-feeder.oomChan:
 			klog.V(3).Infof("OOM detected %+v", oomInfo)
-			feeder.clusterState.RecordOOM(oomInfo.ContainerID, oomInfo.Timestamp, oomInfo.Memory)
+			err := feeder.clusterState.RecordOOM(oomInfo.ContainerID, oomInfo.Timestamp, oomInfo.Memory)
+			if err != nil {
+				klog.Errorf("Unable to record oom for pod %s/%s, container %s: %v", oomInfo.ContainerID.Namespace, oomInfo.ContainerID.PodName, oomInfo.ContainerID.ContainerName, err)
+			}
 		default:
 			break Loop
 		}

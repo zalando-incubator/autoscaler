@@ -397,6 +397,11 @@ func (feeder *clusterStateFeeder) LoadRealTimeMetrics() {
 	for _, containerMetrics := range containersMetrics {
 		for _, sample := range newContainerUsageSamplesWithKey(containerMetrics) {
 			if err := feeder.clusterState.AddSample(sample); err != nil {
+				_, isKeyError := err.(model.KeyError)
+				// In memory saver mode not all pods and containers are tracked
+				if feeder.memorySaveMode && isKeyError {
+					continue
+				}
 				klog.Warningf("Error adding metric sample for container %v: %v", sample.Container, err)
 				droppedSampleCount++
 			} else {

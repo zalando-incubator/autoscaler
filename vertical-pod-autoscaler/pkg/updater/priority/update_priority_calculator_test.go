@@ -304,6 +304,37 @@ func TestDontUpdatePodWithOOMAfterLongRun(t *testing.T) {
 	assert.Exactly(t, []*apiv1.Pod{}, result, "Pod shouldn't be updated")
 }
 
+func TestDontUpdatePodWithOOMNoRecommendationChange(t *testing.T) {
+	calculator := NewUpdatePriorityCalculator(
+		nil, nil, &UpdateConfig{MinChangePriority: 0.1}, &test.FakeRecommendationProcessor{})
+
+	pod := test.Pod().WithName("POD1").AddContainer(test.BuildTestContainer(containerName, "1", "1")).Get()
+
+	timestampNow := pod.Status.StartTime.Time.Add(time.Hour)
+
+	pod.Status.ContainerStatuses = []apiv1.ContainerStatus{
+		{
+			LastTerminationState: apiv1.ContainerState{
+				Terminated: &apiv1.ContainerStateTerminated{
+					Reason:     "OOMKilled",
+					FinishedAt: metav1.NewTime(timestampNow.Add(-1 * time.Minute)),
+					StartedAt:  metav1.NewTime(timestampNow.Add(-3 * time.Minute)),
+				},
+			},
+		},
+	}
+
+	// Pod is within the recommended range.
+	recommendation := test.Recommendation().WithContainer(containerName).
+		WithTarget("1", "1").
+		WithLowerBound("1", "1").
+		WithUpperBound("6", "6").Get()
+
+	calculator.AddPod(pod, recommendation, timestampNow)
+	result := calculator.GetSortedPods(NewDefaultPodEvictionAdmission())
+	assert.Exactly(t, []*apiv1.Pod{}, result, "Pod shouldn't be updated")
+}
+
 func TestUpdatePodWithOOMAnyContainer(t *testing.T) {
 	calculator := NewUpdatePriorityCalculator(
 		nil, nil, &UpdateConfig{MinChangePriority: 0.5}, &test.FakeRecommendationProcessor{})

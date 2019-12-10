@@ -24,6 +24,7 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/oomkill"
 	vpa_api_util "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
 	"k8s.io/klog"
 )
@@ -31,15 +32,15 @@ import (
 const (
 	// Ignore change priority that is smaller than 10%.
 	defaultUpdateThreshold = 0.10
-	// Pods that live for at least that long can be evicted even if their
-	// request is within the [MinRecommended...MaxRecommended] range.
-	podLifetimeUpdateThreshold = time.Hour * 12
 )
 
 var (
-	evictAfterOOMThreshold = flag.Duration("evict-after-oom-treshold", 10*time.Minute,
+	evictAfterOOMThreshold = flag.Duration("evict-after-oom-threshold", 10*time.Minute,
 		`Evict pod that has only one container and it OOMed in less than
-		evict-after-oom-treshold since start.`)
+		evict-after-oom-threshold since start.`)
+	podLifetimeUpdateThreshold = flag.Duration("pod-lifetime-update-threshold", time.Hour*12,
+		`Pods which are older than the threshold can be evicted even if their requests are
+		within the recommended range`)
 )
 
 // UpdatePriorityCalculator is responsible for prioritizing updates on pods.
@@ -86,15 +87,9 @@ func (calc *UpdatePriorityCalculator) AddPod(pod *apiv1.Pod, recommendation *vpa
 	updatePriority := calc.getUpdatePriority(pod, processedRecommendation)
 
 	quickOOM := false
-	for _, cs := range pod.Status.ContainerStatuses {
-		terminationState := cs.LastTerminationState
-		if terminationState.Terminated != nil &&
-			terminationState.Terminated.Reason == "OOMKilled" &&
-			terminationState.Terminated.FinishedAt.Time.Sub(terminationState.Terminated.StartedAt.Time) < *evictAfterOOMThreshold {
-			quickOOM = true
-			klog.V(2).Infof("quick OOM detected in pod %v, container %s", pod.Name, cs.Name)
-			break
-		}
+	if oomkill.HasQuickOomKill(*evictAfterOOMThreshold, pod) {
+		quickOOM = true
+		klog.V(2).Infof("quick OOM detected in pod %v/%v", pod.Namespace, pod.Name)
 	}
 
 	// The update is allowed in following cases:
@@ -107,7 +102,7 @@ func (calc *UpdatePriorityCalculator) AddPod(pod *apiv1.Pod, recommendation *vpa
 			klog.V(2).Infof("not updating pod %v, missing field pod.Status.StartTime", pod.Name)
 			return
 		}
-		if now.Before(pod.Status.StartTime.Add(podLifetimeUpdateThreshold)) {
+		if now.Before(pod.Status.StartTime.Add(*podLifetimeUpdateThreshold)) {
 			klog.V(2).Infof("not updating a short-lived pod %v, request within recommended range", pod.Name)
 			return
 		}
@@ -115,6 +110,10 @@ func (calc *UpdatePriorityCalculator) AddPod(pod *apiv1.Pod, recommendation *vpa
 			klog.V(2).Infof("not updating pod %v, resource diff too low: %v", pod.Name, updatePriority)
 			return
 		}
+	}
+	if quickOOM && updatePriority.resourceDiff == 0 {
+		klog.V(2).Infof("Not updating quick OOMed Pod %s/%s because recommend resources will not change", pod.Namespace, pod.Name)
+		return
 	}
 	klog.V(2).Infof("pod accepted for update %v with priority %v", pod.Name, updatePriority.resourceDiff)
 	calc.pods = append(calc.pods, updatePriority)

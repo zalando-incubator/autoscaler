@@ -478,6 +478,43 @@ func TestEvictAtLeastOne(t *testing.T) {
 	}
 }
 
+func TestQuickOOMKill(t *testing.T) {
+	replicas := int32(8)
+	livePods := 6
+	tolerance := 0.1
+	ss := appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ss",
+			Namespace: "default",
+		},
+		TypeMeta: metav1.TypeMeta{
+			Kind: "StatefulSet",
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: &replicas,
+		},
+	}
+	pods := make([]*apiv1.Pod, livePods)
+	for i := range pods {
+		pods[i] = test.Pod().WithName(getTestPodName(i)).WithCreator(&ss.ObjectMeta, &ss.TypeMeta).
+			WithOomKill("fake", time.Minute).Get()
+	}
+
+	factory, _ := getEvictionRestrictionFactory(nil, nil, &ss, 2, tolerance)
+	eviction := factory.NewPodsEvictionRestriction(pods)
+
+	// All pods can be evicted because they have an oom kill
+	for _, pod := range pods {
+		assert.True(t, eviction.CanEvict(pod))
+	}
+
+	// All pods are evicted successfully because they have an oom kill
+	for _, pod := range pods {
+		err := eviction.Evict(pod, test.FakeEventRecorder())
+		assert.Nil(t, err, "Should evict with no error")
+	}
+}
+
 func getEvictionRestrictionFactory(rc *apiv1.ReplicationController, rs *appsv1.ReplicaSet,
 	ss *appsv1.StatefulSet, minReplicas int,
 	evictionToleranceFraction float64) (PodsEvictionRestrictionFactory, error) {

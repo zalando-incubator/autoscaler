@@ -25,6 +25,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metrics_updater "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/updater"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/oomkill"
 	appsinformer "k8s.io/client-go/informers/apps/v1"
 	coreinformer "k8s.io/client-go/informers/core/v1"
 	kube_client "k8s.io/client-go/kubernetes"
@@ -34,7 +35,8 @@ import (
 )
 
 const (
-	resyncPeriod time.Duration = 1 * time.Minute
+	resyncPeriod   time.Duration = 1 * time.Minute
+	quickOOMWindow               = time.Hour
 )
 
 // PodsEvictionRestriction controls pods evictions. It ensures that we will not evict too
@@ -94,6 +96,9 @@ type podReplicaCreator struct {
 
 // CanEvict checks if pod can be safely evicted
 func (e *podsEvictionRestrictionImpl) CanEvict(pod *apiv1.Pod) bool {
+	if oomkill.HasQuickOomKill(quickOOMWindow, pod) {
+		return true
+	}
 	cr, present := e.podToReplicaCreatorMap[getPodID(pod)]
 	if present {
 		singleGroupStats, present := e.creatorToSingleGroupStatsMap[cr]
@@ -105,7 +110,7 @@ func (e *podsEvictionRestrictionImpl) CanEvict(pod *apiv1.Pod) bool {
 			if singleGroupStats.running-singleGroupStats.evicted > shouldBeAlive {
 				return true
 			}
-			// If all pods are running and eviction tollerance is small evict 1 pod.
+			// If all pods are running and eviction tolerance is small evict 1 pod.
 			if singleGroupStats.running == singleGroupStats.configured &&
 				singleGroupStats.evictionTolerance == 0 &&
 				singleGroupStats.evicted == 0 {
@@ -122,6 +127,14 @@ func (e *podsEvictionRestrictionImpl) Evict(podToEvict *apiv1.Pod, eventRecorder
 	cr, present := e.podToReplicaCreatorMap[getPodID(podToEvict)]
 	if !present {
 		return fmt.Errorf("pod not suitable for eviction %v : not in replicated pods map", podToEvict.Name)
+	}
+
+	if oomkill.HasQuickOomKill(quickOOMWindow, podToEvict) {
+		err := e.client.CoreV1().Pods(podToEvict.Namespace).Delete(podToEvict.Name, &metav1.DeleteOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to delete pod %s/%s: %v", podToEvict.Namespace, podToEvict.Name, err)
+		}
+		return nil
 	}
 
 	if !e.CanEvict(podToEvict) {

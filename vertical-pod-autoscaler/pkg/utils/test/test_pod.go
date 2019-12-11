@@ -17,6 +17,8 @@ limitations under the License.
 package test
 
 import (
+	"time"
+
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -28,6 +30,7 @@ type PodBuilder interface {
 	WithCreator(creatorObjectMeta *metav1.ObjectMeta, creatorTypeMeta *metav1.TypeMeta) PodBuilder
 	WithLabels(labels map[string]string) PodBuilder
 	WithPhase(phase apiv1.PodPhase) PodBuilder
+	WithOomKill(containerName string, killDuration time.Duration) PodBuilder
 	Get() *apiv1.Pod
 }
 
@@ -45,6 +48,28 @@ type podBuilderImpl struct {
 	creatorTypeMeta   *metav1.TypeMeta
 	labels            map[string]string
 	phase             apiv1.PodPhase
+	status            []apiv1.ContainerStatus
+}
+
+func (pb *podBuilderImpl) WithOomKill(containerName string, killDuration time.Duration) PodBuilder {
+	r := *pb
+	if len(r.status) == 0 {
+		r.status = make([]apiv1.ContainerStatus, 0)
+	}
+	finished := time.Now()
+	started := finished.Add(-killDuration)
+	r.status = append(r.status, apiv1.ContainerStatus{
+		Name: containerName,
+		LastTerminationState: apiv1.ContainerState{
+			Terminated: &apiv1.ContainerStateTerminated{
+				ExitCode:   137,
+				Reason:     "OOMKilled",
+				FinishedAt: metav1.NewTime(finished),
+				StartedAt:  metav1.NewTime(started),
+			},
+		},
+	})
+	return &r
 }
 
 func (pb *podBuilderImpl) WithLabels(labels map[string]string) PodBuilder {
@@ -111,6 +136,10 @@ func (pb *podBuilderImpl) Get() *apiv1.Pod {
 	}
 	if pb.phase != "" {
 		pod.Status.Phase = pb.phase
+	}
+
+	if pb.status != nil {
+		pod.Status.ContainerStatuses = pb.status
 	}
 
 	return pod

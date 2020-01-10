@@ -48,6 +48,31 @@ func TestBuildGenericLabels(t *testing.T) {
 	assert.Equal(t, cloudprovider.DefaultOS, labels[kubeletapis.LabelOS])
 }
 
+func TestExtractAllocatableResourcesFromAsg(t *testing.T) {
+	tags := []*autoscaling.TagDescription{
+		{
+			Key:   aws.String("k8s.io/cluster-autoscaler/node-template/resources/cpu"),
+			Value: aws.String("100m"),
+		},
+		{
+			Key:   aws.String("k8s.io/cluster-autoscaler/node-template/resources/memory"),
+			Value: aws.String("100M"),
+		},
+		{
+			Key:   aws.String("k8s.io/cluster-autoscaler/node-template/resources/ephemeral-storage"),
+			Value: aws.String("20G"),
+		},
+	}
+
+	labels := extractAllocatableResourcesFromAsg(tags)
+
+	assert.Equal(t, resource.NewMilliQuantity(100, resource.DecimalSI).String(), labels["cpu"].String())
+	expectedMemory := resource.MustParse("100M")
+	assert.Equal(t, (&expectedMemory).String(), labels["memory"].String())
+	expectedEphemeralStorage := resource.MustParse("20G")
+	assert.Equal(t, (&expectedEphemeralStorage).String(), labels["ephemeral-storage"].String())
+}
+
 func TestExtractLabelsFromAsg(t *testing.T) {
 	tags := []*autoscaling.TagDescription{
 		{

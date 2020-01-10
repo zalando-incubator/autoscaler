@@ -262,6 +262,7 @@ func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*ap
 	resourcesFromTags := extractAllocatableResourcesFromAsg(template.Tags)
 	if val, ok := resourcesFromTags["ephemeral-storage"]; ok {
 		node.Status.Capacity[apiv1.ResourceEphemeralStorage] = *val
+		node.Status.Allocatable[apiv1.ResourceEphemeralStorage] = *val
 	}
 
 	// NodeLabels

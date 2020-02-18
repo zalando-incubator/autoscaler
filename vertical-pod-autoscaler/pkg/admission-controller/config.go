@@ -25,10 +25,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog"
+	"k8s.io/utils/pointer"
 )
 
 const (
-	webhookConfigName = "vpa-webhook-config"
+	webhookConfigName     = "vpa-webhook-config"
+	webhookTimeoutSeconds = 10
 )
 
 // get a clientset with in-cluster config.
@@ -100,7 +102,8 @@ func selfRegistration(clientset *kubernetes.Clientset, caCert []byte, namespace 
 						},
 					},
 				},
-				ClientConfig: RegisterClientConfig,
+				ClientConfig:   RegisterClientConfig,
+				TimeoutSeconds: pointer.Int32Ptr(webhookTimeoutSeconds),
 			},
 		},
 	}

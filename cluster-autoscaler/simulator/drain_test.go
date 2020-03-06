@@ -203,4 +203,15 @@ func TestFastGetPodsToMove(t *testing.T) {
 	r9, err := FastGetPodsToMove(schedulercache.NewNodeInfo(pod9), true, true, []*policyv1.PodDisruptionBudget{pdb9})
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(r9))
+
+	// Job
+	pod10 := &apiv1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "pod10",
+			Namespace:       "ns",
+			OwnerReferences: GenerateOwnerReferences("job", "Job", "batch/v1", ""),
+		},
+	}
+	_, err = FastGetPodsToMove(schedulercache.NewNodeInfo(pod10), true, true, nil)
+	assert.Error(t, err)
 }

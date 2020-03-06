@@ -31,6 +31,7 @@ import (
 
 // FastGetPodsToMove returns a list of pods that should be moved elsewhere if the node
 // is drained. Raises error if there is an unreplicated pod.
+// IMPORTANT: job pods are considered unmovable in the Zalando fork so they'll result in an error as well.
 // Based on kubectl drain code. It makes an assumption that RC, DS, Jobs and RS were deleted
 // along with their pods (no abandoned pods with dangling created-by annotation). Useful for fast
 // checks.
@@ -59,6 +60,7 @@ func FastGetPodsToMove(nodeInfo *schedulernodeinfo.NodeInfo, skipNodesWithSystem
 
 // DetailedGetPodsForMove returns a list of pods that should be moved elsewhere if the node
 // is drained. Raises error if there is an unreplicated pod.
+// IMPORTANT: job pods are considered unmovable in the Zalando fork so they'll result in an error as well.
 // Based on kubectl drain code. It checks whether RC, DS, Jobs and RS that created these pods
 // still exist.
 func DetailedGetPodsForMove(nodeInfo *schedulernodeinfo.NodeInfo, skipNodesWithSystemPods bool,

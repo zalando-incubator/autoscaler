@@ -18,6 +18,7 @@ package simulator
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	apiv1 "k8s.io/api/core/v1"
@@ -31,11 +32,21 @@ import (
 
 // FastGetPodsToMove returns a list of pods that should be moved elsewhere if the node
 // is drained. Raises error if there is an unreplicated pod.
+// IMPORTANT: job pods are considered unmovable in the Zalando fork so they'll result in an error as well.
 // Based on kubectl drain code. It makes an assumption that RC, DS, Jobs and RS were deleted
 // along with their pods (no abandoned pods with dangling created-by annotation). Useful for fast
 // checks.
 func FastGetPodsToMove(nodeInfo *schedulercache.NodeInfo, skipNodesWithSystemPods bool, skipNodesWithLocalStorage bool,
 	pdbs []*policyv1.PodDisruptionBudget) ([]*apiv1.Pod, error) {
+
+	// Ideally this should be in drain.GetPodsForDeletionOnNodeDrain, but I don't want to modify
+	// its already complicated signature and logic because of the merge conflicts later. Let's
+	// plop it here instead.
+	err := checkJobPods(nodeInfo.Pods())
+	if err != nil {
+		return nil, err
+	}
+
 	pods, err := drain.GetPodsForDeletionOnNodeDrain(
 		nodeInfo.Pods(),
 		pdbs,
@@ -59,11 +70,21 @@ func FastGetPodsToMove(nodeInfo *schedulercache.NodeInfo, skipNodesWithSystemPod
 
 // DetailedGetPodsForMove returns a list of pods that should be moved elsewhere if the node
 // is drained. Raises error if there is an unreplicated pod.
+// IMPORTANT: job pods are considered unmovable in the Zalando fork so they'll result in an error as well.
 // Based on kubectl drain code. It checks whether RC, DS, Jobs and RS that created these pods
 // still exist.
 func DetailedGetPodsForMove(nodeInfo *schedulercache.NodeInfo, skipNodesWithSystemPods bool,
 	skipNodesWithLocalStorage bool, client client.Interface, minReplicaCount int32,
 	pdbs []*policyv1.PodDisruptionBudget) ([]*apiv1.Pod, error) {
+
+	// Ideally this should be in drain.GetPodsForDeletionOnNodeDrain, but I don't want to modify
+	// its already complicated signature and logic because of the merge conflicts later. Let's
+	// plop it here instead.
+	err := checkJobPods(nodeInfo.Pods())
+	if err != nil {
+		return nil, err
+	}
+
 	pods, err := drain.GetPodsForDeletionOnNodeDrain(
 		nodeInfo.Pods(),
 		pdbs,
@@ -82,6 +103,17 @@ func DetailedGetPodsForMove(nodeInfo *schedulercache.NodeInfo, skipNodesWithSyst
 	}
 
 	return pods, nil
+}
+
+func checkJobPods(pods []*apiv1.Pod) error {
+	for _, pod := range pods {
+		for _, ownerReference := range pod.OwnerReferences {
+			if strings.HasPrefix(ownerReference.APIVersion, "batch/") && ownerReference.Kind == "Job" {
+				return fmt.Errorf("job pod %s/%s is unmovable", pod.Namespace, pod.Name)
+			}
+		}
+	}
+	return nil
 }
 
 func checkPdbs(pods []*apiv1.Pod, pdbs []*policyv1.PodDisruptionBudget) error {

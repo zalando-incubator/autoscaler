@@ -110,7 +110,7 @@ func GetPodsForDeletionOnNodeDrain(
 			}
 		} else if refKind == "DaemonSet" {
 			if checkReferences {
-				ds, err := client.ExtensionsV1beta1().DaemonSets(controllerNamespace).Get(controllerRef.Name, metav1.GetOptions{})
+				ds, err := client.AppsV1().DaemonSets(controllerNamespace).Get(controllerRef.Name, metav1.GetOptions{})
 
 				// Assume the only reason for an error is because the DaemonSet is
 				// gone/missing, not for any other cause.  TODO(mml): something more
@@ -144,7 +144,7 @@ func GetPodsForDeletionOnNodeDrain(
 			}
 		} else if refKind == "ReplicaSet" {
 			if checkReferences {
-				rs, err := client.ExtensionsV1beta1().ReplicaSets(controllerNamespace).Get(controllerRef.Name, metav1.GetOptions{})
+				rs, err := client.AppsV1().ReplicaSets(controllerNamespace).Get(controllerRef.Name, metav1.GetOptions{})
 
 				// Assume the only reason for an error is because the RS is
 				// gone/missing, not for any other cause.  TODO(mml): something more
@@ -163,7 +163,7 @@ func GetPodsForDeletionOnNodeDrain(
 			}
 		} else if refKind == "StatefulSet" {
 			if checkReferences {
-				ss, err := client.AppsV1beta1().StatefulSets(controllerNamespace).Get(controllerRef.Name, metav1.GetOptions{})
+				ss, err := client.AppsV1().StatefulSets(controllerNamespace).Get(controllerRef.Name, metav1.GetOptions{})
 
 				// Assume the only reason for an error is because the StatefulSet is
 				// gone/missing, not for any other cause.  TODO(mml): something more

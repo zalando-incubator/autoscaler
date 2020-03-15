@@ -32,9 +32,6 @@ import (
 )
 
 const (
-	// ProviderNameGCE is the name of GCE cloud provider.
-	ProviderNameGCE = "gce"
-
 	// GPULabel is the label added to nodes with GPU resource.
 	GPULabel = "cloud.google.com/gke-accelerator"
 )
@@ -69,7 +66,7 @@ func (gce *GceCloudProvider) Cleanup() error {
 
 // Name returns name of the cloud provider.
 func (gce *GceCloudProvider) Name() string {
-	return ProviderNameGCE
+	return cloudprovider.GceProviderName
 }
 
 // GPULabel returns the label added to nodes with GPU resource.
@@ -96,6 +93,7 @@ func (gce *GceCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
 func (gce *GceCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovider.NodeGroup, error) {
 	ref, err := GceRefFromProviderId(node.Spec.ProviderID)
 	if err != nil {
+		klog.Errorf("Error extracting node.Spec.ProviderID for node %v: %v", node.Name, err)
 		return nil, err
 	}
 	mig, err := gce.gceManager.GetMigForInstance(ref)
@@ -158,6 +156,10 @@ func (ref GceRef) ToProviderId() string {
 // gce://<project-id>/<zone>/<name>
 // TODO(piosz): add better check whether the id is correct
 func GceRefFromProviderId(id string) (GceRef, error) {
+	if len(id) == 0 {
+		return GceRef{}, fmt.Errorf("wrong id: expected format gce://<project-id>/<zone>/<name>, got nil")
+	}
+
 	splitted := strings.Split(id[6:], "/")
 	if len(splitted) != 3 {
 		return GceRef{}, fmt.Errorf("wrong id: expected format gce://<project-id>/<zone>/<name>, got %v", id)

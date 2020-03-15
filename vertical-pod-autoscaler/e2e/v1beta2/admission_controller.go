@@ -17,6 +17,8 @@ limitations under the License.
 package autoscaling
 
 import (
+	"fmt"
+
 	appsv1 "k8s.io/api/apps/v1"
 	apiv1 "k8s.io/api/core/v1"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
@@ -54,6 +56,48 @@ var _ = AdmissionControllerE2eDescribe("Admission-controller", func() {
 			gomega.Expect(pod.Spec.Containers[0].Resources.Requests[apiv1.ResourceCPU]).To(gomega.Equal(ParseQuantityOrDie("250m")))
 			gomega.Expect(pod.Spec.Containers[0].Resources.Requests[apiv1.ResourceMemory]).To(gomega.Equal(ParseQuantityOrDie("200Mi")))
 		}
+	})
+
+	ginkgo.It("doesn't block patches", func() {
+		d := NewHamsterDeploymentWithResources(f, ParseQuantityOrDie("100m") /*cpu*/, ParseQuantityOrDie("100Mi") /*memory*/)
+
+		ginkgo.By("Setting up a VPA CRD")
+		vpaCRD := NewVPA(f, "hamster-vpa", hamsterTargetRef)
+		vpaCRD.Status.Recommendation = &vpa_types.RecommendedPodResources{
+			ContainerRecommendations: []vpa_types.RecommendedContainerResources{{
+				ContainerName: "hamster",
+				Target: apiv1.ResourceList{
+					apiv1.ResourceCPU:    ParseQuantityOrDie("250m"),
+					apiv1.ResourceMemory: ParseQuantityOrDie("200Mi"),
+				},
+			}},
+		}
+		InstallVPA(f, vpaCRD)
+
+		ginkgo.By("Setting up a hamster deployment")
+		podList := startDeploymentPods(f, d)
+
+		// Originally Pods had 100m CPU, 100Mi of memory, but admission controller
+		// should change it to recommended 250m CPU and 200Mi of memory.
+		for _, pod := range podList.Items {
+			gomega.Expect(pod.Spec.Containers[0].Resources.Requests[apiv1.ResourceCPU]).To(gomega.Equal(ParseQuantityOrDie("250m")))
+			gomega.Expect(pod.Spec.Containers[0].Resources.Requests[apiv1.ResourceMemory]).To(gomega.Equal(ParseQuantityOrDie("200Mi")))
+		}
+
+		ginkgo.By("Modifying recommendation.")
+		PatchVpaRecommendation(f, vpaCRD, &vpa_types.RecommendedPodResources{
+			ContainerRecommendations: []vpa_types.RecommendedContainerResources{{
+				ContainerName: "hamster",
+				Target: apiv1.ResourceList{
+					apiv1.ResourceCPU:    ParseQuantityOrDie("100m"),
+					apiv1.ResourceMemory: ParseQuantityOrDie("100Mi"),
+				},
+			}},
+		})
+
+		podName := podList.Items[0].Name
+		ginkgo.By(fmt.Sprintf("Modifying pod %v.", podName))
+		AnnotatePod(f, podName, "someAnnotation", "someValue")
 	})
 
 	ginkgo.It("keeps limits equal to request", func() {
@@ -403,6 +447,48 @@ var _ = AdmissionControllerE2eDescribe("Admission-controller", func() {
 		for _, pod := range podList.Items {
 			gomega.Expect(pod.Spec.Containers[0].Resources.Requests).To(gomega.BeEmpty())
 		}
+	})
+
+	ginkgo.It("accepts valid and rejects invalid VPA object", func() {
+		ginkgo.By("Setting up valid VPA object")
+		validVPA := []byte(`{
+			"kind": "VerticalPodAutoscaler",
+			"apiVersion": "autoscaling.k8s.io/v1beta2",
+			"metadata": {"name": "hamster-vpa-valid"},
+			"spec": {
+				"targetRef": {
+					"apiVersion": "apps/v1",
+					"kind": "Deployment",
+					"name":"hamster"
+				},
+		   	"resourcePolicy": {
+		  		"containerPolicies": [{"containerName": "*", "minAllowed":{"cpu":"50m"}}]
+		  	}
+		  }
+		}`)
+		err := InstallRawVPA(f, validVPA)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Valid VPA object rejected")
+
+		ginkgo.By("Setting up invalid VPA object")
+		// The invalid object differs by name and minAllowed - there is an invalid "requests" field.
+		invalidVPA := []byte(`{
+			"kind": "VerticalPodAutoscaler",
+			"apiVersion": "autoscaling.k8s.io/v1beta2",
+			"metadata": {"name": "hamster-vpa-invalid"},
+			"spec": {
+				"targetRef": {
+					"apiVersion": "apps/v1",
+					"kind": "Deployment",
+					"name":"hamster"
+				},
+		   	"resourcePolicy": {
+		  		"containerPolicies": [{"containerName": "*", "minAllowed":{"requests":{"cpu":"50m"}}}]
+		  	}
+		  }
+		}`)
+		err2 := InstallRawVPA(f, invalidVPA)
+		gomega.Expect(err2).To(gomega.HaveOccurred(), "Invalid VPA object accepted")
+		gomega.Expect(err2.Error()).To(gomega.MatchRegexp(`.*admission webhook .*vpa.* denied the request: .*`))
 	})
 
 })

@@ -397,6 +397,12 @@ func buildGenericLabels(template *asgTemplate, nodeName string) map[string]strin
 	result[kubeletapis.LabelZoneRegion] = template.Region
 	result[kubeletapis.LabelZoneFailureDomain] = template.Zone
 	result[kubeletapis.LabelHostname] = nodeName
+
+	// TODO remove when we update to a recent version
+	result["node.kubernetes.io/instance-type"] = result[kubeletapis.LabelInstanceType]
+	result["topology.kubernetes.io/region"] = template.Region
+	result["topology.kubernetes.io/zone"] = template.Zone
+
 	return result
 }
 

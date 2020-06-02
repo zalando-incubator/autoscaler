@@ -29,6 +29,7 @@ pipeline:
       fi
 
       cd cluster-autoscaler
+      make test-in-docker
       make build-in-docker
 
       IMAGE="${DOWNSTREAM}:${VERSION}"

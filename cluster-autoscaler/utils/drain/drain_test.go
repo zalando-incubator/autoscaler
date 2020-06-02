@@ -21,10 +21,10 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	//appsv1beta1 "k8s.io/api/apps/v1beta1"
 	batchv1 "k8s.io/api/batch/v1"
 	apiv1 "k8s.io/api/core/v1"
-	extensions "k8s.io/api/extensions/v1beta1"
 	policyv1 "k8s.io/api/policy/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -84,7 +84,7 @@ func TestDrain(t *testing.T) {
 		},
 	}
 
-	ds := extensions.DaemonSet{
+	ds := appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ds",
 			Namespace: "default",
@@ -137,13 +137,13 @@ func TestDrain(t *testing.T) {
 			},
 		}
 	*/
-	rs := extensions.ReplicaSet{
+	rs := appsv1.ReplicaSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "rs",
 			Namespace: "default",
 			SelfLink:  testapi.Default.SelfLink("replicasets", "rs"),
 		},
-		Spec: extensions.ReplicaSetSpec{
+		Spec: appsv1.ReplicaSetSpec{
 			Replicas: &replicas,
 		},
 	}
@@ -355,7 +355,7 @@ func TestDrain(t *testing.T) {
 		pods        []*apiv1.Pod
 		pdbs        []*policyv1.PodDisruptionBudget
 		rcs         []apiv1.ReplicationController
-		replicaSets []extensions.ReplicaSet
+		replicaSets []appsv1.ReplicaSet
 		expectFatal bool
 		expectPods  []*apiv1.Pod
 	}{
@@ -396,7 +396,7 @@ func TestDrain(t *testing.T) {
 			description: "RS-managed pod",
 			pods:        []*apiv1.Pod{rsPod},
 			pdbs:        []*policyv1.PodDisruptionBudget{},
-			replicaSets: []extensions.ReplicaSet{rs},
+			replicaSets: []appsv1.ReplicaSet{rs},
 			expectFatal: false,
 			expectPods:  []*apiv1.Pod{rsPod},
 		},
@@ -404,7 +404,7 @@ func TestDrain(t *testing.T) {
 			description: "RS-managed pod that is being deleted",
 			pods:        []*apiv1.Pod{rsPodDeleted},
 			pdbs:        []*policyv1.PodDisruptionBudget{},
-			replicaSets: []extensions.ReplicaSet{rs},
+			replicaSets: []appsv1.ReplicaSet{rs},
 			expectFatal: false,
 			expectPods:  []*apiv1.Pod{},
 		},

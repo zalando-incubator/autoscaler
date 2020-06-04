@@ -24,7 +24,7 @@ import (
 
 var (
 	// AvailableExpanders is a list of available expander options
-	AvailableExpanders = []string{RandomExpanderName, MostPodsExpanderName, LeastWasteExpanderName, PriceBasedExpanderName, PreferSpotExpanderName, HighestPriorityExpanderName}
+	AvailableExpanders = []string{RandomExpanderName, MostPodsExpanderName, LeastWasteExpanderName, PriceBasedExpanderName, PreferSpotExpanderName, HighestPriorityExpanderName, GroupSizeExpanderName}
 	// RandomExpanderName selects a node group at random
 	RandomExpanderName = "random"
 	// MostPodsExpanderName selects a node group that fits the most pods
@@ -39,14 +39,17 @@ var (
 	PreferSpotExpanderName = "prefer-spot"
 	// HighestPriorityExpanderName selects the node group with the highest priority
 	HighestPriorityExpanderName = "highest-priority"
+	// GroupSizeExpanderName selects the nodegroup to optimize the number of nodes
+	GroupSizeExpanderName = "group-size"
 )
 
 // Option describes an option to expand the cluster.
 type Option struct {
-	NodeGroup cloudprovider.NodeGroup
-	NodeCount int
-	Debug     string
-	Pods      []*apiv1.Pod
+	NodeGroup     cloudprovider.NodeGroup
+	NodeCount     int
+	Debug         string
+	Pods          []*apiv1.Pod
+	ScheduledPods []*apiv1.Pod
 }
 
 // Strategy describes an interface for selecting the best option when scaling up

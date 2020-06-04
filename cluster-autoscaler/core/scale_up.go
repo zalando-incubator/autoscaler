@@ -245,7 +245,7 @@ var (
 // false if it didn't and error if an error occurred. Assumes that all nodes in the cluster are
 // ready and in sync with instance groups.
 func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.AutoscalingProcessors, clusterStateRegistry *clusterstate.ClusterStateRegistry, unschedulablePods []*apiv1.Pod,
-	nodes []*apiv1.Node, daemonSets []*appsv1.DaemonSet) (*status.ScaleUpStatus, errors.AutoscalerError) {
+	nodes []*apiv1.Node, daemonSets []*appsv1.DaemonSet, allScheduledPods []*apiv1.Pod) (*status.ScaleUpStatus, errors.AutoscalerError) {
 	// From now on we only care about unschedulable pods that were marked after the newest
 	// node became available for the scheduler.
 	if len(unschedulablePods) == 0 {
@@ -366,10 +366,16 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 			skippedNodeGroups[nodeGroup.Id()] = maxLimitReachedReason
 			continue
 		}
-
+		groupScheduledPods, err := scheduledInNodeGroup(nodeGroup, allScheduledPods)
+		if err != nil {
+			glog.Errorf("Skipping node group %s; error getting group scheduled pods: %v", nodeGroup.Id(), err)
+			skippedNodeGroups[nodeGroup.Id()] = notReadyReason
+			continue
+		}
 		option := expander.Option{
-			NodeGroup: nodeGroup,
-			Pods:      make([]*apiv1.Pod, 0),
+			NodeGroup:     nodeGroup,
+			Pods:          make([]*apiv1.Pod, 0),
+			ScheduledPods: groupScheduledPods,
 		}
 
 		schedulableOnNode := CheckPodsSchedulableOnNode(context, unschedulablePods, nodeGroup.Id(), nodeInfo)
@@ -527,6 +533,28 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 	}
 
 	return &status.ScaleUpStatus{ScaledUp: false, PodsRemainUnschedulable: getRemainingPods(podsRemainUnschedulable, skippedNodeGroups)}, nil
+}
+
+func scheduledInNodeGroup(group cloudprovider.NodeGroup, scheduledPods []*apiv1.Pod) ([]*apiv1.Pod, error) {
+	nodegroupPods := make([]*apiv1.Pod, 0)
+	nodeSet := make(map[string]interface{})
+	nodes, err := group.Nodes()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get nodes for nodegroup %s: %v", group.Id(), err)
+	}
+	for _, n := range nodes {
+		nodeSet[n] = nil
+	}
+	for _, p := range scheduledPods {
+		if p.Spec.NodeName != "" {
+			if _, ok := nodeSet[p.Spec.NodeName]; ok {
+				nodegroupPods = append(nodegroupPods, p)
+			} else {
+
+			}
+		}
+	}
+	return nodegroupPods, nil
 }
 
 func getRemainingPods(schedulingErrors map[*apiv1.Pod]map[string]status.Reasons, skipped map[string]status.Reasons) []status.NoScaleUpInfo {

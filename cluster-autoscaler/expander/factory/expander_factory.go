@@ -19,6 +19,7 @@ package factory
 import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
+	"k8s.io/autoscaler/cluster-autoscaler/expander/groupsize"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/mostpods"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/preferspot"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/price"
@@ -52,6 +53,8 @@ func ExpanderStrategyFromString(expanderFlag string, cloudProvider cloudprovider
 		return preferspot.NewStrategy(), nil
 	case expander.HighestPriorityExpanderName:
 		return priority.NewStrategy(), nil
+	case expander.GroupSizeExpanderName:
+		return groupsize.NewStrategy(), nil
 	}
 	return nil, errors.NewAutoscalerError(errors.InternalError, "Expander %s not supported", expanderFlag)
 }

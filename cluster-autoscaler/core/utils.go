@@ -145,7 +145,7 @@ func FilterOutSchedulable(unschedulableCandidates []*apiv1.Pod, nodes []*apiv1.N
 			if node, ok := nodeNameToNodeInfo[nodeName]; ok {
 				glogx.V(5).UpTo(loggingQuota).Infof("Pod object: %v", pod)
 				glogx.V(5).UpTo(loggingQuota).Infof("Node info: requested %v, allocatable %v, nonzero %v", node.RequestedResource(), node.AllocatableResource(), node.NonZeroRequest())
-				glogx.V(5).UpTo(loggingQuota).Infof("Node object: %v")
+				glogx.V(5).UpTo(loggingQuota).Infof("Node object: %v", node)
 			}
 		}
 		podSchedulable.set(pod, predicateError)

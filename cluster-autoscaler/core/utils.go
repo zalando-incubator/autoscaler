@@ -141,6 +141,12 @@ func FilterOutSchedulable(unschedulableCandidates []*apiv1.Pod, nodes []*apiv1.N
 			unschedulablePods = append(unschedulablePods, pod)
 		} else {
 			glogx.V(4).UpTo(loggingQuota).Infof("Pod %s marked as unschedulable can be scheduled on %s. Ignoring in scale up.", pod.Name, nodeName)
+
+			if node, ok := nodeNameToNodeInfo[nodeName]; ok {
+				glogx.V(5).UpTo(loggingQuota).Infof("Pod object: %v", pod)
+				glogx.V(5).UpTo(loggingQuota).Infof("Node info: requested %v, allocatable %v, nonzero %v", node.RequestedResource(), node.AllocatableResource(), node.NonZeroRequest())
+				glogx.V(5).UpTo(loggingQuota).Infof("Node object: %v")
+			}
 		}
 		podSchedulable.set(pod, predicateError)
 	}

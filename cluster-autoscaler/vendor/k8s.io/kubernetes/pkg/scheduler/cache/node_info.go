@@ -536,6 +536,18 @@ func calculateResource(pod *v1.Pod) (res Resource, non0CPU int64, non0Mem int64)
 		// No non-zero resources for GPUs or opaque resources.
 	}
 
+	for _, ic := range pod.Spec.InitContainers {
+		resPtr.SetMaxResource(ic.Resources.Requests)
+		non0CPUReq, non0MemReq := priorityutil.GetNonzeroRequests(&ic.Resources.Requests)
+		if non0CPU < non0CPUReq {
+			non0CPU = non0CPUReq
+		}
+
+		if non0Mem < non0MemReq {
+			non0Mem = non0MemReq
+		}
+	}
+
 	return
 }
 

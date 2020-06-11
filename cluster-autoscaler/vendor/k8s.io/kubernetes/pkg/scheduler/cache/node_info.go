@@ -270,6 +270,13 @@ func NewNodeInfo(pods ...*v1.Pod) *NodeInfo {
 	return ni
 }
 
+func (n *NodeInfo) DebugDump() {
+	for _, pod := range n.pods {
+		res, nonzcpu, nonzmem := calculateResource(pod)
+		glog.Infof("Pod %s/%s, resources %v, nonzero CPU %d, nonzero memory %d", pod.Namespace, pod.Name, res, nonzcpu, nonzmem)
+	}
+}
+
 // Node returns overall information about this node.
 func (n *NodeInfo) Node() *v1.Node {
 	if n == nil {

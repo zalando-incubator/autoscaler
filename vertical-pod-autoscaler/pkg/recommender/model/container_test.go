@@ -141,7 +141,10 @@ func TestRecordOOMDontRunAway(t *testing.T) {
 	assert.NoError(t, test.container.RecordOOM(testTimestamp, ResourceAmount(999*mb)))
 	assert.NoError(t, test.container.RecordOOM(testTimestamp, ResourceAmount(999*mb)))
 
-	test.mockMemoryHistogram.On("SubtractSample", 1200.0*mb, 1.0, memoryAggregationWindowEnd)
+	test.mockMemoryHistogram.On("AddSample", 1000*mb, 1.0, memoryAggregationWindowEnd)
+	// OOMs with the same amount should influence the sample value
+	assert.NoError(t, test.container.RecordOOM(testTimestamp, ResourceAmount(1000*mb)))
+
 	test.mockMemoryHistogram.On("AddSample", 2400.0*mb, 1.0, memoryAggregationWindowEnd)
 	// a larger OOM should increase the sample value
 	assert.NoError(t, test.container.RecordOOM(testTimestamp, ResourceAmount(2000*mb)))

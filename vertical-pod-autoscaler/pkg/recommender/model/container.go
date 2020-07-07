@@ -149,7 +149,10 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 	addNewPeak := false
 	if ts.Before(container.WindowEnd) {
 		oldMaxMem := container.GetMaxMemoryPeak()
-		if oldMaxMem != 0 && sample.Usage > oldMaxMem {
+		// HACK: don't remove the old peak in case of OOM. Additionally, if we receive an OOM with
+		// the same value as the current peak, aggregate the sample again. This will eventually cause
+		// the p90 value to go up.
+		if oldMaxMem != 0 && sample.Usage > oldMaxMem && !isOOM {
 			// Remove the old peak.
 			oldPeak := ContainerUsageSample{
 				MeasureStart: container.WindowEnd,
@@ -158,6 +161,9 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 				Resource:     ResourceMemory,
 			}
 			container.aggregator.SubtractSample(&oldPeak)
+			addNewPeak = true
+		}
+		if oldMaxMem == 0 && sample.Usage == oldMaxMem && isOOM {
 			addNewPeak = true
 		}
 	} else {

@@ -17,6 +17,7 @@ limitations under the License.
 package autoscaling
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -230,15 +231,61 @@ func NewVPA(f *framework.Framework, name string, targetRef *autoscaling.CrossVer
 	return &vpa
 }
 
-// InstallVPA installs a VPA object in the test cluster.
-func InstallVPA(f *framework.Framework, vpa *vpa_types.VerticalPodAutoscaler) {
-	ns := f.Namespace.Name
+type patchRecord struct {
+	Op    string      `json:"op,inline"`
+	Path  string      `json:"path,inline"`
+	Value interface{} `json:"value"`
+}
+
+func getVpaClientSet(f *framework.Framework) vpa_clientset.Interface {
 	config, err := framework.LoadConfig()
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "unexpected error loading framework")
-	vpaClientSet := vpa_clientset.NewForConfigOrDie(config)
-	vpaClient := vpaClientSet.AutoscalingV1beta2()
-	_, err = vpaClient.VerticalPodAutoscalers(ns).Create(vpa)
+	return vpa_clientset.NewForConfigOrDie(config)
+}
+
+// InstallVPA installs a VPA object in the test cluster.
+func InstallVPA(f *framework.Framework, vpa *vpa_types.VerticalPodAutoscaler) {
+	vpaClientSet := getVpaClientSet(f)
+	_, err := vpaClientSet.AutoscalingV1beta2().VerticalPodAutoscalers(f.Namespace.Name).Create(vpa)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "unexpected error creating VPA")
+}
+
+// InstallRawVPA installs a VPA object passed in as raw json in the test cluster.
+func InstallRawVPA(f *framework.Framework, obj interface{}) error {
+	vpaClientSet := getVpaClientSet(f)
+	err := vpaClientSet.AutoscalingV1beta2().RESTClient().Post().
+		Namespace(f.Namespace.Name).
+		Resource("verticalpodautoscalers").
+		Body(obj).
+		Do()
+	return err.Error()
+}
+
+// PatchVpaRecommendation installs a new reocmmendation for VPA object.
+func PatchVpaRecommendation(f *framework.Framework, vpa *vpa_types.VerticalPodAutoscaler,
+	recommendation *vpa_types.RecommendedPodResources) {
+	newStatus := vpa.Status.DeepCopy()
+	newStatus.Recommendation = recommendation
+	bytes, err := json.Marshal([]patchRecord{{
+		Op:    "replace",
+		Path:  "/status",
+		Value: *newStatus,
+	}})
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = getVpaClientSet(f).AutoscalingV1beta2().VerticalPodAutoscalers(f.Namespace.Name).Patch(vpa.Name, types.JSONPatchType, bytes)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to patch VPA.")
+}
+
+// AnnotatePod adds annotation for an existing pod.
+func AnnotatePod(f *framework.Framework, podName, annotationName, annotationValue string) {
+	bytes, err := json.Marshal([]patchRecord{{
+		Op:    "add",
+		Path:  fmt.Sprintf("/metadata/annotations/%v", annotationName),
+		Value: annotationValue,
+	}})
+	pod, err := f.ClientSet.CoreV1().Pods(f.Namespace.Name).Patch(podName, types.JSONPatchType, bytes)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to patch pod.")
+	gomega.Expect(pod.Annotations[annotationName]).To(gomega.Equal(annotationValue))
 }
 
 // ParseQuantityOrDie parses quantity from string and dies with an error if

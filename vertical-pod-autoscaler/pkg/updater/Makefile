@@ -3,7 +3,8 @@ all: build
 TAG?=dev
 REGISTRY?=staging-k8s.gcr.io
 FLAGS=
-ENVVAR=CGO_ENABLED=0 LD_FLAGS=-s
+TEST_ENVVAR=LD_FLAGS=-s
+ENVVAR=CGO_ENABLED=0 $(TEST_ENVVAR)
 GOOS?=linux
 COMPONENT=updater
 FULL_COMPONENT=vpa-${COMPONENT}
@@ -20,7 +21,7 @@ build-binary: clean deps
 	$(ENVVAR) GOOS=$(GOOS) GOARCH=arm64 godep go build -o build/arm64/${COMPONENT}
 
 test-unit: clean deps build
-	$(ENVVAR) godep go test --test.short -race ./... $(FLAGS)
+	$(TEST_ENVVAR) godep go test --test.short -race ./... $(FLAGS)
 
 docker-build:
 ifndef REGISTRY

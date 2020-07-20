@@ -99,7 +99,7 @@ func (r *recommender) UpdateVPAs() {
 		}
 		resources := r.podResourceRecommender.GetRecommendedPodResources(GetContainerNameToAggregateStateMap(vpa))
 		had := vpa.HasRecommendation()
-		if had {
+		if had && observedVpa.Namespace == "kube-system" && observedVpa.Name == "prometheus" {
 			klog.V(3).Infof("Has recommendation: %+v", vpa.Recommendation.ContainerRecommendations)
 		}
 		vpa.UpdateRecommendation(getCappedRecommendation(vpa.ID, resources, observedVpa.Spec.ResourcePolicy))

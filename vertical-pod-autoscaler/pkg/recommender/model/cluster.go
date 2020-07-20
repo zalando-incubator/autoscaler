@@ -201,6 +201,7 @@ func (cluster *ClusterState) RecordOOM(containerID ContainerID, timestamp time.T
 	if !containerExists {
 		return NewKeyError(containerID.ContainerName)
 	}
+	klog.V(3).Infof("RecordOOM for pod %s/%s: %+v", pod.ID.Namespace, pod.ID.PodName, requestedMemory)
 	err := containerState.RecordOOM(timestamp, requestedMemory)
 	if err != nil {
 		return fmt.Errorf("error while recording OOM for %v, Reason: %v", containerID, err)

@@ -89,12 +89,12 @@ func (u *updater) RunOnce() {
 	for _, vpa := range vpaList {
 		if vpa_api_util.GetUpdateMode(vpa) != vpa_types.UpdateModeRecreate &&
 			vpa_api_util.GetUpdateMode(vpa) != vpa_types.UpdateModeAuto {
-			klog.V(3).Infof("skipping VPA object %v because its mode is not \"Recreate\" or \"Auto\"", vpa.Name)
+			klog.V(3).Infof("skipping VPA object %s/%s because its mode is not \"Recreate\" or \"Auto\"", vpa.Namespace, vpa.Name)
 			continue
 		}
 		selector, err := u.selectorFetcher.Fetch(vpa)
 		if err != nil {
-			klog.V(3).Infof("skipping VPA object %v because we cannot fetch selector", vpa.Name)
+			klog.V(3).Infof("skipping VPA object %s/%s because we cannot fetch selector", vpa.Namespace, vpa.Name)
 			continue
 		}
 
@@ -147,7 +147,7 @@ func (u *updater) RunOnce() {
 			klog.V(2).Infof("evicting pod %v", pod.Name)
 			evictErr := evictionLimiter.Evict(pod, u.eventRecorder)
 			if evictErr != nil {
-				klog.Warningf("evicting pod %v failed: %v", pod.Name, evictErr)
+				klog.Warningf("evicting pod %s/%s failed: %v", vpa.Namespace, pod.Name, evictErr)
 			}
 		}
 	}

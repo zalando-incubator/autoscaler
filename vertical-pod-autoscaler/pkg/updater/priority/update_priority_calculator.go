@@ -20,6 +20,7 @@ import (
 	"flag"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	apiv1 "k8s.io/api/core/v1"
@@ -80,7 +81,7 @@ func NewUpdatePriorityCalculator(policy *vpa_types.PodResourcePolicy,
 func (calc *UpdatePriorityCalculator) AddPod(pod *apiv1.Pod, recommendation *vpa_types.RecommendedPodResources, now time.Time) {
 	processedRecommendation, _, err := calc.recommendationProcessor.Apply(recommendation, calc.resourcesPolicy, calc.conditions, pod)
 	if err != nil {
-		klog.V(2).Infof("cannot process recommendation for pod %s: %v", pod.Name, err)
+		klog.V(2).Infof("cannot process recommendation for pod %s/%s: %v", pod.Namespace, pod.Name, err)
 		return
 	}
 
@@ -89,7 +90,7 @@ func (calc *UpdatePriorityCalculator) AddPod(pod *apiv1.Pod, recommendation *vpa
 	quickOOM := false
 	if oomkill.HasQuickOomKill(*evictAfterOOMThreshold, pod) {
 		quickOOM = true
-		klog.V(2).Infof("quick OOM detected in pod %v/%v", pod.Namespace, pod.Name)
+		klog.V(2).Infof("quick OOM detected in pod %s/%s", pod.Namespace, pod.Name)
 	}
 
 	// The update is allowed in following cases:
@@ -99,15 +100,15 @@ func (calc *UpdatePriorityCalculator) AddPod(pod *apiv1.Pod, recommendation *vpa
 	if !updatePriority.outsideRecommendedRange && !quickOOM {
 		if pod.Status.StartTime == nil {
 			// TODO: Set proper condition on the VPA.
-			klog.V(2).Infof("not updating pod %v, missing field pod.Status.StartTime", pod.Name)
+			klog.V(2).Infof("not updating pod %s/%s, missing field pod.Status.StartTime", pod.Namespace, pod.Name)
 			return
 		}
 		if now.Before(pod.Status.StartTime.Add(*podLifetimeUpdateThreshold)) {
-			klog.V(2).Infof("not updating a short-lived pod %v, request within recommended range", pod.Name)
+			klog.V(2).Infof("not updating a short-lived pod %s/%s, request within recommended range", pod.Namespace, pod.Name)
 			return
 		}
 		if updatePriority.resourceDiff < calc.config.MinChangePriority {
-			klog.V(2).Infof("not updating pod %v, resource diff too low: %v", pod.Name, updatePriority)
+			klog.V(2).Infof("not updating pod %s/%s, resource diff too low: %v", pod.Namespace, pod.Name, updatePriority)
 			return
 		}
 	}
@@ -115,7 +116,7 @@ func (calc *UpdatePriorityCalculator) AddPod(pod *apiv1.Pod, recommendation *vpa
 		klog.V(2).Infof("Not updating quick OOMed Pod %s/%s because recommend resources will not change", pod.Namespace, pod.Name)
 		return
 	}
-	klog.V(2).Infof("pod accepted for update %v with priority %v", pod.Name, updatePriority.resourceDiff)
+	klog.V(2).Infof("pod accepted for update %s/%s with priority %v", pod.Namespace, pod.Name, updatePriority.resourceDiff)
 	calc.pods = append(calc.pods, updatePriority)
 }
 
@@ -146,9 +147,15 @@ func (calc *UpdatePriorityCalculator) getUpdatePriority(pod *apiv1.Pod, recommen
 	for _, podContainer := range pod.Spec.Containers {
 		recommendedRequest := vpa_api_util.GetRecommendationForContainer(podContainer.Name, recommendation)
 		if recommendedRequest == nil {
+			if strings.HasPrefix(pod.Name, "prometheus") {
+				klog.V(4).Infof("There are no recommendations yet for: %s/%s", pod.Namespace, pod.Name)
+			}
 			continue
 		}
 		for resourceName, recommended := range recommendedRequest.Target {
+			if strings.HasPrefix(pod.Name, "prometheus") {
+				klog.V(4).Infof("Dump recommendedRequest.Target: %+v", recommendedRequest.Target)
+			}
 			totalRecommendedPerResource[resourceName] += recommended.MilliValue()
 			lowerBound, hasLowerBound := recommendedRequest.LowerBound[resourceName]
 			upperBound, hasUpperBound := recommendedRequest.UpperBound[resourceName]
@@ -171,10 +178,23 @@ func (calc *UpdatePriorityCalculator) getUpdatePriority(pod *apiv1.Pod, recommen
 			}
 		}
 	}
-	resourceDiff := 0.0
+	resourceDiff := math.MaxFloat64
 	for resource, totalRecommended := range totalRecommendedPerResource {
+		if resourceDiff == math.MaxFloat64 {
+			resourceDiff = 0.0
+		}
 		totalRequest := math.Max(float64(totalRequestPerResource[resource]), 1.0)
 		resourceDiff += math.Abs(totalRequest-float64(totalRecommended)) / totalRequest
+		if strings.HasPrefix(pod.Name, "prometheus") {
+			klog.V(4).Infof("Inner Loop computed resourceDiff for %s/%s: %0.2f", pod.Namespace, pod.Name, resourceDiff)
+		}
+	}
+	if strings.HasPrefix(pod.Name, "prometheus") {
+		klog.V(3).Infof("Computed resourceDiff for %s/%s: %0.2f", pod.Namespace, pod.Name, resourceDiff)
+	}
+	if resourceDiff == math.MaxFloat64 {
+		klog.V(3).Infof("No value for totalRecommendedPerResource %s/%s", pod.Namespace, pod.Name)
+		resourceDiff = 0.0
 	}
 	return podPriority{
 		pod:                     pod,

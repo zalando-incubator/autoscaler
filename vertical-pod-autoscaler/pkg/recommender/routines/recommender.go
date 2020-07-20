@@ -99,6 +99,9 @@ func (r *recommender) UpdateVPAs() {
 		}
 		resources := r.podResourceRecommender.GetRecommendedPodResources(GetContainerNameToAggregateStateMap(vpa))
 		had := vpa.HasRecommendation()
+		if had {
+			klog.V(3).Infof("Has recommendation: %+v", vpa.Recommendation.ContainerRecommendations)
+		}
 		vpa.UpdateRecommendation(getCappedRecommendation(vpa.ID, resources, observedVpa.Spec.ResourcePolicy))
 		if vpa.HasRecommendation() && !had {
 			metrics_recommender.ObserveRecommendationLatency(vpa.Created)

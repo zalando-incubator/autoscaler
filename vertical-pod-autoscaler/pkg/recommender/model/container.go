@@ -196,11 +196,7 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 			Resource:     ResourceMemory,
 		}
 		container.aggregator.AddSample(&newPeak)
-		if isOOM {
-			container.oomPeak = sample.Usage
-		} else {
-			container.memoryPeak = sample.Usage
-		}
+		container.memoryPeak = sample.Usage
 	}
 	return true
 }

@@ -154,7 +154,7 @@ func (calc *UpdatePriorityCalculator) getUpdatePriority(pod *apiv1.Pod, recommen
 		}
 		for resourceName, recommended := range recommendedRequest.Target {
 			if strings.HasPrefix(pod.Name, "prometheus") {
-				klog.V(4).Infof("Dump recommendedRequest.Target: %+v", recommendedRequest.Target)
+				klog.V(4).Infof("Prometheus recommendedRequest.Target %s: %v", resourceName, recommendedRequest.Target[resourceName])
 			}
 			totalRecommendedPerResource[resourceName] += recommended.MilliValue()
 			lowerBound, hasLowerBound := recommendedRequest.LowerBound[resourceName]

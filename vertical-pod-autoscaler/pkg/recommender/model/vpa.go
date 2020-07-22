@@ -224,7 +224,9 @@ func (vpa *Vpa) AsStatus() *vpa_types.VerticalPodAutoscalerStatus {
 	status := &vpa_types.VerticalPodAutoscalerStatus{
 		Conditions: vpa.Conditions.AsList(),
 	}
-	klog.V(3).Infof("vpa.AsStatus vpa recommendation: %+v", vpa.Recommendation)
+	if vpa.ID.Namespace == "kube-syste" && vpa.ID.VpaName == "prometheus-vpa" {
+		klog.V(3).Infof("vpa.AsStatus vpa recommendation: %+v", vpa.Recommendation)
+	}
 	if vpa.Recommendation != nil {
 		status.Recommendation = vpa.Recommendation
 	}

@@ -99,6 +99,11 @@ func (r *recommender) UpdateVPAs() {
 		}
 		resources := r.podResourceRecommender.GetRecommendedPodResources(GetContainerNameToAggregateStateMap(vpa))
 		had := vpa.HasRecommendation()
+		if had && observedVpa.Namespace == "kube-system" && observedVpa.Name == "prometheus" && len(vpa.Recommendation.ContainerRecommendations) > 0 {
+			klog.V(3).Infof("Has recommendation: memory Target=%v, uncappedTarget=%v",
+				vpa.Recommendation.ContainerRecommendations[0].Target["memory"],
+				vpa.Recommendation.ContainerRecommendations[0].UncappedTarget["memory"])
+		}
 		vpa.UpdateRecommendation(getCappedRecommendation(vpa.ID, resources, observedVpa.Spec.ResourcePolicy))
 		if vpa.HasRecommendation() && !had {
 			metrics_recommender.ObserveRecommendationLatency(vpa.Created)

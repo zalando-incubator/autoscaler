@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	"k8s.io/klog"
 )
 
 // Map from VPA condition type to condition.
@@ -222,6 +223,9 @@ func (vpa *Vpa) UpdateConditions(podsMatched bool) {
 func (vpa *Vpa) AsStatus() *vpa_types.VerticalPodAutoscalerStatus {
 	status := &vpa_types.VerticalPodAutoscalerStatus{
 		Conditions: vpa.Conditions.AsList(),
+	}
+	if vpa.ID.Namespace == "kube-syste" && vpa.ID.VpaName == "prometheus-vpa" {
+		klog.V(3).Infof("vpa.AsStatus vpa recommendation: %+v", vpa.Recommendation)
 	}
 	if vpa.Recommendation != nil {
 		status.Recommendation = vpa.Recommendation

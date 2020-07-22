@@ -133,6 +133,9 @@ func (container *ContainerState) GetMaxMemoryPeak() ResourceAmount {
 }
 
 func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, isOOM bool) bool {
+	if isOOM {
+		klog.V(3).Infof("addMemorySample isOOM=%v", isOOM)
+	}
 	ts := sample.MeasureStart
 	if !sample.isValid(ResourceMemory) || (!isOOM && ts.Before(container.lastMemorySampleStart)) {
 		return false // Discard invalid or outdated samples. OOMs are always recorded as long as they're valid.
@@ -149,6 +152,10 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 	addNewPeak := false
 	if ts.Before(container.WindowEnd) {
 		oldMaxMem := container.GetMaxMemoryPeak()
+		if isOOM {
+			klog.V(3).Infof("addMemorySample isOOM=%v oldpeak usage: %d, sample.Usage: %d", isOOM, oldMaxMem, sample.Usage)
+		}
+
 		// HACK: don't remove the old peak in case of OOM. Additionally, if we receive an OOM with
 		// the same value as the current peak, aggregate the sample again. This will eventually cause
 		// the p90 value to go up.
@@ -167,6 +174,9 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 			addNewPeak = true
 		}
 	} else {
+		if isOOM {
+			klog.V(3).Infof("addMemorySample isOOM=%v no oomPeak detected: %v", isOOM, container.WindowEnd)
+		}
 		// Shift the memory aggregation window to the next interval.
 		shift := truncate(ts.Sub(container.WindowEnd), MemoryAggregationInterval) + MemoryAggregationInterval
 		container.WindowEnd = container.WindowEnd.Add(shift)
@@ -176,6 +186,9 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 	}
 	container.observeQualityMetrics(sample.Usage, isOOM, corev1.ResourceMemory)
 	if addNewPeak {
+		if isOOM {
+			klog.V(3).Infof("addMemorySample isOOM=%v addNewpeak usage: %d", isOOM, sample.Usage)
+		}
 		newPeak := ContainerUsageSample{
 			MeasureStart: container.WindowEnd,
 			Usage:        sample.Usage,
@@ -183,11 +196,8 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 			Resource:     ResourceMemory,
 		}
 		container.aggregator.AddSample(&newPeak)
-		if isOOM {
-			container.oomPeak = sample.Usage
-		} else {
-			container.memoryPeak = sample.Usage
-		}
+		// Don't do isOOM workaround, that was introduced in https://github.com/zalando-incubator/autoscaler/commit/c4348d6a5b9aa237b76660890586e14c53051a75
+		container.memoryPeak = sample.Usage
 	}
 	return true
 }
@@ -200,10 +210,11 @@ func (container *ContainerState) RecordOOM(timestamp time.Time, requestedMemory 
 	}
 	// Get max of the request and the recent usage-based memory peak.
 	// Omitting oomPeak here to protect against recommendation running too high on subsequent OOMs.
-	memoryUsed := ResourceAmountMax(requestedMemory, container.memoryPeak)
+	memoryUsed := ResourceAmountMax(requestedMemory, container.memoryPeak) // <-- ignores oomPeak
 	memoryNeeded := ResourceAmountMax(memoryUsed+MemoryAmountFromBytes(OOMMinBumpUp),
-		ScaleResource(memoryUsed, OOMBumpUpRatio))
+		ScaleResource(memoryUsed, OOMBumpUpRatio)) // adds at least 100MB to container.memoryPeak
 
+	klog.V(3).Infof("RecordOOM memoryNeeded: %d", memoryNeeded)
 	oomMemorySample := ContainerUsageSample{
 		MeasureStart: timestamp,
 		Usage:        memoryNeeded,

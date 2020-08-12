@@ -137,6 +137,11 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 	if !sample.isValid(ResourceMemory) || (!isOOM && ts.Before(container.lastMemorySampleStart)) {
 		return false // Discard invalid or outdated samples. OOMs are always recorded as long as they're valid.
 	}
+
+	if isOOM {
+		klog.Infof("ts: %s, windowEnd: %s", ts, container.WindowEnd)
+	}
+
 	container.lastMemorySampleStart = ts
 	if container.WindowEnd.IsZero() { // This is the first sample.
 		container.WindowEnd = ts
@@ -159,6 +164,9 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 			}
 			container.aggregator.SubtractSample(&oldPeak)
 			addNewPeak = true
+			if isOOM {
+				klog.Infof("Removed peak: %v", oldPeak)
+			}
 		}
 	} else {
 		// Shift the memory aggregation window to the next interval.
@@ -166,8 +174,18 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 		container.WindowEnd = container.WindowEnd.Add(shift)
 		container.memoryPeak = 0
 		container.oomPeak = 0
+
+		if isOOM {
+			klog.Infof("shifted")
+		}
+
 		addNewPeak = true
 	}
+
+	if isOOM {
+		klog.Infof("ts: %s, windowEnd: %s, addNewPeak: %v", ts, container.WindowEnd, addNewPeak)
+	}
+
 	container.observeQualityMetrics(sample.Usage, isOOM, corev1.ResourceMemory)
 	if addNewPeak {
 		newPeak := ContainerUsageSample{
@@ -176,9 +194,21 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 			Request:      sample.Request,
 			Resource:     ResourceMemory,
 		}
+		if isOOM {
+			klog.Infof("Adding sample: %v", newPeak)
+			klog.Infof("Aggregator: %p, last sample %s", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator(), container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().LastSampleStart)
+			klog.Infof("Before / 0.9: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.9))
+			klog.Infof("Before / 0.95: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.95))
+			klog.Infof("Before / 0.9999: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.99999))
+		}
 		container.aggregator.AddSample(&newPeak)
 		if isOOM {
 			container.oomPeak = sample.Usage
+			klog.Infof("Aggregator: %p", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator())
+			klog.Infof("After / 0.1: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.1))
+			klog.Infof("After / 0.9: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.9))
+			klog.Infof("After / 0.95: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.95))
+			klog.Infof("After / 0.9999: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.99999))
 		} else {
 			container.memoryPeak = sample.Usage
 		}

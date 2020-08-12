@@ -98,6 +98,17 @@ func (r *recommender) UpdateVPAs() {
 			continue
 		}
 		resources := r.podResourceRecommender.GetRecommendedPodResources(GetContainerNameToAggregateStateMap(vpa))
+
+		if observedVpa.Name == "kube-downscaler" {
+			x := GetContainerNameToAggregateStateMap(vpa)
+			y := x["downscaler"]
+
+			klog.Infof("recommended: %v, downscaler: %p", resources, y)
+			klog.Infof("Result / 0.9: %f", y.AggregateMemoryPeaks.Percentile(0.9))
+			klog.Infof("Result / 0.95: %f", y.AggregateMemoryPeaks.Percentile(0.95))
+			klog.Infof("Result / 0.9999: %f", y.AggregateMemoryPeaks.Percentile(0.99999))
+		}
+
 		had := vpa.HasRecommendation()
 		vpa.UpdateRecommendation(getCappedRecommendation(vpa.ID, resources, observedVpa.Spec.ResourcePolicy))
 		if vpa.HasRecommendation() && !had {

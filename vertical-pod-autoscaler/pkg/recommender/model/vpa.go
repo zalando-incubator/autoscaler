@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	"k8s.io/klog"
 )
 
 // Map from VPA condition type to condition.
@@ -178,8 +179,24 @@ func (vpa *Vpa) MergeCheckpointedState(aggregateContainerStateMap ContainerNameT
 // AggregateStateByContainerName returns a map from container name to the aggregated state
 // of all containers with that name, belonging to pods matched by the VPA.
 func (vpa *Vpa) AggregateStateByContainerName() ContainerNameToAggregateStateMap {
+	if vpa.ID.VpaName == "kube-downscaler" {
+		for key, state := range vpa.aggregateContainerStates {
+			klog.Infof("key: %s", key)
+			klog.Infof("state: %p", state)
+			klog.Infof("Result / 0.9: %f", state.AggregateMemoryPeaks.Percentile(0.9))
+		}
+	}
+
 	containerNameToAggregateStateMap := AggregateStateByContainerName(vpa.aggregateContainerStates)
 	vpa.MergeCheckpointedState(containerNameToAggregateStateMap)
+
+	if vpa.ID.VpaName == "kube-downscaler" {
+		merged := containerNameToAggregateStateMap["downscaler"]
+		klog.Infof("merged: %p", merged)
+		klog.Infof("Result / 0.9: %f", merged.AggregateMemoryPeaks.Percentile(0.9))
+	}
+
+
 	return containerNameToAggregateStateMap
 }
 

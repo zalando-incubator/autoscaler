@@ -170,7 +170,7 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 			container.aggregator.SubtractSample(&oldPeak)
 			addNewPeak = true
 		}
-		if oldMaxMem == 0 && sample.Usage == oldMaxMem && isOOM {
+		if sample.Usage == oldMaxMem && isOOM {
 			addNewPeak = true
 		}
 	} else {

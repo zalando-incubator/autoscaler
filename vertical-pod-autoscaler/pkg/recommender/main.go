@@ -57,7 +57,15 @@ func main() {
 	kube_flag.InitFlags()
 	klog.V(1).Infof("Vertical Pod Autoscaler %s Recommender", common.VerticalPodAutoscalerVersion)
 
-	config := createKubeConfig(float32(*kubeApiQps), int(*kubeApiBurst))
+	// config := createKubeConfig(float32(*kubeApiQps), int(*kubeApiBurst))
+
+	config := &rest.Config{
+		Host: "http://127.0.0.1:8001",
+		// Timeout:   timeout,
+		// Transport: tr,
+		QPS:   float32(*kubeApiQps),
+		Burst: int(*kubeApiBurst),
+	}
 
 	healthCheck := metrics.NewHealthCheck(*metricsFetcherInterval*5, true)
 	metrics.Initialize(*address, healthCheck)

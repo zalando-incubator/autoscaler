@@ -170,7 +170,7 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 			container.aggregator.SubtractSample(&oldPeak)
 			addNewPeak = true
 		}
-		if sample.Usage == oldMaxMem && isOOM {
+		if sample.Usage >= oldMaxMem && isOOM {
 			addNewPeak = true
 		}
 	} else {
@@ -196,8 +196,11 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 			Resource:     ResourceMemory,
 		}
 		container.aggregator.AddSample(&newPeak)
-		// Don't do isOOM workaround, that was introduced in https://github.com/zalando-incubator/autoscaler/commit/c4348d6a5b9aa237b76660890586e14c53051a75
-		container.memoryPeak = sample.Usage
+		if isOOM {
+			container.oomPeak = sample.Usage
+		} else {
+			container.memoryPeak = sample.Usage
+		}
 	}
 	return true
 }

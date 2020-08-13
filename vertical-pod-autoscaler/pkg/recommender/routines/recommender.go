@@ -98,6 +98,18 @@ func (r *recommender) UpdateVPAs() {
 			continue
 		}
 		resources := r.podResourceRecommender.GetRecommendedPodResources(GetContainerNameToAggregateStateMap(vpa))
+
+		if observedVpa.Name == "memory-app" {
+			x := GetContainerNameToAggregateStateMap(vpa)
+			y := x["memory-app"]
+
+			klog.Infof("recommended: %v, memory-app: %p", resources, y)
+			// klog.Infof("%v", y.AggregateMemoryPeaks)
+			klog.Infof("Result / 0.9: %f", y.AggregateMemoryPeaks.Percentile(0.9))
+			klog.Infof("Result / 0.95: %f", y.AggregateMemoryPeaks.Percentile(0.95))
+			klog.Infof("Result / 0.9999: %f", y.AggregateMemoryPeaks.Percentile(0.99999))
+		}
+
 		had := vpa.HasRecommendation()
 		if had && observedVpa.Namespace == "kube-system" && observedVpa.Name == "prometheus" && len(vpa.Recommendation.ContainerRecommendations) > 0 {
 			klog.V(3).Infof("Has recommendation: memory Target=%v, uncappedTarget=%v",

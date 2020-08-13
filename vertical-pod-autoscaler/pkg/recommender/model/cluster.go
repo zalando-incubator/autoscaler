@@ -185,6 +185,7 @@ func (cluster *ClusterState) AddSample(sample *ContainerUsageSampleWithKey) erro
 	if !containerExists {
 		return NewKeyError(sample.Container)
 	}
+	fmt.Printf("Container name before AddSample: %s\n", sample.Container.ContainerName)
 	if !containerState.AddSample(&sample.ContainerUsageSample) {
 		return fmt.Errorf("sample discarded (invalid or out of order)")
 	}
@@ -316,6 +317,22 @@ func (cluster *ClusterState) findOrCreateAggregateContainerState(containerID Con
 				cluster.VpasWithMatchingPods[vpa.ID] = true
 			}
 		}
+	}
+	return aggregateContainerState
+}
+
+func (cluster *ClusterState) findOrCreateAggregateContainerStateNoWrite(containerID ContainerID) *AggregateContainerState {
+	aggregateStateKey := cluster.aggregateStateKeyForContainerID(containerID)
+	aggregateContainerState, aggregateStateExists := cluster.aggregateStateMap[aggregateStateKey]
+	if !aggregateStateExists {
+		aggregateContainerState = NewAggregateContainerState()
+		// cluster.aggregateStateMap[aggregateStateKey] = aggregateContainerState
+		// Link the new aggregation to the existing VPAs.
+		// for _, vpa := range cluster.Vpas {
+		// 	if vpa.UseAggregationIfMatching(aggregateStateKey, aggregateContainerState) {
+		// 		cluster.VpasWithMatchingPods[vpa.ID] = true
+		// 	}
+		// }
 	}
 	return aggregateContainerState
 }

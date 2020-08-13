@@ -272,6 +272,10 @@ func NewContainerStateAggregatorProxy(cluster *ClusterState, containerID Contain
 	return &ContainerStateAggregatorProxy{containerID, cluster}
 }
 
+func (p *ContainerStateAggregatorProxy) Aggregator() *AggregateContainerState {
+	return p.cluster.findOrCreateAggregateContainerStateNoWrite(p.containerID)
+}
+
 // AddSample adds a container sample to the aggregator.
 func (p *ContainerStateAggregatorProxy) AddSample(sample *ContainerUsageSample) {
 	aggregator := p.cluster.findOrCreateAggregateContainerState(p.containerID)

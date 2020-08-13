@@ -140,6 +140,11 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 	if !sample.isValid(ResourceMemory) || (!isOOM && ts.Before(container.lastMemorySampleStart)) {
 		return false // Discard invalid or outdated samples. OOMs are always recorded as long as they're valid.
 	}
+
+	if isOOM {
+		klog.Infof("ts: %s, windowEnd: %s", ts, container.WindowEnd)
+	}
+
 	container.lastMemorySampleStart = ts
 	if container.WindowEnd.IsZero() { // This is the first sample.
 		container.WindowEnd = ts
@@ -169,8 +174,12 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 			}
 			container.aggregator.SubtractSample(&oldPeak)
 			addNewPeak = true
+			if isOOM {
+				klog.Infof("Removed peak: %v", oldPeak)
+			}
 		}
 		if sample.Usage == oldMaxMem && isOOM {
+			klog.V(1).Infof("ADDING NEW OOM PEAK")
 			addNewPeak = true
 		}
 	} else {
@@ -184,6 +193,11 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 		container.oomPeak = 0
 		addNewPeak = true
 	}
+
+	if isOOM {
+		klog.Infof("ts: %s, windowEnd: %s, addNewPeak: %v", ts, container.WindowEnd, addNewPeak)
+	}
+
 	container.observeQualityMetrics(sample.Usage, isOOM, corev1.ResourceMemory)
 	if addNewPeak {
 		if isOOM {
@@ -195,9 +209,23 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 			Request:      sample.Request,
 			Resource:     ResourceMemory,
 		}
+		if isOOM {
+			klog.Infof("Adding sample: %v", newPeak)
+			klog.Infof("Aggregator: %p, last sample %s", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator(), container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().LastSampleStart)
+			klog.Infof("Before / 0.9: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.9))
+			klog.Infof("Before / 0.95: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.95))
+			klog.Infof("Before / 0.9999: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.99999))
+		}
 		container.aggregator.AddSample(&newPeak)
 		// Don't do isOOM workaround, that was introduced in https://github.com/zalando-incubator/autoscaler/commit/c4348d6a5b9aa237b76660890586e14c53051a75
 		container.memoryPeak = sample.Usage
+		if isOOM {
+			klog.Infof("Aggregator: %p", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator())
+			klog.Infof("After / 0.1: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.1))
+			klog.Infof("After / 0.9: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.9))
+			klog.Infof("After / 0.95: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.95))
+			klog.Infof("After / 0.9999: %f", container.aggregator.(*ContainerStateAggregatorProxy).Aggregator().AggregateMemoryPeaks.Percentile(0.99999))
+		}
 	}
 	return true
 }

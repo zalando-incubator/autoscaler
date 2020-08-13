@@ -178,7 +178,7 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 				klog.Infof("Removed peak: %v", oldPeak)
 			}
 		}
-		if sample.Usage == oldMaxMem && isOOM {
+		if sample.Usage >= oldMaxMem && isOOM {
 			klog.V(1).Infof("ADDING NEW OOM PEAK")
 			addNewPeak = true
 		}

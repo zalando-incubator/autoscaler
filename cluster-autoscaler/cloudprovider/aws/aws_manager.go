@@ -49,7 +49,7 @@ const (
 	operationPollInterval   = 100 * time.Millisecond
 	maxRecordsReturnedByAPI = 100
 	maxAsgNamesPerDescribe  = 50
-	refreshInterval         = 10 * time.Second
+	refreshInterval         = 1 * time.Minute
 	megabyte                = 1024 * 1024
 )
 

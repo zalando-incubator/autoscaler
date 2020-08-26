@@ -336,12 +336,6 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) errors.AutoscalerError
 		scaleUpStatus.Result = status.ScaleUpInCooldown
 		klog.V(1).Info("Unschedulable pods are very new, waiting one iteration for more")
 	} else {
-		daemonsets, err := a.ListerRegistry.DaemonSetLister().List(labels.Everything())
-		if err != nil {
-			klog.Errorf("Failed to get daemonset list")
-			return errors.ToAutoscalerError(errors.ApiCallError, err)
-		}
-
 		scaleUpStart := time.Now()
 		metrics.UpdateLastTime(metrics.ScaleUp, scaleUpStart)
 

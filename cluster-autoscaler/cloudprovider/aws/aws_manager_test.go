@@ -831,13 +831,13 @@ func TestTemplateNodes(t *testing.T) {
 	assert.NoError(t, err)
 	assertResourcesEqual(t, parseResourceList(map[apiv1.ResourceName]string{
 		apiv1.ResourceCPU:     "64",
-		apiv1.ResourceMemory:  "768Gi",
+		apiv1.ResourceMemory:  "732Gi",
 		apiv1.ResourcePods:    "110",
 		gpu.ResourceNvidiaGPU: "16",
 	}), otherTypeResources.Capacity)
 	assertResourcesEqual(t, parseResourceList(map[apiv1.ResourceName]string{
 		apiv1.ResourceCPU:     "63700m",   // 64 - 300m
-		apiv1.ResourceMemory:  "786232Mi", // 768Gi - 200Mi
+		apiv1.ResourceMemory:  "749368Mi", // 732Gi - 200Mi
 		apiv1.ResourcePods:    "110",
 		gpu.ResourceNvidiaGPU: "16",
 	}), otherTypeResources.Allocatable)

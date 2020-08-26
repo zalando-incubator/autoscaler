@@ -22,10 +22,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/golang/glog"
-
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/klog"
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	priorityutil "k8s.io/kubernetes/pkg/scheduler/algorithm/priorities/util"
 	"k8s.io/kubernetes/pkg/scheduler/util"
@@ -479,7 +478,7 @@ func (n *NodeInfo) RemovePod(pod *v1.Pod) error {
 	for i := range n.podsWithAffinity {
 		k2, err := getPodKey(n.podsWithAffinity[i])
 		if err != nil {
-			glog.Errorf("Cannot get pod key, err: %v", err)
+			klog.Errorf("Cannot get pod key, err: %v", err)
 			continue
 		}
 		if k1 == k2 {

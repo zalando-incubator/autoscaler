@@ -49,7 +49,7 @@ const (
 	operationPollInterval   = 100 * time.Millisecond
 	maxRecordsReturnedByAPI = 100
 	maxAsgNamesPerDescribe  = 50
-	refreshInterval         = 1 * time.Minute
+	refreshInterval         = 10 * time.Second
 	megabyte                = 1024 * 1024
 )
 
@@ -537,6 +537,12 @@ func buildGenericLabels(template *asgTemplate, nodeName string) map[string]strin
 	result[apiv1.LabelZoneRegion] = template.Region
 	result[apiv1.LabelZoneFailureDomain] = template.Zone
 	result[apiv1.LabelHostname] = nodeName
+
+	// TODO remove when we update to a recent version
+	result["node.kubernetes.io/instance-type"] = result[apiv1.LabelInstanceType]
+	result["topology.kubernetes.io/region"] = template.Region
+	result["topology.kubernetes.io/zone"] = template.Zone
+
 	return result
 }
 

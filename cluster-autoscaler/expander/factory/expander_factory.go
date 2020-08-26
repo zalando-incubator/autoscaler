@@ -47,6 +47,8 @@ func ExpanderStrategyFromString(expanderFlag string, cloudProvider cloudprovider
 		return price.NewStrategy(pricing,
 			price.NewSimplePreferredNodeProvider(nodeLister),
 			price.SimpleNodeUnfitness), nil
+	case expander.PreferSpotExpanderName:
+		return preferspot.NewStrategy(), nil
 	case expander.HighestPriorityExpanderName:
 		return priority.NewStrategy(), nil
 	}

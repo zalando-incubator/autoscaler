@@ -170,6 +170,12 @@ func filterOutSchedulableSimple(unschedulableCandidates []*apiv1.Pod, nodes []*a
 			unschedulablePods = append(unschedulablePods, pod)
 		} else {
 			glogx.V(4).UpTo(loggingQuota).Infof("Pod %s marked as unschedulable can be scheduled on %s. Ignoring in scale up.", pod.Name, nodeName)
+
+			if node, ok := nodeNameToNodeInfo[nodeName]; ok {
+				glogx.V(5).UpTo(loggingQuota).Infof("Pod object: %v", pod)
+				glogx.V(5).UpTo(loggingQuota).Infof("Node info: requested %v, allocatable %v, nonzero %v", node.RequestedResource(), node.AllocatableResource(), node.NonZeroRequest())
+				glogx.V(5).UpTo(loggingQuota).Infof("Node object: %v", node)
+			}
 		}
 		podSchedulable.set(pod, predicateError)
 	}
@@ -252,6 +258,11 @@ func getNodeInfosForGroups(nodes []*apiv1.Node, nodeInfoCache map[string]*schedu
 	daemonsets []*appsv1.DaemonSet, predicateChecker *simulator.PredicateChecker, forceTemplateFromCloudProvider bool) (map[string]*schedulernodeinfo.NodeInfo, errors.AutoscalerError) {
 	result := make(map[string]*schedulernodeinfo.NodeInfo)
 	seenGroups := make(map[string]bool)
+
+	// If this is enabled, always construct a sample node from the provider template node
+	if forceTemplateFromCloudProvider {
+		nodes = []*apiv1.Node{}
+	}
 
 	// processNode returns information whether the nodeTemplate was generated and if there was an error.
 	processNode := func(node *apiv1.Node) (bool, string, errors.AutoscalerError) {

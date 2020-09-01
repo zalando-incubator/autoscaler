@@ -146,6 +146,12 @@ func NewStaticAutoscaler(
 
 	scaleDown := NewScaleDown(autoscalingContext, clusterStateRegistry)
 
+	// Disable node info cache since it'll produce worse results than our implementation
+	var nodeInfoCache map[string]*schedulernodeinfo.NodeInfo
+	if !autoscalingContext.ScaleUpTemplateFromCloudProvider {
+		nodeInfoCache = make(map[string]*schedulernodeinfo.NodeInfo)
+	}
+
 	return &StaticAutoscaler{
 		AutoscalingContext:      autoscalingContext,
 		startTime:               time.Now(),
@@ -156,7 +162,7 @@ func NewStaticAutoscaler(
 		processors:              processors,
 		processorCallbacks:      processorCallbacks,
 		clusterStateRegistry:    clusterStateRegistry,
-		nodeInfoCache:           make(map[string]*schedulernodeinfo.NodeInfo),
+		nodeInfoCache:           nodeInfoCache,
 		ignoredTaints:           ignoredTaints,
 	}
 }
@@ -250,7 +256,7 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) errors.AutoscalerError
 	}
 
 	// Call CloudProvider.Refresh before any other calls to cloud provider.
-	err = a.AutoscalingContext.CloudProvider.Refresh()
+	err = a.AutoscalingContext.CloudProvider.Refresh(allNodes)
 	if err != nil {
 		klog.Errorf("Failed to refresh cloud provider config: %v", err)
 		return errors.ToAutoscalerError(errors.CloudProviderError, err)
@@ -263,7 +269,7 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) errors.AutoscalerError
 	}
 
 	nodeInfosForGroups, autoscalerError := core_utils.GetNodeInfosForGroups(
-		readyNodes, a.nodeInfoCache, autoscalingContext.CloudProvider, autoscalingContext.ListerRegistry, daemonsets, autoscalingContext.PredicateChecker, a.ignoredTaints)
+		readyNodes, a.nodeInfoCache, autoscalingContext.CloudProvider, autoscalingContext.ListerRegistry, daemonsets, autoscalingContext.PredicateChecker, a.ignoredTaints, autoscalingContext.AutoscalingOptions.ScaleUpTemplateFromCloudProvider)
 	if autoscalerError != nil {
 		klog.Errorf("Failed to get node infos for groups: %v", autoscalerError)
 		return autoscalerError.AddPrefix("failed to build node infos for node groups: ")

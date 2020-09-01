@@ -323,7 +323,8 @@ func (scaleSet *ScaleSet) IncreaseSize(delta int) error {
 		return fmt.Errorf("size increase too large - desired:%d max:%d", int(size)+delta, scaleSet.MaxSize())
 	}
 
-	return scaleSet.SetScaleSetSize(size + int64(delta))
+	scaleSet.SetScaleSetSize(size + int64(delta))
+	return nil
 }
 
 // GetScaleSetVms returns list of nodes for the given scale set.
@@ -778,4 +779,11 @@ func (scaleSet *ScaleSet) invalidateStatusCacheWithLock() {
 	scaleSetStatusCache.mutex.Lock()
 	scaleSetStatusCache.lastRefresh = time.Now().Add(-1 * scaleSet.sizeRefreshPeriod)
 	scaleSetStatusCache.mutex.Unlock()
+}
+
+func (scaleSet *ScaleSet) invalidateInstanceCache() {
+	scaleSet.instanceMutex.Lock()
+	// Set the instanceCache as outdated.
+	scaleSet.lastInstanceRefresh = time.Now().Add(-1 * vmssInstancesRefreshPeriod)
+	scaleSet.instanceMutex.Unlock()
 }

@@ -198,7 +198,7 @@ func TestAutoDiscoveredNodeGroups(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("auto-asg", 1, "test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	nodeGroups := provider.NodeGroups()
 	assert.Equal(t, len(nodeGroups), 1)
@@ -227,7 +227,7 @@ func TestNodeGroupForNode(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 1, "test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	group, err := provider.NodeGroupForNode(node)
 
@@ -286,7 +286,6 @@ func TestAwsRefFromProviderId(t *testing.T) {
 			expErr: true,
 		},
 		{
-
 			provID: "aws:///us-east-1a/i-260942b3",
 			expErr: false,
 			expRef: &AwsInstanceRef{
@@ -322,6 +321,14 @@ func TestAwsRefFromProviderId(t *testing.T) {
 			assert.Equal(t, got, test.expRef)
 		}
 	}
+
+	awsRef, err := AwsRefFromProviderId("aws:///us-east-1a/i-260942b3")
+	assert.NoError(t, err)
+	assert.Equal(t, awsRef, &AwsInstanceRef{Name: "i-260942b3", ProviderID: "aws:///us-east-1a/i-260942b3"})
+
+	placeholderRef, err := AwsRefFromProviderId("aws:///us-east-1a/i-placeholder-some.arbitrary.cluster.local")
+	assert.NoError(t, err)
+	assert.Equal(t, placeholderRef, &AwsInstanceRef{Name: "i-placeholder-some.arbitrary.cluster.local", ProviderID: "aws:///us-east-1a/i-placeholder-some.arbitrary.cluster.local"})
 }
 
 func TestTargetSize(t *testing.T) {
@@ -340,7 +347,7 @@ func TestTargetSize(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 2, "test-instance-id", "second-test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	targetSize, err := asgs[0].TargetSize()
 	assert.Equal(t, targetSize, 2)
@@ -371,7 +378,7 @@ func TestIncreaseSize(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 2, "test-instance-id", "second-test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	initialSize, err := asgs[0].TargetSize()
 	assert.NoError(t, err)
@@ -403,7 +410,7 @@ func TestBelongs(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 1, "test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	invalidNode := &apiv1.Node{
 		Spec: apiv1.NodeSpec{
@@ -455,7 +462,7 @@ func TestDeleteNodes(t *testing.T) {
 		expectedInstancesCount = 1
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	initialSize, err := asgs[0].TargetSize()
 	assert.NoError(t, err)
@@ -502,7 +509,7 @@ func TestDeleteNodesWithPlaceholder(t *testing.T) {
 		expectedInstancesCount = 1
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 
 	initialSize, err := asgs[0].TargetSize()
 	assert.NoError(t, err)
@@ -548,7 +555,7 @@ func TestDeleteNodesAfterMultipleRefreshes(t *testing.T) {
 		fn(testNamedDescribeAutoScalingGroupsOutput("test-asg", 2, "test-instance-id", "second-test-instance-id"), false)
 	}).Return(nil)
 
-	provider.Refresh()
+	provider.Refresh(nil)
 	// Call the manager directly as otherwise the call would be a noop as its within less then 60s
 	manager.forceRefresh()
 

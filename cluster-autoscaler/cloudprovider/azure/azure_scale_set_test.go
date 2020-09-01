@@ -127,6 +127,7 @@ func TestIncreaseSizeOnVMSSUpdating(t *testing.T) {
 	assert.True(t, ok)
 	err = scaleSet.IncreaseSize(1)
 	assert.NoError(t, err)
+	assert.Equal(t, 5, targetSize)
 }
 
 func TestBelongs(t *testing.T) {

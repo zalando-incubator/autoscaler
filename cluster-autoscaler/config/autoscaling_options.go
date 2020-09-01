@@ -139,4 +139,11 @@ type AutoscalingOptions struct {
 	AWSUseStaticInstanceList bool
 	// Path to kube configuration if available
 	KubeConfigPath string
+	// Filtering out schedulable pods before CA scale up by trying to pack the schedulable pods on free capacity on existing nodes.
+	// Setting it to false employs a more lenient filtering approach that does not try to pack the pods on the nodes.
+	// Pods with nominatedNodeName set are always filtered out.
+	FilterOutSchedulablePodsUsesPacking bool
+	// ScaleUpTemplateFromCloudProvider tells if template node should be built from the up-to-date provider configuration (e.g. ASG launch configuration)
+	// instead of a random existing node.
+	ScaleUpTemplateFromCloudProvider bool
 }

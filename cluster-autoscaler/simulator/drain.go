@@ -44,7 +44,7 @@ func FastGetPodsToMove(nodeInfo *schedulernodeinfo.NodeInfo, skipNodesWithSystem
 	// plop it here instead.
 	err := checkJobPods(nodeInfo.Pods())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	pods, blockingPod, err := drain.GetPodsForDeletionOnNodeDrain(
@@ -81,7 +81,7 @@ func DetailedGetPodsForMove(nodeInfo *schedulernodeinfo.NodeInfo, skipNodesWithS
 	// plop it here instead.
 	err := checkJobPods(nodeInfo.Pods())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	pods, blockingPod, err := drain.GetPodsForDeletionOnNodeDrain(

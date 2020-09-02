@@ -70,7 +70,7 @@ func TestGetNodeInfosForGroups(t *testing.T) {
 	assert.NoError(t, err)
 
 	res, err := GetNodeInfosForGroups([]*apiv1.Node{unready4, unready3, ready2, ready1}, nil,
-		provider1, registry, []*appsv1.DaemonSet{}, predicateChecker, nil)
+		provider1, registry, []*appsv1.DaemonSet{}, predicateChecker, nil, false)
 	assert.NoError(t, err)
 	assert.Equal(t, 4, len(res))
 	info, found := res["ng1"]
@@ -88,7 +88,7 @@ func TestGetNodeInfosForGroups(t *testing.T) {
 
 	// Test for a nodegroup without nodes and TemplateNodeInfo not implemented by cloud proivder
 	res, err = GetNodeInfosForGroups([]*apiv1.Node{}, nil, provider2, registry,
-		[]*appsv1.DaemonSet{}, predicateChecker, nil)
+		[]*appsv1.DaemonSet{}, predicateChecker, nil, false)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, len(res))
 }
@@ -142,7 +142,7 @@ func TestGetNodeInfosForGroupsCache(t *testing.T) {
 
 	// Fill cache
 	res, err := GetNodeInfosForGroups([]*apiv1.Node{unready4, unready3, ready2, ready1}, nodeInfoCache,
-		provider1, registry, []*appsv1.DaemonSet{}, predicateChecker, nil)
+		provider1, registry, []*appsv1.DaemonSet{}, predicateChecker, nil, false)
 	assert.NoError(t, err)
 	// Check results
 	assert.Equal(t, 4, len(res))
@@ -177,7 +177,7 @@ func TestGetNodeInfosForGroupsCache(t *testing.T) {
 
 	// Check cache with all nodes removed
 	res, err = GetNodeInfosForGroups([]*apiv1.Node{}, nodeInfoCache,
-		provider1, registry, []*appsv1.DaemonSet{}, predicateChecker, nil)
+		provider1, registry, []*appsv1.DaemonSet{}, predicateChecker, nil, false)
 	assert.NoError(t, err)
 	// Check results
 	assert.Equal(t, 2, len(res))
@@ -202,7 +202,7 @@ func TestGetNodeInfosForGroupsCache(t *testing.T) {
 	nodeInfoCache = map[string]*schedulernodeinfo.NodeInfo{"ng4": infoNg4Node6}
 	// Check if cache was used
 	res, err = GetNodeInfosForGroups([]*apiv1.Node{ready1, ready2}, nodeInfoCache,
-		provider1, registry, []*appsv1.DaemonSet{}, predicateChecker, nil)
+		provider1, registry, []*appsv1.DaemonSet{}, predicateChecker, nil, false)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(res))
 	info, found = res["ng2"]

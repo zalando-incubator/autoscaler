@@ -75,16 +75,16 @@ type AwsManager struct {
 }
 
 type instanceResourceInfo struct {
-	InstanceType string
+	InstanceType *InstanceType
 	Capacity     apiv1.ResourceList
 	Allocatable  apiv1.ResourceList
 }
 
 type asgTemplate struct {
-	InstanceType *InstanceType
-	Region       string
-	Zone         string
-	Tags         []*autoscaling.TagDescription
+	AvailableResources []*instanceResourceInfo
+	Region             string
+	Zone               string
+	Tags               []*autoscaling.TagDescription
 }
 
 func validateOverrides(cfg *provider_aws.CloudConfig) error {
@@ -234,11 +234,12 @@ func createAWSManagerInternal(
 	}
 
 	manager := &AwsManager{
-		autoScalingService: *autoScalingService,
-		ec2Service:         *ec2Service,
-		asgCache:           cache,
-		instanceTypes:      instanceTypes,
-		reservedResources:  make(apiv1.ResourceList),
+		autoScalingService:    *autoScalingService,
+		ec2Service:            *ec2Service,
+		asgCache:              cache,
+		instanceTypes:         instanceTypes,
+		instanceResourceCache: make(map[string]*instanceResourceInfo),
+		reservedResources:     make(apiv1.ResourceList),
 	}
 
 	if err := manager.forceRefresh(); err != nil {
@@ -449,7 +450,7 @@ func (m *AwsManager) availableResources(instanceType string) (*instanceResourceI
 	// and subtract the maximum reserved CPU/memory across all the nodes in the cluster to get
 	// the allocatable value.
 	template := &instanceResourceInfo{
-		InstanceType: awsTemplate.InstanceType,
+		InstanceType: &InstanceType{InstanceType: awsTemplate.InstanceType},
 		Capacity: apiv1.ResourceList{
 			apiv1.ResourceCPU:     cpuCapacity,
 			apiv1.ResourceMemory:  memCapacity,
@@ -486,7 +487,7 @@ func (m *AwsManager) updateAvailableResources(nodes []*apiv1.Node) {
 		resources, ok := instanceResources[instanceType]
 		if !ok {
 			resources = &instanceResourceInfo{
-				InstanceType: instanceType,
+				InstanceType: &InstanceType{InstanceType: instanceType},
 				Capacity:     make(apiv1.ResourceList),
 				Allocatable:  make(apiv1.ResourceList),
 			}
@@ -539,7 +540,7 @@ func buildGenericLabels(template *asgTemplate, nodeName string) map[string]strin
 	result[kubeletapis.LabelOS] = cloudprovider.DefaultOS
 
 	if len(template.AvailableResources) == 1 {
-		result[apiv1.LabelInstanceType] = template.AvailableResources[0].InstanceType
+		result[apiv1.LabelInstanceType] = template.AvailableResources[0].InstanceType.InstanceType
 	} else {
 		result[apiv1.LabelInstanceType] = "<multiple>"
 	}

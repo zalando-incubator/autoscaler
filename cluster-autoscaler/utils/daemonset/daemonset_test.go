@@ -57,6 +57,21 @@ func TestGetDaemonSetPodsForNode(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, 1, len(daemonSets))
 		assert.True(t, strings.HasPrefix(daemonSets[0].Name, "ds1"))
+
+		dsPod := daemonSets[0]
+		assert.True(t, strings.HasPrefix(dsPod.Name, "ds1"))
+
+		containerWithRequests := dsPod.Spec.Containers[0]
+		assert.Equal(t, exampleCPURequests, containerWithRequests.Resources.Requests[apiv1.ResourceCPU])
+		assert.Equal(t, exampleMemoryRequests, containerWithRequests.Resources.Requests[apiv1.ResourceMemory])
+		assert.Equal(t, exampleCPULimits, containerWithRequests.Resources.Limits[apiv1.ResourceCPU])
+		assert.Equal(t, exampleMemoryLimits, containerWithRequests.Resources.Limits[apiv1.ResourceMemory])
+
+		containerWithOnlyLimits := dsPod.Spec.Containers[1]
+		assert.Equal(t, exampleCPULimits, containerWithOnlyLimits.Resources.Requests[apiv1.ResourceCPU])
+		assert.Equal(t, exampleMemoryLimits, containerWithOnlyLimits.Resources.Requests[apiv1.ResourceMemory])
+		assert.Equal(t, exampleCPULimits, containerWithOnlyLimits.Resources.Limits[apiv1.ResourceCPU])
+		assert.Equal(t, exampleMemoryLimits, containerWithOnlyLimits.Resources.Limits[apiv1.ResourceMemory])
 	}
 	{
 		daemonSets, err := GetDaemonSetPodsForNode(nodeInfo, []*appsv1.DaemonSet{ds1}, predicateChecker)
@@ -73,26 +88,6 @@ func TestGetDaemonSetPodsForNode(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, 0, len(daemonSets))
 	}
-
-	assert.Equal(t, 1, len(pods))
-	dsPod := pods[0]
-	assert.True(t, strings.HasPrefix(dsPod.Name, "ds1"))
-
-	containerWithRequests := dsPod.Spec.Containers[0]
-	assert.Equal(t, exampleCPURequests, containerWithRequests.Resources.Requests[apiv1.ResourceCPU])
-	assert.Equal(t, exampleMemoryRequests, containerWithRequests.Resources.Requests[apiv1.ResourceMemory])
-	assert.Equal(t, exampleCPULimits, containerWithRequests.Resources.Limits[apiv1.ResourceCPU])
-	assert.Equal(t, exampleMemoryLimits, containerWithRequests.Resources.Limits[apiv1.ResourceMemory])
-
-	containerWithOnlyLimits := dsPod.Spec.Containers[1]
-	assert.Equal(t, exampleCPULimits, containerWithOnlyLimits.Resources.Requests[apiv1.ResourceCPU])
-	assert.Equal(t, exampleMemoryLimits, containerWithOnlyLimits.Resources.Requests[apiv1.ResourceMemory])
-	assert.Equal(t, exampleCPULimits, containerWithOnlyLimits.Resources.Limits[apiv1.ResourceCPU])
-	assert.Equal(t, exampleMemoryLimits, containerWithOnlyLimits.Resources.Limits[apiv1.ResourceMemory])
-
-	assert.Equal(t, 1, len(GetDaemonSetPodsForNode(nodeInfo, []*appsv1.DaemonSet{ds1}, predicateChecker)))
-	assert.Equal(t, 0, len(GetDaemonSetPodsForNode(nodeInfo, []*appsv1.DaemonSet{ds2}, predicateChecker)))
-	assert.Equal(t, 0, len(GetDaemonSetPodsForNode(nodeInfo, []*appsv1.DaemonSet{}, predicateChecker)))
 }
 
 func newDaemonSet(name string) *appsv1.DaemonSet {

@@ -122,7 +122,7 @@ func (pcp *packetCloudProvider) GetResourceLimiter() (*cloudprovider.ResourceLim
 // Refresh is called before every autoscaler main loop.
 //
 // Currently only prints debug information.
-func (pcp *packetCloudProvider) Refresh() error {
+func (pcp *packetCloudProvider) Refresh(existingNodes []*apiv1.Node) error {
 	for _, nodegroup := range pcp.nodeGroups {
 		klog.V(3).Info(nodegroup.Debug())
 	}

@@ -40,7 +40,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
-	provider_aws "k8s.io/kubernetes/pkg/cloudprovider/providers/aws"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 	provider_aws "k8s.io/legacy-cloud-providers/aws"
 )
@@ -76,11 +75,11 @@ func TestGetRegion(t *testing.T) {
 
 func TestBuildGenericLabels(t *testing.T) {
 	labels := buildGenericLabels(&asgTemplate{
-		InstanceType: &InstanceType{
+		AvailableResources: []*instanceResourceInfo{{InstanceType: &InstanceType{
 			InstanceType: "c4.large",
 			VCPU:         2,
 			MemoryMb:     3840,
-		},
+		}}},
 		Region: "us-east-1",
 	}, "sillyname")
 	assert.Equal(t, "us-east-1", labels[apiv1.LabelZoneRegion])
@@ -130,7 +129,7 @@ func TestBuildNodeFromTemplate(t *testing.T) {
 	ephemeralStorageValue := int64(20)
 	vpcIPKey := "vpc.amazonaws.com/PrivateIPv4Address"
 	observedNode, observedErr := awsManager.buildNodeFromTemplate(asg, &asgTemplate{
-		InstanceType: c5Instance,
+		AvailableResources: []*instanceResourceInfo{{InstanceType: c5Instance}},
 		Tags: []*autoscaling.TagDescription{
 			{
 				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/resources/%s", ephemeralStorageKey)),
@@ -148,7 +147,7 @@ func TestBuildNodeFromTemplate(t *testing.T) {
 	// Nod with labels
 	GPULabelValue := "nvidia-telsa-v100"
 	observedNode, observedErr = awsManager.buildNodeFromTemplate(asg, &asgTemplate{
-		InstanceType: c5Instance,
+		AvailableResources: []*instanceResourceInfo{{InstanceType: c5Instance}},
 		Tags: []*autoscaling.TagDescription{
 			{
 				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/label/%s", GPULabel)),
@@ -168,7 +167,7 @@ func TestBuildNodeFromTemplate(t *testing.T) {
 		Effect: "NoSchedule",
 	}
 	observedNode, observedErr = awsManager.buildNodeFromTemplate(asg, &asgTemplate{
-		InstanceType: c5Instance,
+		AvailableResources: []*instanceResourceInfo{{InstanceType: c5Instance}},
 		Tags: []*autoscaling.TagDescription{
 			{
 				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/taint/%s", gpuTaint.Key)),
@@ -381,10 +380,10 @@ func TestBuildInstanceTypeMixedInstancePolicyOverride(t *testing.T) {
 		},
 	}
 
-	builtInstanceType, err := m.buildInstanceType(&asg)
+	builtInstanceType, err := m.buildInstanceTypes(&asg)
 
 	assert.NoError(t, err)
-	assert.Equal(t, instanceType, builtInstanceType)
+	assert.Equal(t, []string{instanceType}, builtInstanceType)
 }
 
 func TestBuildInstanceTypeMixedInstancePolicyNoOverride(t *testing.T) {
@@ -405,10 +404,10 @@ func TestBuildInstanceTypeMixedInstancePolicyNoOverride(t *testing.T) {
 		},
 	}
 
-	builtInstanceType, err := m.buildInstanceType(&asg)
+	builtInstanceType, err := m.buildInstanceTypes(&asg)
 
 	assert.NoError(t, err)
-	assert.Equal(t, instanceTypeOverrides[0], builtInstanceType)
+	assert.Equal(t, instanceTypeOverrides, builtInstanceType)
 }
 
 func TestGetASGTemplate(t *testing.T) {
@@ -481,7 +480,7 @@ func TestGetASGTemplate(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				if assert.NotNil(t, template) {
-					assert.Equal(t, test.instanceType, template.AvailableResources[0].InstanceType)
+					assert.Equal(t, test.instanceType, template.AvailableResources[0].InstanceType.InstanceType)
 					assert.Equal(t, region, template.Region)
 					assert.Equal(t, test.availabilityZones[0], template.Zone)
 					assert.Equal(t, tags, template.Tags)
@@ -839,7 +838,8 @@ func TestOverridesActiveConfig(t *testing.T) {
 }
 
 func TestTemplateNodes(t *testing.T) {
-	m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, nil)
+	instanceTypes, _ := GetStaticEC2InstanceTypes()
+	m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, nil, instanceTypes)
 	assert.NoError(t, err)
 
 	// No data and no nodes, use raw AWS data

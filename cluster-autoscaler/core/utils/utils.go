@@ -42,7 +42,7 @@ import (
 func GetNodeInfosForGroups(nodes []*apiv1.Node, nodeInfoCache map[string]*schedulernodeinfo.NodeInfo, cloudProvider cloudprovider.CloudProvider, listers kube_util.ListerRegistry,
 	// TODO(mwielgus): This returns map keyed by url, while most code (including scheduler) uses node.Name for a key.
 	// TODO(mwielgus): Review error policy - sometimes we may continue with partial errors.
-	daemonsets []*appsv1.DaemonSet, predicateChecker simulator.PredicateChecker, ignoredTaints taints.TaintKeySet) (map[string]*schedulernodeinfo.NodeInfo, errors.AutoscalerError) {
+	daemonsets []*appsv1.DaemonSet, predicateChecker simulator.PredicateChecker, ignoredTaints taints.TaintKeySet, forceTemplateFromCloudProvider bool) (map[string]*schedulernodeinfo.NodeInfo, errors.AutoscalerError) {
 	result := make(map[string]*schedulernodeinfo.NodeInfo)
 	seenGroups := make(map[string]bool)
 

@@ -102,7 +102,7 @@ func (*provider) Cleanup() error {
 	return nil
 }
 
-func (p *provider) Refresh() error {
+func (p *provider) Refresh(existingNodes []*corev1.Node) error {
 	return nil
 }
 

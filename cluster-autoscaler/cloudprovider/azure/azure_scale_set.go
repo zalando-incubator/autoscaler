@@ -780,10 +780,3 @@ func (scaleSet *ScaleSet) invalidateStatusCacheWithLock() {
 	scaleSetStatusCache.lastRefresh = time.Now().Add(-1 * scaleSet.sizeRefreshPeriod)
 	scaleSetStatusCache.mutex.Unlock()
 }
-
-func (scaleSet *ScaleSet) invalidateInstanceCache() {
-	scaleSet.instanceMutex.Lock()
-	// Set the instanceCache as outdated.
-	scaleSet.lastInstanceRefresh = time.Now().Add(-1 * vmssInstancesRefreshPeriod)
-	scaleSet.instanceMutex.Unlock()
-}

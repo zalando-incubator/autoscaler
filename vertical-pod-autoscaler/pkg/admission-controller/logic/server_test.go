@@ -26,7 +26,7 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/limitrange"
 	vpa_api_util "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
 )
@@ -408,7 +408,7 @@ func TestValidateVPA(t *testing.T) {
 			name:        "empty create",
 			vpa:         vpa_types.VerticalPodAutoscaler{},
 			isCreate:    true,
-			expectError: fmt.Errorf("TargetRef is required. If you're using v1beta1 version of the API, please migrate to v1beta2."),
+			expectError: fmt.Errorf("TargetRef is required. If you're using v1beta1 version of the API, please migrate to v1."),
 		},
 		{
 			name: "no update mode",
@@ -511,139 +511,6 @@ func TestValidateVPA(t *testing.T) {
 			} else {
 				if assert.Error(t, err) {
 					assert.Equal(t, tc.expectError.Error(), err.Error())
-				}
-			}
-		})
-	}
-}
-
-func TestGetPatchesForVPADefaults(t *testing.T) {
-	tests := []struct {
-		name          string
-		vpaJson       []byte
-		isCreate      bool
-		expectPatches []patchRecord
-		expectError   error
-	}{
-		{
-			name:          "invalid JSON",
-			vpaJson:       []byte("{"),
-			isCreate:      true,
-			expectPatches: []patchRecord{},
-			expectError:   fmt.Errorf("unexpected end of JSON input"),
-		},
-		{
-			name: "missing TargetRef",
-			vpaJson: []byte(
-				`{
-					"spec": {
-					}
-				}`),
-			isCreate:      true,
-			expectPatches: []patchRecord{},
-			expectError:   fmt.Errorf("TargetRef is required. If you're using v1beta1 version of the API, please migrate to v1beta2."),
-		},
-		{
-			name: "malformed selector, valid targetRef",
-			vpaJson: []byte(
-				`{
-					"spec": {
-						"selector": {
-							"matchLabels" :
-      					"app=hamster"
-						},
-						"targetRef": {
-							"apiVersion": "extensions/v1beta1",
-							"kind": "Deployment",
-    					"name": "hamster"
-						}
-					}
-				}`),
-			isCreate:      true,
-			expectPatches: []patchRecord{},
-			expectError:   fmt.Errorf("json: cannot unmarshal string into Go struct field LabelSelector.matchLabels of type map[string]string"),
-		},
-		{
-			name: "valid targetRef, default mode",
-			vpaJson: []byte(
-				`{
-					"spec": {
-						"targetRef": {
-							"apiVersion": "extensions/v1beta1",
-							"kind": "Deployment",
-    					"name": "hamster"
-						},
-						"updatePolicy": {
-							"updateMode": "Off"
-						}
-					}
-				}`),
-			isCreate:      true,
-			expectPatches: []patchRecord{},
-			expectError:   nil,
-		},
-		{
-			name: "valid targetRef, default mode",
-			vpaJson: []byte(
-				`{
-					"spec": {
-						"targetRef": {
-							"apiVersion": "extensions/v1beta1",
-							"kind": "Deployment",
-    					"name": "hamster"
-						}
-					}
-				}`),
-			isCreate: true,
-			expectPatches: []patchRecord{
-				{
-					"add",
-					"/spec/updatePolicy",
-					vpa_types.PodUpdatePolicy{UpdateMode: &defaultUpdateMode},
-				},
-			},
-			expectError: nil,
-		},
-		{
-			name: "valid update",
-			vpaJson: []byte(
-				`{
-					"spec": {
-						"targetRef": {
-							"apiVersion": "extensions/v1beta1",
-							"kind": "Deployment",
-    					"name": "hamster"
-						},
-						"updatePolicy": {
-							"updateMode": "Off"
-						}
-					}
-				}`),
-			isCreate:      false,
-			expectPatches: []patchRecord{},
-			expectError:   nil,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			fppp := fakePodPreProcessor{e: nil}
-			fvpp := fakeVpaPreProcessor{}
-			frp := fakeRecommendationProvider{}
-			lc := limitrange.NewNoopLimitsCalculator()
-			s := NewAdmissionServer(&frp, &fppp, &fvpp, lc)
-			patches, err := s.getPatchesForVPADefaults(tc.vpaJson, tc.isCreate)
-			if tc.expectError == nil {
-				assert.NoError(t, err)
-			} else {
-				if assert.Error(t, err) {
-					assert.Equal(t, tc.expectError.Error(), err.Error())
-				}
-			}
-			if assert.Equal(t, len(tc.expectPatches), len(patches), fmt.Sprintf("got %+v, want %+v", patches, tc.expectPatches)) {
-				for i, gotPatch := range patches {
-					if !eqPatch(gotPatch, tc.expectPatches[i]) {
-						t.Errorf("Expected patch at position %d to be %+v, got %+v", i, tc.expectPatches[i], gotPatch)
-					}
 				}
 			}
 		})

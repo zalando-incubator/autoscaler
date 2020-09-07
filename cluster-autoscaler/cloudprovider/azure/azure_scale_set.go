@@ -323,8 +323,7 @@ func (scaleSet *ScaleSet) IncreaseSize(delta int) error {
 		return fmt.Errorf("size increase too large - desired:%d max:%d", int(size)+delta, scaleSet.MaxSize())
 	}
 
-	scaleSet.SetScaleSetSize(size + int64(delta))
-	return nil
+	return scaleSet.SetScaleSetSize(size + int64(delta))
 }
 
 // GetScaleSetVms returns list of nodes for the given scale set.

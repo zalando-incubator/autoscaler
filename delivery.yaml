@@ -1,13 +1,12 @@
 version: "2017-09-20"
 pipeline:
 - id: build
-  overlay: ci/golang-1-11
+  overlay: ci/golang
   type: script
   working_dir: /go/src/k8s.io/autoscaler
   vm: large
   env:
-    VERSION: "v0.6.1-internal"
-    DOWNSTREAM: "registry-write.opensource.zalan.do/teapot/kube-cluster-autoscaler"
+    VERSION: "v0.8.0-internal"
   commands:
   - desc: "Installing dependencies"
     cmd: |

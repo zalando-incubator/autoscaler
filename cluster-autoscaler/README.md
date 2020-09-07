@@ -25,6 +25,7 @@ Starting from Kubernetes 1.12, versioning scheme was changed to match Kubernetes
 
 | Kubernetes Version  | CA Version   |
 |--------|--------|
+| 1.16.X | 1.16.X  |
 | 1.15.X | 1.15.X  |
 | 1.14.X | 1.14.X  |
 | 1.13.X | 1.13.X  |
@@ -140,3 +141,4 @@ Supported cloud providers:
 * Azure https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/azure/README.md
 * Alibaba Cloud https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/alicloud/README.md
 * OpenStack Magnum https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/magnum/README.md
+* DigitalOcean https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/digitalocean/README.md

@@ -66,7 +66,7 @@ func (e *EC2Mock) DescribeLaunchTemplateVersions(i *ec2.DescribeLaunchTemplateVe
 	return args.Get(0).(*ec2.DescribeLaunchTemplateVersionsOutput), nil
 }
 
-var testService = autoScalingWrapper{&AutoScalingMock{}, map[string]string{}}
+var testService = autoScalingWrapper{&AutoScalingMock{}, newLaunchConfigurationInstanceTypeCache()}
 
 var testAwsManager = &AwsManager{
 	asgCache: &asgCache{
@@ -79,8 +79,8 @@ var testAwsManager = &AwsManager{
 	autoScalingService: testService,
 }
 
-func newTestAwsManagerWithService(service autoScaling, autoDiscoverySpecs []cloudprovider.ASGAutoDiscoveryConfig) *AwsManager {
-	wrapper := autoScalingWrapper{service, map[string]string{}}
+func newTestAwsManagerWithService(service autoScaling, autoDiscoverySpecs []asgAutoDiscoveryConfig) *AwsManager {
+	wrapper := autoScalingWrapper{service, newLaunchConfigurationInstanceTypeCache()}
 	return &AwsManager{
 		autoScalingService: wrapper,
 		asgCache: &asgCache{
@@ -101,7 +101,7 @@ func newTestAwsManagerWithAsgs(t *testing.T, service autoScaling, specs []string
 	return m
 }
 
-func newTestAwsManagerWithAutoAsgs(t *testing.T, service autoScaling, specs []string, autoDiscoverySpecs []cloudprovider.ASGAutoDiscoveryConfig) *AwsManager {
+func newTestAwsManagerWithAutoAsgs(t *testing.T, service autoScaling, specs []string, autoDiscoverySpecs []asgAutoDiscoveryConfig) *AwsManager {
 	m := newTestAwsManagerWithService(service, autoDiscoverySpecs)
 	m.asgCache.parseExplicitAsgs(specs)
 	return m
@@ -134,7 +134,8 @@ func testProvider(t *testing.T, m *AwsManager) *awsCloudProvider {
 		map[string]int64{cloudprovider.ResourceNameCores: 1, cloudprovider.ResourceNameMemory: 10000000},
 		map[string]int64{cloudprovider.ResourceNameCores: 10, cloudprovider.ResourceNameMemory: 100000000})
 
-	provider, err := BuildAwsCloudProvider(m, resourceLimiter)
+	instanceTypes, _ := GetStaticEC2InstanceTypes()
+	provider, err := BuildAwsCloudProvider(m, instanceTypes, resourceLimiter)
 	assert.NoError(t, err)
 	return provider.(*awsCloudProvider)
 }
@@ -144,7 +145,8 @@ func TestBuildAwsCloudProvider(t *testing.T) {
 		map[string]int64{cloudprovider.ResourceNameCores: 1, cloudprovider.ResourceNameMemory: 10000000},
 		map[string]int64{cloudprovider.ResourceNameCores: 10, cloudprovider.ResourceNameMemory: 100000000})
 
-	_, err := BuildAwsCloudProvider(testAwsManager, resourceLimiter)
+	instanceTypes, _ := GetStaticEC2InstanceTypes()
+	_, err := BuildAwsCloudProvider(testAwsManager, instanceTypes, resourceLimiter)
 	assert.NoError(t, err)
 }
 
@@ -165,7 +167,7 @@ func TestNodeGroups(t *testing.T) {
 
 func TestAutoDiscoveredNodeGroups(t *testing.T) {
 	service := &AutoScalingMock{}
-	provider := testProvider(t, newTestAwsManagerWithAutoAsgs(t, service, []string{}, []cloudprovider.ASGAutoDiscoveryConfig{
+	provider := testProvider(t, newTestAwsManagerWithAutoAsgs(t, service, []string{}, []asgAutoDiscoveryConfig{
 		{
 			Tags: map[string]string{"test": ""},
 		},
@@ -242,6 +244,19 @@ func TestNodeGroupForNode(t *testing.T) {
 
 	assert.Equal(t, []cloudprovider.Instance{{Id: "aws:///us-east-1a/test-instance-id"}}, nodes)
 	service.AssertNumberOfCalls(t, "DescribeAutoScalingGroupsPages", 1)
+
+	// test node in cluster that is not in a group managed by cluster autoscaler
+	nodeNotInGroup := &apiv1.Node{
+		Spec: apiv1.NodeSpec{
+			ProviderID: "aws:///us-east-1a/test-instance-id-not-in-group",
+		},
+	}
+
+	group, err = provider.NodeGroupForNode(nodeNotInGroup)
+
+	assert.NoError(t, err)
+	assert.Nil(t, group)
+	service.AssertNumberOfCalls(t, "DescribeAutoScalingGroupsPages", 1)
 }
 
 func TestNodeGroupForNodeWithNoProviderId(t *testing.T) {
@@ -258,31 +273,57 @@ func TestNodeGroupForNodeWithNoProviderId(t *testing.T) {
 	assert.Equal(t, group, nil)
 }
 
-func TestNodeGroupForNodeWithOutNodeGroup(t *testing.T) {
-	// test node in cluster that is not in a group managed by cluster autoscaler
-	node := &apiv1.Node{
-		Spec: apiv1.NodeSpec{
-			ProviderID: "aws:///us-east-1a/test-instance-id",
+func TestAwsRefFromProviderId(t *testing.T) {
+	tests := []struct {
+		provID string
+		expErr bool
+		expRef *AwsInstanceRef
+	}{
+		{
+			provID: "aws123",
+			expErr: true,
+		},
+		{
+			provID: "aws://test-az/test-instance-id",
+			expErr: true,
+		},
+		{
+
+			provID: "aws:///us-east-1a/i-260942b3",
+			expErr: false,
+			expRef: &AwsInstanceRef{
+				Name:       "i-260942b3",
+				ProviderID: "aws:///us-east-1a/i-260942b3",
+			},
+		},
+		{
+			provID: "aws:///us-east-1a/i-placeholder-some.arbitrary.cluster.local",
+			expErr: false,
+			expRef: &AwsInstanceRef{
+				Name:       "i-placeholder-some.arbitrary.cluster.local",
+				ProviderID: "aws:///us-east-1a/i-placeholder-some.arbitrary.cluster.local",
+			},
+		},
+		{
+			// ref: https://github.com/kubernetes/autoscaler/issues/2285
+			provID: "aws:///eu-central-1c/i-placeholder-K3-EKS-spotr5xlasgsubnet02af43b02922e710f-10QH9H0C8PG7O-14",
+			expErr: false,
+			expRef: &AwsInstanceRef{
+				Name:       "i-placeholder-K3-EKS-spotr5xlasgsubnet02af43b02922e710f-10QH9H0C8PG7O-14",
+				ProviderID: "aws:///eu-central-1c/i-placeholder-K3-EKS-spotr5xlasgsubnet02af43b02922e710f-10QH9H0C8PG7O-14",
+			},
 		},
 	}
-	service := &AutoScalingMock{}
-	provider := testProvider(t, newTestAwsManagerWithAsgs(t, service, []string{"1:5:test-asg"}))
-	group, err := provider.NodeGroupForNode(node)
 
-	assert.Error(t, err)
-	assert.Equal(t, group, nil)
-	service.AssertNotCalled(t, "DescribeAutoScalingGroupsPages")
-}
-
-func TestAwsRefFromProviderId(t *testing.T) {
-	_, err := AwsRefFromProviderId("aws123")
-	assert.Error(t, err)
-	_, err = AwsRefFromProviderId("aws://test-az/test-instance-id")
-	assert.Error(t, err)
-
-	awsRef, err := AwsRefFromProviderId("aws:///us-east-1a/i-260942b3")
-	assert.NoError(t, err)
-	assert.Equal(t, awsRef, &AwsInstanceRef{Name: "i-260942b3", ProviderID: "aws:///us-east-1a/i-260942b3"})
+	for _, test := range tests {
+		got, err := AwsRefFromProviderId(test.provID)
+		if test.expErr {
+			assert.Error(t, err)
+		} else {
+			assert.NoError(t, err)
+			assert.Equal(t, got, test.expRef)
+		}
+	}
 }
 
 func TestTargetSize(t *testing.T) {

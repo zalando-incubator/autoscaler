@@ -50,6 +50,7 @@ go_library(
         "helper.go",
         "interfaces.go",
         "mapper.go",
+        "negotiate.go",
         "register.go",
         "scheme.go",
         "scheme_builder.go",
@@ -71,6 +72,7 @@ go_library(
         "//staging/src/k8s.io/apimachinery/pkg/util/sets:go_default_library",
         "//vendor/github.com/gogo/protobuf/proto:go_default_library",
         "//vendor/k8s.io/klog:go_default_library",
+        "//vendor/sigs.k8s.io/structured-merge-diff/v3/value:go_default_library",
     ],
 )
 

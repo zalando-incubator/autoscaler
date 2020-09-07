@@ -80,6 +80,20 @@ func newProber(
 	}
 }
 
+// recordContainerEvent should be used by the prober for all container related events.
+func (pb *prober) recordContainerEvent(pod *v1.Pod, container *v1.Container, containerID kubecontainer.ContainerID, eventType, reason, message string, args ...interface{}) {
+	var err error
+	ref, hasRef := pb.refManager.GetRef(containerID)
+	if !hasRef {
+		ref, err = kubecontainer.GenerateContainerRef(pod, container)
+		if err != nil {
+			klog.Errorf("Can't make a ref to pod %q, container %v: %v", format.Pod(pod), container.Name, err)
+			return
+		}
+	}
+	pb.recorder.Eventf(ref, eventType, reason, message, args...)
+}
+
 // probe probes the container.
 func (pb *prober) probe(probeType probeType, pod *v1.Pod, status v1.PodStatus, container v1.Container, containerID kubecontainer.ContainerID) (results.Result, error) {
 	var probeSpec *v1.Probe
@@ -103,27 +117,17 @@ func (pb *prober) probe(probeType probeType, pod *v1.Pod, status v1.PodStatus, c
 	result, output, err := pb.runProbeWithRetries(probeType, probeSpec, pod, status, container, containerID, maxProbeRetries)
 	if err != nil || (result != probe.Success && result != probe.Warning) {
 		// Probe failed in one way or another.
-		ref, hasRef := pb.refManager.GetRef(containerID)
-		if !hasRef {
-			klog.Warningf("No ref for container %q (%s)", containerID.String(), ctrName)
-		}
 		if err != nil {
 			klog.V(1).Infof("%s probe for %q errored: %v", probeType, ctrName, err)
-			if hasRef {
-				pb.recorder.Eventf(ref, v1.EventTypeWarning, events.ContainerUnhealthy, "%s probe errored: %v", probeType, err)
-			}
+			pb.recordContainerEvent(pod, &container, containerID, v1.EventTypeWarning, events.ContainerUnhealthy, "%s probe errored: %v", probeType, err)
 		} else { // result != probe.Success
 			klog.V(1).Infof("%s probe for %q failed (%v): %s", probeType, ctrName, result, output)
-			if hasRef {
-				pb.recorder.Eventf(ref, v1.EventTypeWarning, events.ContainerUnhealthy, "%s probe failed: %s", probeType, output)
-			}
+			pb.recordContainerEvent(pod, &container, containerID, v1.EventTypeWarning, events.ContainerUnhealthy, "%s probe failed: %v", probeType, output)
 		}
 		return results.Failure, err
 	}
 	if result == probe.Warning {
-		if ref, hasRef := pb.refManager.GetRef(containerID); hasRef {
-			pb.recorder.Eventf(ref, v1.EventTypeWarning, events.ContainerProbeWarning, "%s probe warning: %s", probeType, output)
-		}
+		pb.recordContainerEvent(pod, &container, containerID, v1.EventTypeWarning, events.ContainerProbeWarning, "%s probe warning: %v", probeType, output)
 		klog.V(3).Infof("%s probe for %q succeeded with a warning: %s", probeType, ctrName, output)
 	} else {
 		klog.V(3).Infof("%s probe for %q succeeded", probeType, ctrName)
@@ -252,63 +256,68 @@ func formatURL(scheme string, host string, port int, path string) *url.URL {
 type execInContainer struct {
 	// run executes a command in a container. Combined stdout and stderr output is always returned. An
 	// error is returned if one occurred.
-	run func() ([]byte, error)
+	run    func() ([]byte, error)
+	writer io.Writer
 }
 
 func (pb *prober) newExecInContainer(container v1.Container, containerID kubecontainer.ContainerID, cmd []string, timeout time.Duration) exec.Cmd {
-	return execInContainer{func() ([]byte, error) {
+	return &execInContainer{run: func() ([]byte, error) {
 		return pb.runner.RunInContainer(containerID, cmd, timeout)
 	}}
 }
 
-func (eic execInContainer) Run() error {
-	return fmt.Errorf("unimplemented")
+func (eic *execInContainer) Run() error {
+	return nil
 }
 
-func (eic execInContainer) CombinedOutput() ([]byte, error) {
+func (eic *execInContainer) CombinedOutput() ([]byte, error) {
 	return eic.run()
 }
 
-func (eic execInContainer) Output() ([]byte, error) {
+func (eic *execInContainer) Output() ([]byte, error) {
 	return nil, fmt.Errorf("unimplemented")
 }
 
-func (eic execInContainer) SetDir(dir string) {
+func (eic *execInContainer) SetDir(dir string) {
 	//unimplemented
 }
 
-func (eic execInContainer) SetStdin(in io.Reader) {
+func (eic *execInContainer) SetStdin(in io.Reader) {
 	//unimplemented
 }
 
-func (eic execInContainer) SetStdout(out io.Writer) {
+func (eic *execInContainer) SetStdout(out io.Writer) {
+	eic.writer = out
+}
+
+func (eic *execInContainer) SetStderr(out io.Writer) {
+	eic.writer = out
+}
+
+func (eic *execInContainer) SetEnv(env []string) {
 	//unimplemented
 }
 
-func (eic execInContainer) SetStderr(out io.Writer) {
+func (eic *execInContainer) Stop() {
 	//unimplemented
 }
 
-func (eic execInContainer) SetEnv(env []string) {
-	//unimplemented
+func (eic *execInContainer) Start() error {
+	data, err := eic.run()
+	if eic.writer != nil {
+		eic.writer.Write(data)
+	}
+	return err
 }
 
-func (eic execInContainer) Stop() {
-	//unimplemented
+func (eic *execInContainer) Wait() error {
+	return nil
 }
 
-func (eic execInContainer) Start() error {
-	return fmt.Errorf("unimplemented")
-}
-
-func (eic execInContainer) Wait() error {
-	return fmt.Errorf("unimplemented")
-}
-
-func (eic execInContainer) StdoutPipe() (io.ReadCloser, error) {
+func (eic *execInContainer) StdoutPipe() (io.ReadCloser, error) {
 	return nil, fmt.Errorf("unimplemented")
 }
 
-func (eic execInContainer) StderrPipe() (io.ReadCloser, error) {
+func (eic *execInContainer) StderrPipe() (io.ReadCloser, error) {
 	return nil, fmt.Errorf("unimplemented")
 }

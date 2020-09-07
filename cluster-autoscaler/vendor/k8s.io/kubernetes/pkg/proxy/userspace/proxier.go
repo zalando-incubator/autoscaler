@@ -32,8 +32,8 @@ import (
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	servicehelper "k8s.io/cloud-provider/service/helpers"
 	"k8s.io/klog"
-	"k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	"k8s.io/kubernetes/pkg/proxy"
 	"k8s.io/kubernetes/pkg/proxy/config"
 	utilproxy "k8s.io/kubernetes/pkg/proxy/util"
@@ -41,6 +41,7 @@ import (
 	"k8s.io/kubernetes/pkg/util/conntrack"
 	"k8s.io/kubernetes/pkg/util/iptables"
 	utilexec "k8s.io/utils/exec"
+	netutils "k8s.io/utils/net"
 )
 
 type portal struct {
@@ -112,6 +113,8 @@ type asyncRunnerInterface interface {
 type Proxier struct {
 	// EndpointSlice support has not been added for this proxier yet.
 	config.NoopEndpointSliceHandler
+	// TODO(imroc): implement node handler for userspace proxier.
+	config.NoopNodeHandler
 
 	loadBalancer    LoadBalancer
 	mu              sync.Mutex // protects serviceMap
@@ -125,6 +128,7 @@ type Proxier struct {
 	listenIP        net.IP
 	iptables        iptables.Interface
 	hostIP          net.IP
+	localAddrs      netutils.IPSet
 	proxyPorts      PortAllocator
 	makeProxySocket ProxySocketFunc
 	exec            utilexec.Interface
@@ -171,11 +175,6 @@ var (
 	// the caller provided invalid input.
 	ErrProxyOnLocalhost = fmt.Errorf("cannot proxy on localhost")
 )
-
-// IsProxyLocked returns true if the proxy could not acquire the lock on iptables.
-func IsProxyLocked(err error) bool {
-	return strings.Contains(err.Error(), "holding the xtables lock")
-}
 
 // NewProxier returns a new Proxier given a LoadBalancer and an address on
 // which to listen.  Because of the iptables logic, It is assumed that there
@@ -373,6 +372,17 @@ func (proxier *Proxier) syncProxyRules() {
 		existingPorts := proxier.mergeService(change.current)
 		proxier.unmergeService(change.previous, existingPorts)
 	}
+
+	localAddrs, err := utilproxy.GetLocalAddrs()
+	if err != nil {
+		klog.Errorf("Failed to get local addresses during proxy sync: %s, assuming IPs are not local", err)
+	} else if len(localAddrs) == 0 {
+		klog.Warning("No local addresses were found, assuming all external IPs are not local")
+	}
+
+	localAddrSet := netutils.IPSet{}
+	localAddrSet.Insert(localAddrs...)
+	proxier.localAddrs = localAddrSet
 
 	proxier.ensurePortals()
 	proxier.cleanupStaleStickySessions()
@@ -611,18 +621,26 @@ func (proxier *Proxier) serviceChange(previous, current *v1.Service, detail stri
 	}
 }
 
+// OnServiceAdd is called whenever creation of new service object
+// is observed.
 func (proxier *Proxier) OnServiceAdd(service *v1.Service) {
 	proxier.serviceChange(nil, service, "OnServiceAdd")
 }
 
+// OnServiceUpdate is called whenever modification of an existing
+// service object is observed.
 func (proxier *Proxier) OnServiceUpdate(oldService, service *v1.Service) {
 	proxier.serviceChange(oldService, service, "OnServiceUpdate")
 }
 
+// OnServiceDelete is called whenever deletion of an existing service
+// object is observed.
 func (proxier *Proxier) OnServiceDelete(service *v1.Service) {
 	proxier.serviceChange(service, nil, "OnServiceDelete")
 }
 
+// OnServiceSynced is called once all the initial event handlers were
+// called and the state is fully propagated to local cache.
 func (proxier *Proxier) OnServiceSynced() {
 	klog.V(2).Infof("userspace OnServiceSynced")
 
@@ -639,18 +657,26 @@ func (proxier *Proxier) OnServiceSynced() {
 	go proxier.syncProxyRules()
 }
 
+// OnEndpointsAdd is called whenever creation of new endpoints object
+// is observed.
 func (proxier *Proxier) OnEndpointsAdd(endpoints *v1.Endpoints) {
 	proxier.loadBalancer.OnEndpointsAdd(endpoints)
 }
 
+// OnEndpointsUpdate is called whenever modification of an existing
+// endpoints object is observed.
 func (proxier *Proxier) OnEndpointsUpdate(oldEndpoints, endpoints *v1.Endpoints) {
 	proxier.loadBalancer.OnEndpointsUpdate(oldEndpoints, endpoints)
 }
 
+// OnEndpointsDelete is called whenever deletion of an existing endpoints
+// object is observed.
 func (proxier *Proxier) OnEndpointsDelete(endpoints *v1.Endpoints) {
 	proxier.loadBalancer.OnEndpointsDelete(endpoints)
 }
 
+// OnEndpointsSynced is called once all the initial event handlers were
+// called and the state is fully propagated to local cache.
 func (proxier *Proxier) OnEndpointsSynced() {
 	klog.V(2).Infof("userspace OnEndpointsSynced")
 	proxier.loadBalancer.OnEndpointsSynced()
@@ -678,7 +704,7 @@ func sameConfig(info *ServiceInfo, service *v1.Service, port *v1.ServicePort) bo
 	if !ipsEqual(info.externalIPs, service.Spec.ExternalIPs) {
 		return false
 	}
-	if !helper.LoadBalancerStatusEqual(&info.loadBalancerStatus, &service.Status.LoadBalancer) {
+	if !servicehelper.LoadBalancerStatusEqual(&info.loadBalancerStatus, &service.Status.LoadBalancer) {
 		return false
 	}
 	if info.sessionAffinityType != service.Spec.SessionAffinity {
@@ -728,9 +754,7 @@ func (proxier *Proxier) openPortal(service proxy.ServicePortName, info *ServiceI
 }
 
 func (proxier *Proxier) openOnePortal(portal portal, protocol v1.Protocol, proxyIP net.IP, proxyPort int, name proxy.ServicePortName) error {
-	if local, err := utilproxy.IsLocalIP(portal.ip.String()); err != nil {
-		return fmt.Errorf("can't determine if IP %s is local, assuming not: %v", portal.ip, err)
-	} else if local {
+	if proxier.localAddrs.Len() > 0 && proxier.localAddrs.Has(portal.ip) {
 		err := proxier.claimNodePort(portal.ip, portal.port, protocol, name)
 		if err != nil {
 			return err
@@ -906,10 +930,7 @@ func (proxier *Proxier) closePortal(service proxy.ServicePortName, info *Service
 
 func (proxier *Proxier) closeOnePortal(portal portal, protocol v1.Protocol, proxyIP net.IP, proxyPort int, name proxy.ServicePortName) []error {
 	el := []error{}
-
-	if local, err := utilproxy.IsLocalIP(portal.ip.String()); err != nil {
-		el = append(el, fmt.Errorf("can't determine if IP %s is local, assuming not: %v", portal.ip, err))
-	} else if local {
+	if proxier.localAddrs.Len() > 0 && proxier.localAddrs.Has(portal.ip) {
 		if err := proxier.releaseNodePort(portal.ip, portal.port, protocol, name); err != nil {
 			el = append(el, err)
 		}

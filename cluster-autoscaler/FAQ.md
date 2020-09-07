@@ -92,6 +92,8 @@ matching anti-affinity, etc)
 "cluster-autoscaler.kubernetes.io/safe-to-evict": "true"
 ```
 
+__Or__ you have have overridden this behaviour with one of the relevant flags. [See below for more information on these flags.](#what-are-the-parameters-to-ca)
+
 ### Which version on Cluster Autoscaler should I use in my cluster?
 
 See [Cluster Autoscaler Releases](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler#releases)
@@ -262,7 +264,7 @@ available [here](https://github.com/kubernetes/autoscaler/blob/master/cluster-au
 ### How can I scale my cluster to just 1 node?
 
 Prior to version 0.6, Cluster Autoscaler was not touching nodes that were running important
-kube-system pods like DNS, Metrics Server, Dashboard etc. If these pods landed on different nodes,
+kube-system pods like DNS, Metrics Server, Dashboard, etc. If these pods landed on different nodes,
 CA could not scale the cluster down and the user could end up with a completely empty
 3 node cluster. In 0.6, we added an option to tell CA that some system pods can be moved around.
 If the user configures a [PodDisruptionBudget](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/)
@@ -354,7 +356,7 @@ description: "Priority class used by overprovisioning."
 
 **For 1.11:**
 
-```
+```yaml
 apiVersion: scheduling.k8s.io/v1beta1
 kind: PriorityClass
 metadata:
@@ -627,14 +629,14 @@ However, CA does not consider "soft" constraints like `preferredDuringScheduling
 
 The following startup parameters are supported for cluster autoscaler:
 
-| Parameter | Description | Default | 
+| Parameter | Description | Default |
 | --- | --- | --- |
-| `cluster-name` | Autoscaled cluster name, if available | "" 
-| `address` | The address to expose prometheus metrics | :8085 
-| `kubernetes` | Kubernetes master location. Leave blank for default | "" 
+| `cluster-name` | Autoscaled cluster name, if available | ""
+| `address` | The address to expose prometheus metrics | :8085
+| `kubernetes` | Kubernetes master location. Leave blank for default | ""
 | `kubeconfig` | Path to kubeconfig file with authorization and master location information | ""
 | `cloud-config` | The path to the cloud provider configuration file.  Empty string for no configuration file | ""
-| `namespace` | Namespace in which cluster-autoscaler run | "kube-system" 
+| `namespace` | Namespace in which cluster-autoscaler run | "kube-system"
 | `scale-down-enabled` | Should CA scale down the cluster | true
 | `scale-down-delay-after-add` | How long after scale up that scale down evaluation resumes | 10 minutes
 | `scale-down-delay-after-delete` | How long after node deletion that scale down evaluation resumes, defaults to scan-interval | scan-interval
@@ -657,7 +659,7 @@ The following startup parameters are supported for cluster autoscaler:
 | `ok-total-unready-count` | Number of allowed unready nodes, irrespective of max-total-unready-percentage  | 3
 | `max-node-provision-time` | Maximum time CA waits for node to be provisioned | 15 minutes
 | `nodes` | sets min,max size and other configuration data for a node group in a format accepted by cloud provider. Can be used multiple times. Format: <min>:<max>:<other...> | ""
-| `node-group-auto-discovery` | One or more definition(s) of node group auto-discovery.<br>A definition is expressed `<name of discoverer>:[<key>[=<value>]]`<br>The `aws` and `gce` cloud providers are currently supported. AWS matches by ASG tags, e.g. `asg:tag=tagKey,anotherTagKey`<br>GCE matches by IG name prefix, and requires you to specify min and max nodes per IG, e.g. `mig:namePrefix=pfx,min=0,max=10`<br>Can be used multiple times | ""
+| `node-group-auto-discovery` | One or more definition(s) of node group auto-discovery.<br>A definition is expressed `<name of discoverer>:[<key>[=<value>]]`<br>The `aws`, `gce`, and `azure` cloud providers are currently supported. AWS matches by ASG tags, e.g. `asg:tag=tagKey,anotherTagKey`<br>GCE matches by IG name prefix, and requires you to specify min and max nodes per IG, e.g. `mig:namePrefix=pfx,min=0,max=10`<br> Azure matches by tags on VMSS, e.g. `label:foo=bar`, and will auto-detect `min` and `max` tags on the VMSS to set scaling limits.<br>Can be used multiple times | ""
 | `estimator` | Type of resource estimator to be used in scale up | binpacking
 | `expander` | Type of node group expander to be used in scale up.  | random
 | `write-status-configmap` | Should CA write status information to a configmap  | true
@@ -674,6 +676,10 @@ The following startup parameters are supported for cluster autoscaler:
 | `leader-elect-renew-deadline` | The interval between attempts by the acting master to renew a leadership slot before it stops leading.<br>This must be less than or equal to the lease duration.<br>This is only applicable if leader election is enabled | 10 seconds
 | `leader-elect-retry-period` | The duration the clients should wait between attempting acquisition and renewal of a leadership.<br>This is only applicable if leader election is enabled | 2 seconds
 | `leader-elect-resource-lock` | The type of resource object that is used for locking during leader election.<br>Supported options are `endpoints` (default) and `configmaps` | "endpoints"
+| `aws-use-static-instance-list` | Should CA fetch instance types in runtime or use a static list. AWS only | false
+| `skip-nodes-with-system-pods` | If true cluster autoscaler will never delete nodes with pods from kube-system (except for DaemonSet or mirror pods | true
+| `skip-nodes-with-local-storage`| If true cluster autoscaler will never delete nodes with pods with local storage, e.g. EmptyDir or HostPath | true
+| `min-replica-count` | Minimum number or replicas that a replica set or replication controller should have to allow their pods deletion in scale down | 0
 
 # Troubleshooting:
 
@@ -702,7 +708,7 @@ CA doesn't remove underutilized nodes if they are running pods [that it shouldn'
 By default, kube-system pods prevent CA from removing nodes on which they are running. Users can manually add PDBs for the kube-system pods that can be safely rescheduled elsewhere:
 
 ```
-kubectl create poddisruptionbudget <pdb name> --namespace=kube-system --selector app:<app name> --max-unavailable 1
+kubectl create poddisruptionbudget <pdb name> --namespace=kube-system --selector app=<app name> --max-unavailable 1
 ```
 
 Here's how to do it for some common pods:
@@ -845,7 +851,7 @@ Depending on how long scale-ups have been failing, it may wait up to 30 minutes 
 
 ### How can I run e2e tests?
 
-1. Set up environment and build e2e.go as described in the [Kubernetes docs](https://github.com/kubernetes/community/blob/master/contributors/devel/e2e-tests.md#building-and-running-the-tests).
+1. Set up environment and build e2e.go as described in the [Kubernetes docs](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-testing/e2e-tests.md#building-and-running-the-tests).
 2. Set up the following env variables:
     ```sh
     export KUBE_AUTOSCALER_MIN_NODES=3
@@ -906,4 +912,43 @@ We are aware that this process is tedious and we will work to improve it.
 
 ### How can I update CA dependencies (particularly k8s.io/kubernetes)?
 
-TODO - update needed after k8s migrated to go modules
+Cluster Autoscaler imports a huge chunk of internal k8s code as it calls out to scheduler implementation.
+Therefore we want to keep set of libraries used in CA as close to one used by k8s, to avoid
+unexpected problems coming from version incompatibilities.
+
+Cluster Autoscaler depends on `go modules` mechanism for dependency management, but do not use it directly
+during build process. `go.mod` file is just used to generate the `vendor` directory and further compilation
+is run against set of libraries stored in `vendor`. `vendor` directory can be regenerated using [`update-vendor.sh`](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/hack/update-vendor.sh) script.
+The `update-vendor.sh` script is responsible for autogenerating `go.mod` file used by Cluster Autoscaler. The base
+of the file is `go.mod` file coming from [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) repository. 
+On top of that script adds modifications as defined
+locally in [`go.mod-extra`](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/go.mod-extra) file. 
+
+Note: It is important that one should **never manually edit** `go.mod` file as it is regenerated
+on each `update-vendor.sh` call. Any extra libraries or version overrides should be put in `go.mod-extra` file (syntax of the file
+is same as syntax of `go.mod` file). 
+
+Finally `vendor` directry is materialized and validation tests are run.
+
+If everything completes correctly a commit with updated `vendor` directory is created automatically. The pull-request with changed vendor
+must be sent out manually. The PR should include the auto-generated commit as well as commits containing any manual changes/fixes that need to
+go together.
+
+Execution of `update-vendor.sh` can be parametrized using command line argumets:
+ - `-f` - kubernetes/kubernetes fork to use. On `master` it defaults to `git@github.com:kubernetes/kubernetes.git`
+ - `-r` - revision in kubernetes/kubernetes which should be used to get base `go.mod` file
+ - `-d` - specifies script workdir; useful to speed up execution if script needs to be run multiple times, because updating vendor resulted in some compilation errors on Cluster-Autoscaler side which need to be fixed
+ 
+Example execution looks like this:
+```
+./hack/update-vendor.sh -d/tmp/ca-update-vendor.ou1l -fgit@github.com:kubernetes/kubernetes.git -rmaster
+```
+
+Caveats:
+ - `update-vendor.sh` is called directly in shell (no docker is used) therefore its operation may differ from environment to environment.
+ - It is important that go version, which isn in use in the shell in which `update-vendor.sh` is called, matches the `go <version>` directive specified in `go.mod` file
+   in `kubernetes/kubernetes` revision against which revendoring is done.
+ - `update-vendor.sh` automatically runs unit tests as part of verification process. If one needs to suppress that, it can be done by overriding `VERIFY_COMMAND` variable (`VERIFY_COMMAND=true ./hack/update-vendor.sh ...`)
+ - If one wants to only add new libraries to `go.mod-extra`, but not change the base `go.mod`, `-r` should be used with kubernetes/kubernets revision, which was used last time `update-vendor.sh` was called. One can determine that revision by looking at `git log` in Cluster Autoscaler repository. Following command will do the trick `git log | grep "Updating vendor against"`.
+
+

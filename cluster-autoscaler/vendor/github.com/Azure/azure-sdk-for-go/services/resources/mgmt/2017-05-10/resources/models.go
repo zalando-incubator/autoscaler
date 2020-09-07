@@ -85,6 +85,11 @@ type BasicDependency struct {
 	ResourceName *string `json:"resourceName,omitempty"`
 }
 
+// CloudError an error response for a resource management request.
+type CloudError struct {
+	Error *ErrorResponse `json:"error,omitempty"`
+}
+
 // CreateOrUpdateByIDFuture an abstraction for monitoring and retrieving the results of a long-running
 // operation.
 type CreateOrUpdateByIDFuture struct {
@@ -664,6 +669,28 @@ type DeploymentValidateResult struct {
 	Properties *DeploymentPropertiesExtended `json:"properties,omitempty"`
 }
 
+// ErrorAdditionalInfo the resource management error additional info.
+type ErrorAdditionalInfo struct {
+	// Type - READ-ONLY; The additional info type.
+	Type *string `json:"type,omitempty"`
+	// Info - READ-ONLY; The additional info.
+	Info interface{} `json:"info,omitempty"`
+}
+
+// ErrorResponse the resource management error response.
+type ErrorResponse struct {
+	// Code - READ-ONLY; The error code.
+	Code *string `json:"code,omitempty"`
+	// Message - READ-ONLY; The error message.
+	Message *string `json:"message,omitempty"`
+	// Target - READ-ONLY; The error target.
+	Target *string `json:"target,omitempty"`
+	// Details - READ-ONLY; The error details.
+	Details *[]ErrorResponse `json:"details,omitempty"`
+	// AdditionalInfo - READ-ONLY; The error additional info.
+	AdditionalInfo *[]ErrorAdditionalInfo `json:"additionalInfo,omitempty"`
+}
+
 // ExportTemplateRequest export resource group template request parameters.
 type ExportTemplateRequest struct {
 	// ResourcesProperty - The IDs of the resources to filter the export by. To export all resources, supply an array with single entry '*'.
@@ -725,6 +752,68 @@ func (gr GenericResource) MarshalJSON() ([]byte, error) {
 	}
 	if gr.Tags != nil {
 		objectMap["tags"] = gr.Tags
+	}
+	return json.Marshal(objectMap)
+}
+
+// GenericResourceExpanded resource information.
+type GenericResourceExpanded struct {
+	// CreatedTime - READ-ONLY; The created time of the resource. This is only present if requested via the $expand query parameter.
+	CreatedTime *date.Time `json:"createdTime,omitempty"`
+	// ChangedTime - READ-ONLY; The changed time of the resource. This is only present if requested via the $expand query parameter.
+	ChangedTime *date.Time `json:"changedTime,omitempty"`
+	// ProvisioningState - READ-ONLY; The provisioning state of the resource. This is only present if requested via the $expand query parameter.
+	ProvisioningState *string `json:"provisioningState,omitempty"`
+	// Plan - The plan of the resource.
+	Plan *Plan `json:"plan,omitempty"`
+	// Properties - The resource properties.
+	Properties interface{} `json:"properties,omitempty"`
+	// Kind - The kind of the resource.
+	Kind *string `json:"kind,omitempty"`
+	// ManagedBy - ID of the resource that manages this resource.
+	ManagedBy *string `json:"managedBy,omitempty"`
+	// Sku - The SKU of the resource.
+	Sku *Sku `json:"sku,omitempty"`
+	// Identity - The identity of the resource.
+	Identity *Identity `json:"identity,omitempty"`
+	// ID - READ-ONLY; Resource ID
+	ID *string `json:"id,omitempty"`
+	// Name - READ-ONLY; Resource name
+	Name *string `json:"name,omitempty"`
+	// Type - READ-ONLY; Resource type
+	Type *string `json:"type,omitempty"`
+	// Location - Resource location
+	Location *string `json:"location,omitempty"`
+	// Tags - Resource tags
+	Tags map[string]*string `json:"tags"`
+}
+
+// MarshalJSON is the custom marshaler for GenericResourceExpanded.
+func (gre GenericResourceExpanded) MarshalJSON() ([]byte, error) {
+	objectMap := make(map[string]interface{})
+	if gre.Plan != nil {
+		objectMap["plan"] = gre.Plan
+	}
+	if gre.Properties != nil {
+		objectMap["properties"] = gre.Properties
+	}
+	if gre.Kind != nil {
+		objectMap["kind"] = gre.Kind
+	}
+	if gre.ManagedBy != nil {
+		objectMap["managedBy"] = gre.ManagedBy
+	}
+	if gre.Sku != nil {
+		objectMap["sku"] = gre.Sku
+	}
+	if gre.Identity != nil {
+		objectMap["identity"] = gre.Identity
+	}
+	if gre.Location != nil {
+		objectMap["location"] = gre.Location
+	}
+	if gre.Tags != nil {
+		objectMap["tags"] = gre.Tags
 	}
 	return json.Marshal(objectMap)
 }
@@ -1016,12 +1105,12 @@ type Identity struct {
 type ListResult struct {
 	autorest.Response `json:"-"`
 	// Value - An array of resources.
-	Value *[]GenericResource `json:"value,omitempty"`
+	Value *[]GenericResourceExpanded `json:"value,omitempty"`
 	// NextLink - READ-ONLY; The URL to use for getting the next set of results.
 	NextLink *string `json:"nextLink,omitempty"`
 }
 
-// ListResultIterator provides access to a complete listing of GenericResource values.
+// ListResultIterator provides access to a complete listing of GenericResourceExpanded values.
 type ListResultIterator struct {
 	i    int
 	page ListResultPage
@@ -1072,9 +1161,9 @@ func (iter ListResultIterator) Response() ListResult {
 
 // Value returns the current value or a zero-initialized value if the
 // iterator has advanced beyond the end of the collection.
-func (iter ListResultIterator) Value() GenericResource {
+func (iter ListResultIterator) Value() GenericResourceExpanded {
 	if !iter.page.NotDone() {
-		return GenericResource{}
+		return GenericResourceExpanded{}
 	}
 	return iter.page.Values()[iter.i]
 }
@@ -1101,7 +1190,7 @@ func (lr ListResult) listResultPreparer(ctx context.Context) (*http.Request, err
 		autorest.WithBaseURL(to.String(lr.NextLink)))
 }
 
-// ListResultPage contains a page of GenericResource values.
+// ListResultPage contains a page of GenericResourceExpanded values.
 type ListResultPage struct {
 	fn func(context.Context, ListResult) (ListResult, error)
 	lr ListResult
@@ -1146,7 +1235,7 @@ func (page ListResultPage) Response() ListResult {
 }
 
 // Values returns the slice of values for the current page or nil if there are no values.
-func (page ListResultPage) Values() []GenericResource {
+func (page ListResultPage) Values() []GenericResourceExpanded {
 	if page.lr.IsEmpty() {
 		return nil
 	}
@@ -1665,6 +1754,16 @@ type TargetResource struct {
 	ResourceName *string `json:"resourceName,omitempty"`
 	// ResourceType - The type of the resource.
 	ResourceType *string `json:"resourceType,omitempty"`
+}
+
+// TemplateHashResult result of the request to calculate template hash. It contains a string of minified
+// template and its hash.
+type TemplateHashResult struct {
+	autorest.Response `json:"-"`
+	// MinifiedTemplate - The minified template string.
+	MinifiedTemplate *string `json:"minifiedTemplate,omitempty"`
+	// TemplateHash - The template hash.
+	TemplateHash *string `json:"templateHash,omitempty"`
 }
 
 // TemplateLink entity representing the reference to the template.

@@ -133,10 +133,13 @@ type AutoscalingOptions struct {
 	MaxBulkSoftTaintCount int
 	// MaxBulkSoftTaintTime sets the maximum duration of single run of PreferNoSchedule tainting.
 	MaxBulkSoftTaintTime time.Duration
-	// Filtering out schedulable pods before CA scale up by trying to pack the schedulable pods on free capacity on existing nodes.
-	// Setting it to false employs a more lenient filtering approach that does not try to pack the pods on the nodes.
-	// Pods with nominatedNodeName set are always filtered out.
-	FilterOutSchedulablePodsUsesPacking bool
 	// IgnoredTaints is a list of taints to ignore when considering a node template for scheduling.
 	IgnoredTaints []string
+	// BalancingExtraIgnoredLabels is a list of labels to additionally ignore when comparing if two node groups are similar.
+	// Labels in BasicIgnoredLabels and the cloud provider-specific ignored labels are always ignored.
+	BalancingExtraIgnoredLabels []string
+	// AWSUseStaticInstanceList tells if AWS cloud provider use static instance type list or dynamically fetch from remote APIs.
+	AWSUseStaticInstanceList bool
+	// Path to kube configuration if available
+	KubeConfigPath string
 }

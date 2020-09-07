@@ -58,7 +58,7 @@ func configTLS(clientset *kubernetes.Clientset, serverCert, serverKey []byte) *t
 
 // register this webhook admission controller with the kube-apiserver
 // by creating MutatingWebhookConfiguration.
-func selfRegistration(clientset *kubernetes.Clientset, caCert []byte, namespace *string, url string, registerByURL bool) {
+func selfRegistration(clientset *kubernetes.Clientset, caCert []byte, namespace, serviceName, url string, registerByURL bool) {
 	time.Sleep(10 * time.Second)
 	client := clientset.AdmissionregistrationV1beta1().MutatingWebhookConfigurations()
 	_, err := client.Get(webhookConfigName, metav1.GetOptions{})
@@ -70,19 +70,19 @@ func selfRegistration(clientset *kubernetes.Clientset, caCert []byte, namespace 
 	RegisterClientConfig := v1beta1.WebhookClientConfig{}
 	if !registerByURL {
 		RegisterClientConfig.Service = &v1beta1.ServiceReference{
-			Namespace: *namespace,
-			Name:      "vpa-webhook",
+			Namespace: namespace,
+			Name:      serviceName,
 		}
 	} else {
 		RegisterClientConfig.URL = &url
 	}
-	RegisterClientConfig.CABundle = caCert
 	sideEffects := v1beta1.SideEffectClassNone
+	RegisterClientConfig.CABundle = caCert
 	webhookConfig := &v1beta1.MutatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: webhookConfigName,
 		},
-		Webhooks: []v1beta1.Webhook{
+		Webhooks: []v1beta1.MutatingWebhook{
 			{
 				Name: "vpa.k8s.io",
 				Rules: []v1beta1.RuleWithOperations{
@@ -103,8 +103,8 @@ func selfRegistration(clientset *kubernetes.Clientset, caCert []byte, namespace 
 						},
 					},
 				},
-				SideEffects:    &sideEffects,
 				ClientConfig:   RegisterClientConfig,
+				SideEffects:    &sideEffects,
 				TimeoutSeconds: pointer.Int32Ptr(webhookTimeoutSeconds),
 			},
 		},

@@ -160,9 +160,8 @@ func getCappedRecommendation(vpaID model.VpaID, resources logic.RecommendedPodRe
 func (r *recommender) MaintainCheckpoints(ctx context.Context, minCheckpointsPerRun int) {
 	now := time.Now()
 	if r.useCheckpoints {
-		err := r.checkpointWriter.StoreCheckpoints(ctx, now, minCheckpointsPerRun)
-		if err != nil {
-			klog.Errorf("Unable to store checkpoints: %v", err)
+		if err := r.checkpointWriter.StoreCheckpoints(ctx, now, minCheckpointsPerRun); err != nil {
+			klog.Warningf("Failed to store checkpoints. Reason: %+v", err)
 		}
 		if time.Now().Sub(r.lastCheckpointGC) > r.checkpointsGCInterval {
 			r.lastCheckpointGC = now

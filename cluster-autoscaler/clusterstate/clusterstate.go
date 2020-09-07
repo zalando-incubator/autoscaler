@@ -432,6 +432,11 @@ func (csr *ClusterStateRegistry) IsNodeGroupSafeToScaleUp(nodeGroup cloudprovide
 }
 
 func (csr *ClusterStateRegistry) getProvisionedAndTargetSizesForNodeGroup(nodeGroupName string) (provisioned, target int, ok bool) {
+	if len(csr.acceptableRanges) == 0 {
+		klog.Warningf("AcceptableRanges have not been populated yet. Skip checking")
+		return 0, 0, false
+	}
+
 	acceptable, found := csr.acceptableRanges[nodeGroupName]
 	if !found {
 		klog.Warningf("Failed to find acceptable ranges for %v", nodeGroupName)
@@ -979,16 +984,18 @@ func getNotRegisteredNodes(allNodes []*apiv1.Node, cloudProviderNodeInstances ma
 	return notRegistered
 }
 
-// GetClusterSize calculates and returns cluster's current size and target size. The current size is the
-// actual number of nodes provisioned in Kubernetes, the target size is the number of nodes the CA wants.
-func (csr *ClusterStateRegistry) GetClusterSize() (currentSize, targetSize int) {
+// GetAutoscaledNodesCount calculates and returns the actual and the target number of nodes
+// belonging to autoscaled node groups in the cluster.
+func (csr *ClusterStateRegistry) GetAutoscaledNodesCount() (currentSize, targetSize int) {
 	csr.Lock()
 	defer csr.Unlock()
 
 	for _, accRange := range csr.acceptableRanges {
 		targetSize += accRange.CurrentTarget
 	}
-	currentSize = csr.totalReadiness.Registered - csr.totalReadiness.NotStarted - csr.totalReadiness.LongNotStarted
+	for _, readiness := range csr.perNodeGroupReadiness {
+		currentSize += readiness.Registered - readiness.NotStarted - readiness.LongNotStarted
+	}
 	return currentSize, targetSize
 }
 
@@ -1033,7 +1040,7 @@ func (csr *ClusterStateRegistry) handleInstanceCreationErrorsForNodeGroup(
 			}
 		}
 
-		klog.V(1).Infof("Failed adding %v nodes (%v unseen previously) to group %v due to %v", len(instances), len(unseenInstanceIds), nodeGroup.Id(), errorCode)
+		klog.V(1).Infof("Failed adding %v nodes (%v unseen previously) to group %v due to %v; errorMessages=%#v", len(instances), len(unseenInstanceIds), nodeGroup.Id(), errorCode, currentUniqueErrorMessagesForErrorCode[errorCode])
 		if len(unseenInstanceIds) > 0 && csr.IsNodeGroupScalingUp(nodeGroup.Id()) {
 			csr.logRecorder.Eventf(
 				apiv1.EventTypeWarning,
@@ -1105,8 +1112,8 @@ func (csr *ClusterStateRegistry) buildInstanceToErrorCodeMappings(instances []cl
 	return
 }
 
-// GetCreatedNodesWithOutOfResourcesErrors returns list of nodes being created which reported create error of "out of resources" class.
-func (csr *ClusterStateRegistry) GetCreatedNodesWithOutOfResourcesErrors() []*apiv1.Node {
+// GetCreatedNodesWithErrors returns list of nodes being created which reported create error.
+func (csr *ClusterStateRegistry) GetCreatedNodesWithErrors() []*apiv1.Node {
 	csr.Lock()
 	defer csr.Unlock()
 
@@ -1125,6 +1132,11 @@ func (csr *ClusterStateRegistry) GetCreatedNodesWithOutOfResourcesErrors() []*ap
 // RefreshCloudProviderNodeInstancesCache refreshes cloud provider node instances cache.
 func (csr *ClusterStateRegistry) RefreshCloudProviderNodeInstancesCache() {
 	csr.cloudProviderNodeInstancesCache.Refresh()
+}
+
+// InvalidateNodeInstancesCacheEntry removes a node group from the cloud provider node instances cache.
+func (csr *ClusterStateRegistry) InvalidateNodeInstancesCacheEntry(nodeGroup cloudprovider.NodeGroup) {
+	csr.cloudProviderNodeInstancesCache.InvalidateCacheEntry(nodeGroup)
 }
 
 func fakeNode(instance cloudprovider.Instance) *apiv1.Node {

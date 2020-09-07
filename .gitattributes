@@ -1,0 +1,5 @@
+vertical-pod-autoscaler/Godeps/**/* -diff
+vertical-pod-autoscaler/vendor/**/* -diff
+addon-resizer/**/* -diff
+cluster-autoscaler/**/* -diff
+builder/**/* -diff

@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/core/utils"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 	"k8s.io/klog"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
@@ -53,7 +54,6 @@ const (
 	refreshInterval         = 1 * time.Minute
 	autoDiscovererTypeASG   = "asg"
 	asgAutoDiscovererKeyTag = "tag"
-	megabyte                = 1024 * 1024
 )
 
 // AwsManager is handles aws communication and data caching.
@@ -74,17 +74,17 @@ type AwsManager struct {
 	reservedResources apiv1.ResourceList
 }
 
-type instanceResourceInfo struct {
-	InstanceType *InstanceType
-	Capacity     apiv1.ResourceList
-	Allocatable  apiv1.ResourceList
-}
-
 type asgTemplate struct {
 	AvailableResources []*instanceResourceInfo
 	Region             string
 	Zone               string
 	Tags               []*autoscaling.TagDescription
+}
+
+type instanceResourceInfo struct {
+	InstanceType *InstanceType
+	Capacity     apiv1.ResourceList
+	Allocatable  apiv1.ResourceList
 }
 
 func validateOverrides(cfg *provider_aws.CloudConfig) error {
@@ -432,7 +432,7 @@ func (m *AwsManager) availableResources(instanceType string) (*instanceResourceI
 	}
 
 	cpuCapacity := *resource.NewQuantity(awsTemplate.VCPU, resource.DecimalSI)
-	memCapacity := *resource.NewQuantity(awsTemplate.MemoryMb*megabyte, resource.DecimalSI)
+	memCapacity := *resource.NewQuantity(awsTemplate.MemoryMb*utils.MiB, resource.DecimalSI)
 	gpuCapacity := *resource.NewQuantity(awsTemplate.GPU, resource.DecimalSI)
 	// TODO: get a real value.
 	podCapacity := *resource.NewQuantity(110, resource.DecimalSI)

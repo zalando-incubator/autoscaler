@@ -174,20 +174,20 @@ func TestScaleUpMaxCoresLimitHitWithNotAutoscaledGroup(t *testing.T) {
 
 func TestScaleUpMaxMemoryLimitHit(t *testing.T) {
 	options := defaultOptions
-	options.MaxMemoryTotal = 1300 * units.MiB
+	options.MaxMemoryTotal = 1300 * utils.MiB
 	config := &scaleTestConfig{
 		nodes: []nodeConfig{
-			{"n1", 2000, 100 * units.MiB, 0, true, "ng1"},
-			{"n2", 4000, 1000 * units.MiB, 0, true, "ng2"},
+			{"n1", 2000, 100 * utils.MiB, 0, true, "ng1"},
+			{"n2", 4000, 1000 * utils.MiB, 0, true, "ng2"},
 		},
 		pods: []podConfig{
 			{"p1", 1000, 0, 0, "n1", false},
 			{"p2", 3000, 0, 0, "n2", false},
 		},
 		extraPods: []podConfig{
-			{"p-new-1", 2000, 100 * units.MiB, 0, "", false},
-			{"p-new-2", 2000, 100 * units.MiB, 0, "", false},
-			{"p-new-3", 2000, 100 * units.MiB, 0, "", false},
+			{"p-new-1", 2000, 100 * utils.MiB, 0, "", false},
+			{"p-new-2", 2000, 100 * utils.MiB, 0, "", false},
+			{"p-new-3", 2000, 100 * utils.MiB, 0, "", false},
 		},
 		expansionOptionToChoose: groupSizeChange{groupName: "ng1", sizeChange: 3},
 		options:                 options,
@@ -204,20 +204,20 @@ func TestScaleUpMaxMemoryLimitHit(t *testing.T) {
 
 func TestScaleUpMaxMemoryLimitHitWithNotAutoscaledGroup(t *testing.T) {
 	options := defaultOptions
-	options.MaxMemoryTotal = 1300 * units.MiB
+	options.MaxMemoryTotal = 1300 * utils.MiB
 	config := &scaleTestConfig{
 		nodes: []nodeConfig{
-			{"n1", 2000, 100 * units.MiB, 0, true, "ng1"},
-			{"n2", 4000, 1000 * units.MiB, 0, true, ""},
+			{"n1", 2000, 100 * utils.MiB, 0, true, "ng1"},
+			{"n2", 4000, 1000 * utils.MiB, 0, true, ""},
 		},
 		pods: []podConfig{
 			{"p1", 1000, 0, 0, "n1", false},
 			{"p2", 3000, 0, 0, "n2", false},
 		},
 		extraPods: []podConfig{
-			{"p-new-1", 2000, 100 * units.MiB, 0, "", false},
-			{"p-new-2", 2000, 100 * units.MiB, 0, "", false},
-			{"p-new-3", 2000, 100 * units.MiB, 0, "", false},
+			{"p-new-1", 2000, 100 * utils.MiB, 0, "", false},
+			{"p-new-2", 2000, 100 * utils.MiB, 0, "", false},
+			{"p-new-3", 2000, 100 * utils.MiB, 0, "", false},
 		},
 		expansionOptionToChoose: groupSizeChange{groupName: "ng1", sizeChange: 3},
 		options:                 options,
@@ -237,17 +237,17 @@ func TestScaleUpCapToMaxTotalNodesLimit(t *testing.T) {
 	options.MaxNodesTotal = 3
 	config := &scaleTestConfig{
 		nodes: []nodeConfig{
-			{"n1", 2000, 100 * units.MiB, 0, true, "ng1"},
-			{"n2", 4000, 1000 * units.MiB, 0, true, "ng2"},
+			{"n1", 2000, 100 * utils.MiB, 0, true, "ng1"},
+			{"n2", 4000, 1000 * utils.MiB, 0, true, "ng2"},
 		},
 		pods: []podConfig{
 			{"p1", 1000, 0, 0, "n1", false},
 			{"p2", 3000, 0, 0, "n2", false},
 		},
 		extraPods: []podConfig{
-			{"p-new-1", 4000, 100 * units.MiB, 0, "", false},
-			{"p-new-2", 4000, 100 * units.MiB, 0, "", false},
-			{"p-new-3", 4000, 100 * units.MiB, 0, "", false},
+			{"p-new-1", 4000, 100 * utils.MiB, 0, "", false},
+			{"p-new-2", 4000, 100 * utils.MiB, 0, "", false},
+			{"p-new-3", 4000, 100 * utils.MiB, 0, "", false},
 		},
 		expansionOptionToChoose: groupSizeChange{groupName: "ng2", sizeChange: 3},
 		options:                 options,
@@ -267,17 +267,17 @@ func TestScaleUpCapToMaxTotalNodesLimitWithNotAutoscaledGroup(t *testing.T) {
 	options.MaxNodesTotal = 3
 	config := &scaleTestConfig{
 		nodes: []nodeConfig{
-			{"n1", 2000, 100 * units.MiB, 0, true, ""},
-			{"n2", 4000, 1000 * units.MiB, 0, true, "ng2"},
+			{"n1", 2000, 100 * utils.MiB, 0, true, ""},
+			{"n2", 4000, 1000 * utils.MiB, 0, true, "ng2"},
 		},
 		pods: []podConfig{
 			{"p1", 1000, 0, 0, "n1", false},
 			{"p2", 3000, 0, 0, "n2", false},
 		},
 		extraPods: []podConfig{
-			{"p-new-1", 4000, 100 * units.MiB, 0, "", false},
-			{"p-new-2", 4000, 100 * units.MiB, 0, "", false},
-			{"p-new-3", 4000, 100 * units.MiB, 0, "", false},
+			{"p-new-1", 4000, 100 * utils.MiB, 0, "", false},
+			{"p-new-2", 4000, 100 * utils.MiB, 0, "", false},
+			{"p-new-3", 4000, 100 * utils.MiB, 0, "", false},
 		},
 		expansionOptionToChoose: groupSizeChange{groupName: "ng2", sizeChange: 3},
 		options:                 options,
@@ -297,15 +297,15 @@ func TestWillConsiderGpuAndStandardPoolForPodWhichDoesNotRequireGpu(t *testing.T
 	options.MaxNodesTotal = 100
 	config := &scaleTestConfig{
 		nodes: []nodeConfig{
-			{"gpu-node-1", 2000, 1000 * units.MiB, 1, true, "gpu-pool"},
-			{"std-node-1", 2000, 1000 * units.MiB, 0, true, "std-pool"},
+			{"gpu-node-1", 2000, 1000 * utils.MiB, 1, true, "gpu-pool"},
+			{"std-node-1", 2000, 1000 * utils.MiB, 0, true, "std-pool"},
 		},
 		pods: []podConfig{
-			{"gpu-pod-1", 2000, 1000 * units.MiB, 1, "gpu-node-1", true},
-			{"std-pod-1", 2000, 1000 * units.MiB, 0, "std-node-1", false},
+			{"gpu-pod-1", 2000, 1000 * utils.MiB, 1, "gpu-node-1", true},
+			{"std-pod-1", 2000, 1000 * utils.MiB, 0, "std-node-1", false},
 		},
 		extraPods: []podConfig{
-			{"extra-std-pod", 2000, 1000 * units.MiB, 0, "", true},
+			{"extra-std-pod", 2000, 1000 * utils.MiB, 0, "", true},
 		},
 		expansionOptionToChoose: groupSizeChange{groupName: "std-pool", sizeChange: 1},
 		options:                 options,
@@ -329,15 +329,15 @@ func TestWillConsiderOnlyGpuPoolForPodWhichDoesRequiresGpu(t *testing.T) {
 	options.MaxNodesTotal = 100
 	config := &scaleTestConfig{
 		nodes: []nodeConfig{
-			{"gpu-node-1", 2000, 1000 * units.MiB, 1, true, "gpu-pool"},
-			{"std-node-1", 2000, 1000 * units.MiB, 0, true, "std-pool"},
+			{"gpu-node-1", 2000, 1000 * utils.MiB, 1, true, "gpu-pool"},
+			{"std-node-1", 2000, 1000 * utils.MiB, 0, true, "std-pool"},
 		},
 		pods: []podConfig{
-			{"gpu-pod-1", 2000, 1000 * units.MiB, 1, "gpu-node-1", true},
-			{"std-pod-1", 2000, 1000 * units.MiB, 0, "std-node-1", false},
+			{"gpu-pod-1", 2000, 1000 * utils.MiB, 1, "gpu-node-1", true},
+			{"std-pod-1", 2000, 1000 * utils.MiB, 0, "std-node-1", false},
 		},
 		extraPods: []podConfig{
-			{"extra-gpu-pod", 2000, 1000 * units.MiB, 1, "", true},
+			{"extra-gpu-pod", 2000, 1000 * utils.MiB, 1, "", true},
 		},
 		expansionOptionToChoose: groupSizeChange{groupName: "gpu-pool", sizeChange: 1},
 		options:                 options,
@@ -360,21 +360,21 @@ func TestWillConsiderAllPoolsWhichFitTwoPodsRequiringGpus(t *testing.T) {
 	options.MaxNodesTotal = 100
 	config := &scaleTestConfig{
 		nodes: []nodeConfig{
-			{"gpu-1-node-1", 2000, 1000 * units.MiB, 1, true, "gpu-1-pool"},
-			{"gpu-2-node-1", 2000, 1000 * units.MiB, 2, true, "gpu-2-pool"},
-			{"gpu-4-node-1", 2000, 1000 * units.MiB, 4, true, "gpu-4-pool"},
-			{"std-node-1", 2000, 1000 * units.MiB, 0, true, "std-pool"},
+			{"gpu-1-node-1", 2000, 1000 * utils.MiB, 1, true, "gpu-1-pool"},
+			{"gpu-2-node-1", 2000, 1000 * utils.MiB, 2, true, "gpu-2-pool"},
+			{"gpu-4-node-1", 2000, 1000 * utils.MiB, 4, true, "gpu-4-pool"},
+			{"std-node-1", 2000, 1000 * utils.MiB, 0, true, "std-pool"},
 		},
 		pods: []podConfig{
-			{"gpu-pod-1", 2000, 1000 * units.MiB, 1, "gpu-1-node-1", true},
-			{"gpu-pod-2", 2000, 1000 * units.MiB, 2, "gpu-2-node-1", true},
-			{"gpu-pod-3", 2000, 1000 * units.MiB, 4, "gpu-4-node-1", true},
-			{"std-pod-1", 2000, 1000 * units.MiB, 0, "std-node-1", false},
+			{"gpu-pod-1", 2000, 1000 * utils.MiB, 1, "gpu-1-node-1", true},
+			{"gpu-pod-2", 2000, 1000 * utils.MiB, 2, "gpu-2-node-1", true},
+			{"gpu-pod-3", 2000, 1000 * utils.MiB, 4, "gpu-4-node-1", true},
+			{"std-pod-1", 2000, 1000 * utils.MiB, 0, "std-node-1", false},
 		},
 		extraPods: []podConfig{
-			{"extra-gpu-pod-1", 1, 1 * units.MiB, 1, "", true}, // CPU and mem negligible
-			{"extra-gpu-pod-2", 1, 1 * units.MiB, 1, "", true}, // CPU and mem negligible
-			{"extra-gpu-pod-3", 1, 1 * units.MiB, 1, "", true}, // CPU and mem negligible
+			{"extra-gpu-pod-1", 1, 1 * utils.MiB, 1, "", true}, // CPU and mem negligible
+			{"extra-gpu-pod-2", 1, 1 * utils.MiB, 1, "", true}, // CPU and mem negligible
+			{"extra-gpu-pod-3", 1, 1 * utils.MiB, 1, "", true}, // CPU and mem negligible
 		},
 		expansionOptionToChoose: groupSizeChange{groupName: "gpu-1-pool", sizeChange: 3},
 		options:                 options,
@@ -430,19 +430,19 @@ func TestScaleUpTemplateFromCloudProvider(t *testing.T) {
 
 	config := &scaleTestConfig{
 		nodes: []nodeConfig{
-			{"n1", 100, 100 * units.MiB, 0, true, "ng1"},
-			{"n2", 100, 100 * units.MiB, 0, true, "ng2"},
+			{"n1", 100, 100 * utils.MiB, 0, true, "ng1"},
+			{"n2", 100, 100 * utils.MiB, 0, true, "ng2"},
 		},
 		pods: []podConfig{
-			{"p1", 80, 0 * units.MiB, 0, "n1", false},
-			{"p2", 80, 0 * units.MiB, 0, "n2", false},
+			{"p1", 80, 0 * utils.MiB, 0, "n1", false},
+			{"p2", 80, 0 * utils.MiB, 0, "n2", false},
 		},
 		extraPods: []podConfig{
-			{"p-new", 500, 0 * units.MiB, 0, "", false},
+			{"p-new", 500, 0 * utils.MiB, 0, "", false},
 		},
 		templateNodes: []nodeConfig{
-			{"t-n1", 100, 100 * units.MiB, 0, true, "ng1"},
-			{"t-n2", 1000, 1000 * units.MiB, 0, true, "ng2"},
+			{"t-n1", 100, 100 * utils.MiB, 0, true, "ng1"},
+			{"t-n2", 1000, 1000 * utils.MiB, 0, true, "ng2"},
 		},
 		options: options,
 	}
@@ -524,13 +524,6 @@ func TestScaleUpTemplateFromCloudProviderReservedResources(t *testing.T) {
 	}
 
 	simpleScaleUpTest(t, config, results)
-}
-
-type assertingStrategy struct {
-	initialNodeConfigs     []nodeConfig
-	expectedScaleUpOptions []groupSizeChange
-	scaleUpOptionToChoose  groupSizeChange
-	t                      *testing.T
 }
 
 // To implement expander.Strategy, BestOption method must have a struct receiver.

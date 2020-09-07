@@ -17,14 +17,16 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"flag"
-	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/limitrange"
 	"time"
 
 	"k8s.io/autoscaler/vertical-pod-autoscaler/common"
 	vpa_clientset "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target"
 	updater "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/logic"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/priority"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/limitrange"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics"
 	metrics_updater "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/updater"
 	vpa_api_util "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
@@ -45,7 +47,16 @@ var (
 	evictionToleranceFraction = flag.Float64("eviction-tolerance", 0.5,
 		`Fraction of replica count that can be evicted for update, if more than one pod can be evicted.`)
 
+	evictionRateLimit = flag.Float64("eviction-rate-limit", -1,
+		`Number of pods that can be evicted per seconds. A rate limit set to 0 or -1 will disable
+		the rate limiter.`)
+
+	evictionRateBurst = flag.Int("eviction-rate-burst", 1, `Burst of pods that can be evicted.`)
+
 	address = flag.String("address", ":8943", "The address to expose Prometheus metrics.")
+
+	useAdmissionControllerStatus = flag.Bool("use-admission-controller-status", true,
+		"If true, updater will only evict pods when admission controller status is valid.")
 )
 
 const (
@@ -68,10 +79,7 @@ func main() {
 	kubeClient := kube_client.NewForConfigOrDie(config)
 	vpaClient := vpa_clientset.NewForConfigOrDie(config)
 	factory := informers.NewSharedInformerFactory(kubeClient, defaultResyncPeriod)
-	targetSelectorFetcher := target.NewCompositeTargetSelectorFetcher(
-		target.NewVpaTargetSelectorFetcher(config, kubeClient, factory),
-		target.NewBeta1TargetSelectorFetcher(config),
-	)
+	targetSelectorFetcher := target.NewVpaTargetSelectorFetcher(config, kubeClient, factory)
 	var limitRangeCalculator limitrange.LimitRangeCalculator
 	limitRangeCalculator, err = limitrange.NewLimitsRangeCalculator(factory)
 	if err != nil {
@@ -79,13 +87,27 @@ func main() {
 		limitRangeCalculator = limitrange.NewNoopLimitsCalculator()
 	}
 	// TODO: use SharedInformerFactory in updater
-	updater, err := updater.NewUpdater(kubeClient, vpaClient, *minReplicas, *evictionToleranceFraction, vpa_api_util.NewCappingRecommendationProcessor(limitRangeCalculator), nil, targetSelectorFetcher)
+	updater, err := updater.NewUpdater(
+		kubeClient,
+		vpaClient,
+		*minReplicas,
+		*evictionRateLimit,
+		*evictionRateBurst,
+		*evictionToleranceFraction,
+		*useAdmissionControllerStatus,
+		vpa_api_util.NewCappingRecommendationProcessor(limitRangeCalculator),
+		nil,
+		targetSelectorFetcher,
+		priority.NewProcessor(),
+	)
 	if err != nil {
 		klog.Fatalf("Failed to create updater: %v", err)
 	}
 	ticker := time.Tick(*updaterInterval)
 	for range ticker {
-		updater.RunOnce()
+		ctx, cancel := context.WithTimeout(context.Background(), *updaterInterval)
+		defer cancel()
+		updater.RunOnce(ctx)
 		healthCheck.UpdateLastActivity()
 	}
 }

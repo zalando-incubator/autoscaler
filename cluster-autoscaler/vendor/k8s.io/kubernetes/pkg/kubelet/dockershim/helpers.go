@@ -17,10 +17,13 @@ limitations under the License.
 package dockershim
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	dockertypes "github.com/docker/docker/api/types"
 	dockercontainer "github.com/docker/docker/api/types/container"
@@ -43,7 +46,7 @@ const (
 )
 
 var (
-	conflictRE = regexp.MustCompile(`Conflict. (?:.)+ is already in use by container ([0-9a-z]+)`)
+	conflictRE = regexp.MustCompile(`Conflict. (?:.)+ is already in use by container \"?([0-9a-z]+)\"?`)
 
 	// this is hacky, but extremely common.
 	// if a container starts but the executable file is not found, runc gives a message that matches
@@ -344,7 +347,7 @@ func ensureSandboxImageExists(client libdocker.Interface, image string) error {
 
 	var pullErrs []error
 	for _, currentCreds := range creds {
-		authConfig := dockertypes.AuthConfig(credentialprovider.LazyProvide(currentCreds, repoToPull))
+		authConfig := dockertypes.AuthConfig(currentCreds)
 		err := client.PullImage(image, authConfig, dockertypes.ImagePullOptions{})
 		// If there was no error, return success
 		if err == nil {
@@ -393,3 +396,44 @@ type dockerOpt struct {
 func (d dockerOpt) GetKV() (string, string) {
 	return d.key, d.value
 }
+
+// sharedWriteLimiter limits the total output written across one or more streams.
+type sharedWriteLimiter struct {
+	delegate io.Writer
+	limit    *int64
+}
+
+func (w sharedWriteLimiter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	limit := atomic.LoadInt64(w.limit)
+	if limit <= 0 {
+		return 0, errMaximumWrite
+	}
+	var truncated bool
+	if limit < int64(len(p)) {
+		p = p[0:limit]
+		truncated = true
+	}
+	n, err := w.delegate.Write(p)
+	if n > 0 {
+		atomic.AddInt64(w.limit, -1*int64(n))
+	}
+	if err == nil && truncated {
+		err = errMaximumWrite
+	}
+	return n, err
+}
+
+func sharedLimitWriter(w io.Writer, limit *int64) io.Writer {
+	if w == nil {
+		return nil
+	}
+	return &sharedWriteLimiter{
+		delegate: w,
+		limit:    limit,
+	}
+}
+
+var errMaximumWrite = errors.New("maximum write")

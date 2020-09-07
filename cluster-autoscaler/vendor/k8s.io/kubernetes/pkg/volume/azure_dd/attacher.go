@@ -1,3 +1,5 @@
+// +build !providerless
+
 /*
 Copyright 2016 The Kubernetes Authors.
 
@@ -25,14 +27,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-03-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-12-01/compute"
 	"k8s.io/klog"
+	"k8s.io/utils/mount"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	cloudprovider "k8s.io/cloud-provider"
-	"k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/legacy-cloud-providers/azure"
@@ -87,7 +89,7 @@ func (a *azureDiskAttacher) Attach(spec *volume.Spec, nodeName types.NodeName) (
 			klog.V(2).Infof("Attach operation successful: volume %q attached to node %q.", volumeSource.DataDiskURI, nodeName)
 		} else {
 			klog.V(2).Infof("Attach volume %q to instance %q failed with %v", volumeSource.DataDiskURI, nodeName, err)
-			return "", fmt.Errorf("Attach volume %q to instance %q failed with %v", volumeSource.DiskName, nodeName, err)
+			return "", err
 		}
 	}
 
@@ -171,8 +173,12 @@ func (a *azureDiskAttacher) WaitForAttach(spec *volume.Spec, devicePath string, 
 			return true, nil
 		}
 
-		return false, fmt.Errorf("azureDisk - WaitForAttach failed within timeout node (%s) diskId:(%s) lun:(%v)", nodeName, diskName, lun)
+		// wait until timeout
+		return false, nil
 	})
+	if err == nil && newDevicePath == "" {
+		err = fmt.Errorf("azureDisk - WaitForAttach failed within timeout node (%s) diskId:(%s) lun:(%v)", nodeName, diskName, lun)
+	}
 
 	return newDevicePath, err
 }

@@ -21,8 +21,10 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-10-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-12-01/compute"
 	"github.com/stretchr/testify/assert"
+
+	"k8s.io/legacy-cloud-providers/azure/retry"
 )
 
 func TestSplitBlobURI(t *testing.T) {
@@ -89,7 +91,7 @@ func TestWindowsVMNameParts(t *testing.T) {
 			t.Fatalf("incorrect poolPrefix. expected=%s actual=%s", d.expectedPoolPrefix, poolPrefix)
 		}
 		if orch != d.expectedOrch {
-			t.Fatalf("incorrect acs string. expected=%s actual=%s", d.expectedOrch, orch)
+			t.Fatalf("incorrect aks string. expected=%s actual=%s", d.expectedOrch, orch)
 		}
 		if poolIndex != d.expectedPoolIndex {
 			t.Fatalf("incorrect poolIndex. expected=%d actual=%d", d.expectedPoolIndex, poolIndex)
@@ -241,6 +243,38 @@ func TestConvertResourceGroupNameToLower(t *testing.T) {
 		}
 
 		assert.Nil(t, err, test.desc)
+		assert.Equal(t, test.expected, real, test.desc)
+	}
+}
+
+func TestIsAzureRequestsThrottled(t *testing.T) {
+	tests := []struct {
+		desc     string
+		rerr     *retry.Error
+		expected bool
+	}{
+		{
+			desc:     "nil error should return false",
+			expected: false,
+		},
+		{
+			desc: "non http.StatusTooManyRequests error should return false",
+			rerr: &retry.Error{
+				HTTPStatusCode: http.StatusBadRequest,
+			},
+			expected: false,
+		},
+		{
+			desc: "http.StatusTooManyRequests error should return true",
+			rerr: &retry.Error{
+				HTTPStatusCode: http.StatusTooManyRequests,
+			},
+			expected: true,
+		},
+	}
+
+	for _, test := range tests {
+		real := isAzureRequestsThrottled(test.rerr)
 		assert.Equal(t, test.expected, real, test.desc)
 	}
 }

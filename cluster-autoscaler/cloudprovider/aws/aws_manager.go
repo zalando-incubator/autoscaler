@@ -51,6 +51,8 @@ const (
 	maxRecordsReturnedByAPI = 100
 	maxAsgNamesPerDescribe  = 50
 	refreshInterval         = 1 * time.Minute
+	autoDiscovererTypeASG   = "asg"
+	asgAutoDiscovererKeyTag = "tag"
 )
 
 // AwsManager is handles aws communication and data caching.
@@ -62,7 +64,7 @@ type AwsManager struct {
 }
 
 type asgTemplate struct {
-	InstanceType *instanceType
+	InstanceType *InstanceType
 	Region       string
 	Zone         string
 	Tags         []*autoscaling.TagDescription
@@ -146,9 +148,14 @@ func newAWSSDKProvider(cfg *provider_aws.CloudConfig) *awsSDKProvider {
 func getRegion(cfg ...*aws.Config) string {
 	region, present := os.LookupEnv("AWS_REGION")
 	if !present {
-		svc := ec2metadata.New(session.New(), cfg...)
-		if r, err := svc.Region(); err == nil {
-			region = r
+		sess, err := session.NewSession()
+		if err != nil {
+			klog.Errorf("Error getting AWS session while retrieving region: %v", err)
+		} else {
+			svc := ec2metadata.New(sess, cfg...)
+			if r, err := svc.Region(); err == nil {
+				region = r
+			}
 		}
 	}
 	return region
@@ -182,11 +189,15 @@ func createAWSManagerInternal(
 
 	if autoScalingService == nil || ec2Service == nil {
 		awsSdkProvider := newAWSSDKProvider(cfg)
-		sess := session.New(aws.NewConfig().WithRegion(getRegion()).
+		sess, err := session.NewSession(aws.NewConfig().WithRegion(getRegion()).
 			WithEndpointResolver(getResolver(awsSdkProvider.cfg)))
+		if err != nil {
+			return nil, err
+		}
 
 		if autoScalingService == nil {
-			autoScalingService = &autoScalingWrapper{autoscaling.New(sess), map[string]string{}}
+			c := newLaunchConfigurationInstanceTypeCache()
+			autoScalingService = &autoScalingWrapper{autoscaling.New(sess), c}
 		}
 
 		if ec2Service == nil {
@@ -194,7 +205,7 @@ func createAWSManagerInternal(
 		}
 	}
 
-	specs, err := discoveryOpts.ParseASGAutoDiscoverySpecs()
+	specs, err := parseASGAutoDiscoverySpecs(discoveryOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +288,11 @@ func (m *AwsManager) SetAsgSize(asg *asg, size int) error {
 
 // DeleteInstances deletes the given instances. All instances must be controlled by the same ASG.
 func (m *AwsManager) DeleteInstances(instances []*AwsInstanceRef) error {
-	return m.asgCache.DeleteInstances(instances)
+	if err := m.asgCache.DeleteInstances(instances); err != nil {
+		return err
+	}
+	klog.V(2).Infof("Some ASG instances might have been deleted, forcing ASG list refresh")
+	return m.forceRefresh()
 }
 
 // GetAsgNodes returns Asg nodes.
@@ -316,8 +331,15 @@ func (m *AwsManager) getAsgTemplate(asg *asg) (*asgTemplate, error) {
 func (m *AwsManager) buildInstanceType(asg *asg) (string, error) {
 	if asg.LaunchConfigurationName != "" {
 		return m.autoScalingService.getInstanceTypeByLCName(asg.LaunchConfigurationName)
-	} else if asg.LaunchTemplateName != "" && asg.LaunchTemplateVersion != "" {
-		return m.ec2Service.getInstanceTypeByLT(asg.LaunchTemplateName, asg.LaunchTemplateVersion)
+	} else if asg.LaunchTemplate != nil {
+		return m.ec2Service.getInstanceTypeByLT(asg.LaunchTemplate)
+	} else if asg.MixedInstancesPolicy != nil {
+		// always use first instance
+		if len(asg.MixedInstancesPolicy.instanceTypesOverrides) != 0 {
+			return asg.MixedInstancesPolicy.instanceTypesOverrides[0], nil
+		}
+
+		return m.ec2Service.getInstanceTypeByLT(asg.MixedInstancesPolicy.launchTemplate)
 	}
 
 	return "", errors.New("Unable to get instance type from launch config or launch template")
@@ -344,8 +366,8 @@ func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*ap
 	node.Status.Capacity[apiv1.ResourceMemory] = *resource.NewQuantity(template.InstanceType.MemoryMb*1024*1024, resource.DecimalSI)
 
 	resourcesFromTags := extractAllocatableResourcesFromAsg(template.Tags)
-	if val, ok := resourcesFromTags["ephemeral-storage"]; ok {
-		node.Status.Capacity[apiv1.ResourceEphemeralStorage] = *val
+	for resourceName, val := range resourcesFromTags {
+		node.Status.Capacity[apiv1.ResourceName(resourceName)] = *val
 	}
 
 	// TODO: use proper allocatable!!
@@ -439,4 +461,64 @@ func extractTaintsFromAsg(tags []*autoscaling.TagDescription) []apiv1.Taint {
 		}
 	}
 	return taints
+}
+
+// An asgAutoDiscoveryConfig specifies how to autodiscover AWS ASGs.
+type asgAutoDiscoveryConfig struct {
+	// Tags to match on.
+	// Any ASG with all of the provided tag keys will be autoscaled.
+	Tags map[string]string
+}
+
+// ParseASGAutoDiscoverySpecs returns any provided NodeGroupAutoDiscoverySpecs
+// parsed into configuration appropriate for ASG autodiscovery.
+func parseASGAutoDiscoverySpecs(o cloudprovider.NodeGroupDiscoveryOptions) ([]asgAutoDiscoveryConfig, error) {
+	cfgs := make([]asgAutoDiscoveryConfig, len(o.NodeGroupAutoDiscoverySpecs))
+	var err error
+	for i, spec := range o.NodeGroupAutoDiscoverySpecs {
+		cfgs[i], err = parseASGAutoDiscoverySpec(spec)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return cfgs, nil
+}
+
+func parseASGAutoDiscoverySpec(spec string) (asgAutoDiscoveryConfig, error) {
+	cfg := asgAutoDiscoveryConfig{}
+
+	tokens := strings.Split(spec, ":")
+	if len(tokens) != 2 {
+		return cfg, fmt.Errorf("invalid node group auto discovery spec specified via --node-group-auto-discovery: %s", spec)
+	}
+	discoverer := tokens[0]
+	if discoverer != autoDiscovererTypeASG {
+		return cfg, fmt.Errorf("unsupported discoverer specified: %s", discoverer)
+	}
+	param := tokens[1]
+	kv := strings.SplitN(param, "=", 2)
+	if len(kv) != 2 {
+		return cfg, fmt.Errorf("invalid key=value pair %s", kv)
+	}
+	k, v := kv[0], kv[1]
+	if k != asgAutoDiscovererKeyTag {
+		return cfg, fmt.Errorf("unsupported parameter key \"%s\" is specified for discoverer \"%s\". The only supported key is \"%s\"", k, discoverer, asgAutoDiscovererKeyTag)
+	}
+	if v == "" {
+		return cfg, errors.New("tag value not supplied")
+	}
+	p := strings.Split(v, ",")
+	if len(p) == 0 {
+		return cfg, fmt.Errorf("invalid ASG tag for auto discovery specified: ASG tag must not be empty")
+	}
+	cfg.Tags = make(map[string]string, len(p))
+	for _, label := range p {
+		lp := strings.SplitN(label, "=", 2)
+		if len(lp) > 1 {
+			cfg.Tags[lp[0]] = lp[1]
+			continue
+		}
+		cfg.Tags[lp[0]] = ""
+	}
+	return cfg, nil
 }

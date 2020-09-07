@@ -1,3 +1,5 @@
+// +build !providerless
+
 /*
 Copyright 2016 The Kubernetes Authors.
 
@@ -19,19 +21,24 @@ package azure
 import (
 	"context"
 	"fmt"
-	"os"
+	"strconv"
 	"strings"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog"
+	azcache "k8s.io/legacy-cloud-providers/azure/cache"
 )
 
 const (
 	vmPowerStatePrefix      = "PowerState/"
 	vmPowerStateStopped     = "stopped"
 	vmPowerStateDeallocated = "deallocated"
+)
+
+var (
+	errNodeNotInitialized = fmt.Errorf("providerID is empty, the node is not initialized yet")
 )
 
 // NodeAddresses returns the addresses of the specified instance.
@@ -67,7 +74,7 @@ func (az *Cloud) NodeAddresses(ctx context.Context, name types.NodeName) ([]v1.N
 	}
 
 	if az.UseInstanceMetadata {
-		metadata, err := az.metadata.GetMetadata()
+		metadata, err := az.metadata.GetMetadata(azcache.CacheReadTypeUnsafe)
 		if err != nil {
 			return nil, err
 		}
@@ -143,6 +150,10 @@ func (az *Cloud) NodeAddresses(ctx context.Context, name types.NodeName) ([]v1.N
 // This method will not be called from the node that is requesting this ID. i.e. metadata service
 // and other local methods cannot be used here
 func (az *Cloud) NodeAddressesByProviderID(ctx context.Context, providerID string) ([]v1.NodeAddress, error) {
+	if providerID == "" {
+		return nil, errNodeNotInitialized
+	}
+
 	// Returns nil for unmanaged nodes because azure cloud provider couldn't fetch information for them.
 	if az.IsNodeUnmanagedByProviderID(providerID) {
 		klog.V(4).Infof("NodeAddressesByProviderID: omitting unmanaged node %q", providerID)
@@ -160,6 +171,10 @@ func (az *Cloud) NodeAddressesByProviderID(ctx context.Context, providerID strin
 // InstanceExistsByProviderID returns true if the instance with the given provider id still exists and is running.
 // If false is returned with no error, the instance will be immediately deleted by the cloud controller manager.
 func (az *Cloud) InstanceExistsByProviderID(ctx context.Context, providerID string) (bool, error) {
+	if providerID == "" {
+		return false, errNodeNotInitialized
+	}
+
 	// Returns true for unmanaged nodes because azure cloud provider always assumes them exists.
 	if az.IsNodeUnmanagedByProviderID(providerID) {
 		klog.V(4).Infof("InstanceExistsByProviderID: assuming unmanaged node %q exists", providerID)
@@ -187,13 +202,27 @@ func (az *Cloud) InstanceExistsByProviderID(ctx context.Context, providerID stri
 
 // InstanceShutdownByProviderID returns true if the instance is in safe state to detach volumes
 func (az *Cloud) InstanceShutdownByProviderID(ctx context.Context, providerID string) (bool, error) {
+	if providerID == "" {
+		return false, nil
+	}
+
 	nodeName, err := az.vmSet.GetNodeNameByProviderID(providerID)
 	if err != nil {
+		// Returns false, so the controller manager will continue to check InstanceExistsByProviderID().
+		if err == cloudprovider.InstanceNotFound {
+			return false, nil
+		}
+
 		return false, err
 	}
 
 	powerStatus, err := az.vmSet.GetPowerStatusByNodeName(string(nodeName))
 	if err != nil {
+		// Returns false, so the controller manager will continue to check InstanceExistsByProviderID().
+		if err == cloudprovider.InstanceNotFound {
+			return false, nil
+		}
+
 		return false, err
 	}
 	klog.V(5).Infof("InstanceShutdownByProviderID gets power status %q for node %q", powerStatus, nodeName)
@@ -202,18 +231,22 @@ func (az *Cloud) InstanceShutdownByProviderID(ctx context.Context, providerID st
 }
 
 func (az *Cloud) isCurrentInstance(name types.NodeName, metadataVMName string) (bool, error) {
-	var err error
 	nodeName := mapNodeNameToVMName(name)
+
 	if az.VMType == vmTypeVMSS {
-		// VMSS vmName is not same with hostname, use hostname instead.
-		metadataVMName, err = os.Hostname()
-		if err != nil {
-			return false, err
+		// VMSS vmName is not same with hostname, construct the node name "{computer-name-prefix}{base-36-instance-id}".
+		// Refer https://docs.microsoft.com/en-us/azure/virtual-machine-scale-sets/virtual-machine-scale-sets-instance-ids#scale-set-vm-computer-name.
+		if ssName, instanceID, err := extractVmssVMName(metadataVMName); err == nil {
+			instance, err := strconv.ParseInt(instanceID, 10, 64)
+			if err != nil {
+				return false, fmt.Errorf("failed to parse VMSS instanceID %q: %v", instanceID, err)
+			}
+			metadataVMName = fmt.Sprintf("%s%06s", ssName, strconv.FormatInt(instance, 36))
 		}
 	}
 
 	metadataVMName = strings.ToLower(metadataVMName)
-	return (metadataVMName == nodeName), err
+	return (metadataVMName == nodeName), nil
 }
 
 // InstanceID returns the cloud provider ID of the specified instance.
@@ -231,7 +264,7 @@ func (az *Cloud) InstanceID(ctx context.Context, name types.NodeName) (string, e
 	}
 
 	if az.UseInstanceMetadata {
-		metadata, err := az.metadata.GetMetadata()
+		metadata, err := az.metadata.GetMetadata(azcache.CacheReadTypeUnsafe)
 		if err != nil {
 			return "", err
 		}
@@ -255,12 +288,13 @@ func (az *Cloud) InstanceID(ctx context.Context, name types.NodeName) (string, e
 			return "", fmt.Errorf("no credentials provided for Azure cloud provider")
 		}
 
-		// Get resource group name.
+		// Get resource group name and subscription ID.
 		resourceGroup := strings.ToLower(metadata.Compute.ResourceGroup)
+		subscriptionID := strings.ToLower(metadata.Compute.SubscriptionID)
 
 		// Compose instanceID based on nodeName for standard instance.
-		if az.VMType == vmTypeStandard {
-			return az.getStandardMachineID(resourceGroup, nodeName), nil
+		if metadata.Compute.VMScaleSetName == "" {
+			return az.getStandardMachineID(subscriptionID, resourceGroup, nodeName), nil
 		}
 
 		// Get scale set name and instanceID from vmName for vmss.
@@ -268,12 +302,12 @@ func (az *Cloud) InstanceID(ctx context.Context, name types.NodeName) (string, e
 		if err != nil {
 			if err == ErrorNotVmssInstance {
 				// Compose machineID for standard Node.
-				return az.getStandardMachineID(resourceGroup, nodeName), nil
+				return az.getStandardMachineID(subscriptionID, resourceGroup, nodeName), nil
 			}
 			return "", err
 		}
 		// Compose instanceID based on ssName and instanceID for vmss instance.
-		return az.getVmssMachineID(resourceGroup, ssName, instanceID), nil
+		return az.getVmssMachineID(subscriptionID, resourceGroup, ssName, instanceID), nil
 	}
 
 	return az.vmSet.GetInstanceIDByNodeName(nodeName)
@@ -283,6 +317,10 @@ func (az *Cloud) InstanceID(ctx context.Context, name types.NodeName) (string, e
 // This method will not be called from the node that is requesting this ID. i.e. metadata service
 // and other local methods cannot be used here
 func (az *Cloud) InstanceTypeByProviderID(ctx context.Context, providerID string) (string, error) {
+	if providerID == "" {
+		return "", errNodeNotInitialized
+	}
+
 	// Returns "" for unmanaged nodes because azure cloud provider couldn't fetch information for them.
 	if az.IsNodeUnmanagedByProviderID(providerID) {
 		klog.V(4).Infof("InstanceTypeByProviderID: omitting unmanaged node %q", providerID)
@@ -313,7 +351,7 @@ func (az *Cloud) InstanceType(ctx context.Context, name types.NodeName) (string,
 	}
 
 	if az.UseInstanceMetadata {
-		metadata, err := az.metadata.GetMetadata()
+		metadata, err := az.metadata.GetMetadata(azcache.CacheReadTypeUnsafe)
 		if err != nil {
 			return "", err
 		}

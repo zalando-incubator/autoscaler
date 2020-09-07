@@ -22,6 +22,7 @@ import (
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/validation"
+	"github.com/Azure/go-autorest/tracing"
 	"net/http"
 )
 
@@ -35,7 +36,8 @@ func NewManagedClustersClient(subscriptionID string) ManagedClustersClient {
 	return NewManagedClustersClientWithBaseURI(DefaultBaseURI, subscriptionID)
 }
 
-// NewManagedClustersClientWithBaseURI creates an instance of the ManagedClustersClient client.
+// NewManagedClustersClientWithBaseURI creates an instance of the ManagedClustersClient client using a custom endpoint.
+// Use this when interacting with an Azure cloud that uses a non-standard base URI (sovereign clouds, Azure stack).
 func NewManagedClustersClientWithBaseURI(baseURI string, subscriptionID string) ManagedClustersClient {
 	return ManagedClustersClient{NewWithBaseURI(baseURI, subscriptionID)}
 }
@@ -47,7 +49,19 @@ func NewManagedClustersClientWithBaseURI(baseURI string, subscriptionID string) 
 // resourceName - the name of the managed cluster resource.
 // parameters - parameters supplied to the Create or Update a Managed Cluster operation.
 func (client ManagedClustersClient) CreateOrUpdate(ctx context.Context, resourceGroupName string, resourceName string, parameters ManagedCluster) (result ManagedClustersCreateOrUpdateFuture, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.CreateOrUpdate")
+		defer func() {
+			sc := -1
+			if result.Response() != nil {
+				sc = result.Response().StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
 	if err := validation.Validate([]validation.Validation{
+		{TargetValue: resourceGroupName,
+			Constraints: []validation.Constraint{{Target: "resourceGroupName", Name: validation.MinLength, Rule: 1, Chain: nil}}},
 		{TargetValue: parameters,
 			Constraints: []validation.Constraint{{Target: "parameters.ManagedClusterProperties", Name: validation.Null, Rule: false,
 				Chain: []validation.Constraint{{Target: "parameters.ManagedClusterProperties.LinuxProfile", Name: validation.Null, Rule: false,
@@ -118,8 +132,7 @@ func (client ManagedClustersClient) CreateOrUpdatePreparer(ctx context.Context, 
 // http.Response Body if it receives an error.
 func (client ManagedClustersClient) CreateOrUpdateSender(req *http.Request) (future ManagedClustersCreateOrUpdateFuture, err error) {
 	var resp *http.Response
-	resp, err = autorest.SendWithSender(client, req,
-		azure.DoRetryWithRegistration(client.Client))
+	resp, err = client.Send(req, azure.DoRetryWithRegistration(client.Client))
 	if err != nil {
 		return
 	}
@@ -145,6 +158,22 @@ func (client ManagedClustersClient) CreateOrUpdateResponder(resp *http.Response)
 // resourceGroupName - the name of the resource group.
 // resourceName - the name of the managed cluster resource.
 func (client ManagedClustersClient) Delete(ctx context.Context, resourceGroupName string, resourceName string) (result ManagedClustersDeleteFuture, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.Delete")
+		defer func() {
+			sc := -1
+			if result.Response() != nil {
+				sc = result.Response().StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
+	if err := validation.Validate([]validation.Validation{
+		{TargetValue: resourceGroupName,
+			Constraints: []validation.Constraint{{Target: "resourceGroupName", Name: validation.MinLength, Rule: 1, Chain: nil}}}}); err != nil {
+		return result, validation.NewError("containerservice.ManagedClustersClient", "Delete", err.Error())
+	}
+
 	req, err := client.DeletePreparer(ctx, resourceGroupName, resourceName)
 	if err != nil {
 		err = autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "Delete", nil, "Failure preparing request")
@@ -185,8 +214,7 @@ func (client ManagedClustersClient) DeletePreparer(ctx context.Context, resource
 // http.Response Body if it receives an error.
 func (client ManagedClustersClient) DeleteSender(req *http.Request) (future ManagedClustersDeleteFuture, err error) {
 	var resp *http.Response
-	resp, err = autorest.SendWithSender(client, req,
-		azure.DoRetryWithRegistration(client.Client))
+	resp, err = client.Send(req, azure.DoRetryWithRegistration(client.Client))
 	if err != nil {
 		return
 	}
@@ -211,6 +239,22 @@ func (client ManagedClustersClient) DeleteResponder(resp *http.Response) (result
 // resourceGroupName - the name of the resource group.
 // resourceName - the name of the managed cluster resource.
 func (client ManagedClustersClient) Get(ctx context.Context, resourceGroupName string, resourceName string) (result ManagedCluster, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.Get")
+		defer func() {
+			sc := -1
+			if result.Response.Response != nil {
+				sc = result.Response.Response.StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
+	if err := validation.Validate([]validation.Validation{
+		{TargetValue: resourceGroupName,
+			Constraints: []validation.Constraint{{Target: "resourceGroupName", Name: validation.MinLength, Rule: 1, Chain: nil}}}}); err != nil {
+		return result, validation.NewError("containerservice.ManagedClustersClient", "Get", err.Error())
+	}
+
 	req, err := client.GetPreparer(ctx, resourceGroupName, resourceName)
 	if err != nil {
 		err = autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "Get", nil, "Failure preparing request")
@@ -256,8 +300,7 @@ func (client ManagedClustersClient) GetPreparer(ctx context.Context, resourceGro
 // GetSender sends the Get request. The method will close the
 // http.Response Body if it receives an error.
 func (client ManagedClustersClient) GetSender(req *http.Request) (*http.Response, error) {
-	return autorest.SendWithSender(client, req,
-		azure.DoRetryWithRegistration(client.Client))
+	return client.Send(req, azure.DoRetryWithRegistration(client.Client))
 }
 
 // GetResponder handles the response to the Get request. The method always
@@ -280,6 +323,22 @@ func (client ManagedClustersClient) GetResponder(resp *http.Response) (result Ma
 // resourceName - the name of the managed cluster resource.
 // roleName - the name of the role for managed cluster accessProfile resource.
 func (client ManagedClustersClient) GetAccessProfile(ctx context.Context, resourceGroupName string, resourceName string, roleName string) (result ManagedClusterAccessProfile, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.GetAccessProfile")
+		defer func() {
+			sc := -1
+			if result.Response.Response != nil {
+				sc = result.Response.Response.StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
+	if err := validation.Validate([]validation.Validation{
+		{TargetValue: resourceGroupName,
+			Constraints: []validation.Constraint{{Target: "resourceGroupName", Name: validation.MinLength, Rule: 1, Chain: nil}}}}); err != nil {
+		return result, validation.NewError("containerservice.ManagedClustersClient", "GetAccessProfile", err.Error())
+	}
+
 	req, err := client.GetAccessProfilePreparer(ctx, resourceGroupName, resourceName, roleName)
 	if err != nil {
 		err = autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "GetAccessProfile", nil, "Failure preparing request")
@@ -326,8 +385,7 @@ func (client ManagedClustersClient) GetAccessProfilePreparer(ctx context.Context
 // GetAccessProfileSender sends the GetAccessProfile request. The method will close the
 // http.Response Body if it receives an error.
 func (client ManagedClustersClient) GetAccessProfileSender(req *http.Request) (*http.Response, error) {
-	return autorest.SendWithSender(client, req,
-		azure.DoRetryWithRegistration(client.Client))
+	return client.Send(req, azure.DoRetryWithRegistration(client.Client))
 }
 
 // GetAccessProfileResponder handles the response to the GetAccessProfile request. The method always
@@ -349,6 +407,22 @@ func (client ManagedClustersClient) GetAccessProfileResponder(resp *http.Respons
 // resourceGroupName - the name of the resource group.
 // resourceName - the name of the managed cluster resource.
 func (client ManagedClustersClient) GetUpgradeProfile(ctx context.Context, resourceGroupName string, resourceName string) (result ManagedClusterUpgradeProfile, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.GetUpgradeProfile")
+		defer func() {
+			sc := -1
+			if result.Response.Response != nil {
+				sc = result.Response.Response.StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
+	if err := validation.Validate([]validation.Validation{
+		{TargetValue: resourceGroupName,
+			Constraints: []validation.Constraint{{Target: "resourceGroupName", Name: validation.MinLength, Rule: 1, Chain: nil}}}}); err != nil {
+		return result, validation.NewError("containerservice.ManagedClustersClient", "GetUpgradeProfile", err.Error())
+	}
+
 	req, err := client.GetUpgradeProfilePreparer(ctx, resourceGroupName, resourceName)
 	if err != nil {
 		err = autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "GetUpgradeProfile", nil, "Failure preparing request")
@@ -394,8 +468,7 @@ func (client ManagedClustersClient) GetUpgradeProfilePreparer(ctx context.Contex
 // GetUpgradeProfileSender sends the GetUpgradeProfile request. The method will close the
 // http.Response Body if it receives an error.
 func (client ManagedClustersClient) GetUpgradeProfileSender(req *http.Request) (*http.Response, error) {
-	return autorest.SendWithSender(client, req,
-		azure.DoRetryWithRegistration(client.Client))
+	return client.Send(req, azure.DoRetryWithRegistration(client.Client))
 }
 
 // GetUpgradeProfileResponder handles the response to the GetUpgradeProfile request. The method always
@@ -414,6 +487,16 @@ func (client ManagedClustersClient) GetUpgradeProfileResponder(resp *http.Respon
 // List gets a list of managed clusters in the specified subscription. The operation returns properties of each managed
 // cluster.
 func (client ManagedClustersClient) List(ctx context.Context) (result ManagedClusterListResultPage, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.List")
+		defer func() {
+			sc := -1
+			if result.mclr.Response.Response != nil {
+				sc = result.mclr.Response.Response.StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
 	result.fn = client.listNextResults
 	req, err := client.ListPreparer(ctx)
 	if err != nil {
@@ -458,8 +541,7 @@ func (client ManagedClustersClient) ListPreparer(ctx context.Context) (*http.Req
 // ListSender sends the List request. The method will close the
 // http.Response Body if it receives an error.
 func (client ManagedClustersClient) ListSender(req *http.Request) (*http.Response, error) {
-	return autorest.SendWithSender(client, req,
-		azure.DoRetryWithRegistration(client.Client))
+	return client.Send(req, azure.DoRetryWithRegistration(client.Client))
 }
 
 // ListResponder handles the response to the List request. The method always
@@ -476,8 +558,8 @@ func (client ManagedClustersClient) ListResponder(resp *http.Response) (result M
 }
 
 // listNextResults retrieves the next set of results, if any.
-func (client ManagedClustersClient) listNextResults(lastResults ManagedClusterListResult) (result ManagedClusterListResult, err error) {
-	req, err := lastResults.managedClusterListResultPreparer()
+func (client ManagedClustersClient) listNextResults(ctx context.Context, lastResults ManagedClusterListResult) (result ManagedClusterListResult, err error) {
+	req, err := lastResults.managedClusterListResultPreparer(ctx)
 	if err != nil {
 		return result, autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "listNextResults", nil, "Failure preparing next results request")
 	}
@@ -498,6 +580,16 @@ func (client ManagedClustersClient) listNextResults(lastResults ManagedClusterLi
 
 // ListComplete enumerates all values, automatically crossing page boundaries as required.
 func (client ManagedClustersClient) ListComplete(ctx context.Context) (result ManagedClusterListResultIterator, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.List")
+		defer func() {
+			sc := -1
+			if result.Response().Response.Response != nil {
+				sc = result.page.Response().Response.Response.StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
 	result.page, err = client.List(ctx)
 	return
 }
@@ -507,6 +599,22 @@ func (client ManagedClustersClient) ListComplete(ctx context.Context) (result Ma
 // Parameters:
 // resourceGroupName - the name of the resource group.
 func (client ManagedClustersClient) ListByResourceGroup(ctx context.Context, resourceGroupName string) (result ManagedClusterListResultPage, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.ListByResourceGroup")
+		defer func() {
+			sc := -1
+			if result.mclr.Response.Response != nil {
+				sc = result.mclr.Response.Response.StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
+	if err := validation.Validate([]validation.Validation{
+		{TargetValue: resourceGroupName,
+			Constraints: []validation.Constraint{{Target: "resourceGroupName", Name: validation.MinLength, Rule: 1, Chain: nil}}}}); err != nil {
+		return result, validation.NewError("containerservice.ManagedClustersClient", "ListByResourceGroup", err.Error())
+	}
+
 	result.fn = client.listByResourceGroupNextResults
 	req, err := client.ListByResourceGroupPreparer(ctx, resourceGroupName)
 	if err != nil {
@@ -552,8 +660,7 @@ func (client ManagedClustersClient) ListByResourceGroupPreparer(ctx context.Cont
 // ListByResourceGroupSender sends the ListByResourceGroup request. The method will close the
 // http.Response Body if it receives an error.
 func (client ManagedClustersClient) ListByResourceGroupSender(req *http.Request) (*http.Response, error) {
-	return autorest.SendWithSender(client, req,
-		azure.DoRetryWithRegistration(client.Client))
+	return client.Send(req, azure.DoRetryWithRegistration(client.Client))
 }
 
 // ListByResourceGroupResponder handles the response to the ListByResourceGroup request. The method always
@@ -570,8 +677,8 @@ func (client ManagedClustersClient) ListByResourceGroupResponder(resp *http.Resp
 }
 
 // listByResourceGroupNextResults retrieves the next set of results, if any.
-func (client ManagedClustersClient) listByResourceGroupNextResults(lastResults ManagedClusterListResult) (result ManagedClusterListResult, err error) {
-	req, err := lastResults.managedClusterListResultPreparer()
+func (client ManagedClustersClient) listByResourceGroupNextResults(ctx context.Context, lastResults ManagedClusterListResult) (result ManagedClusterListResult, err error) {
+	req, err := lastResults.managedClusterListResultPreparer(ctx)
 	if err != nil {
 		return result, autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "listByResourceGroupNextResults", nil, "Failure preparing next results request")
 	}
@@ -592,16 +699,42 @@ func (client ManagedClustersClient) listByResourceGroupNextResults(lastResults M
 
 // ListByResourceGroupComplete enumerates all values, automatically crossing page boundaries as required.
 func (client ManagedClustersClient) ListByResourceGroupComplete(ctx context.Context, resourceGroupName string) (result ManagedClusterListResultIterator, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.ListByResourceGroup")
+		defer func() {
+			sc := -1
+			if result.Response().Response.Response != nil {
+				sc = result.page.Response().Response.Response.StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
 	result.page, err = client.ListByResourceGroup(ctx, resourceGroupName)
 	return
 }
 
-// ListClusterAdminCredentials gets clusteradmin credential of the managed cluster with a specified resource group and
+// ListClusterAdminCredentials gets cluster admin credential of the managed cluster with a specified resource group and
 // name.
 // Parameters:
 // resourceGroupName - the name of the resource group.
 // resourceName - the name of the managed cluster resource.
 func (client ManagedClustersClient) ListClusterAdminCredentials(ctx context.Context, resourceGroupName string, resourceName string) (result CredentialResults, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.ListClusterAdminCredentials")
+		defer func() {
+			sc := -1
+			if result.Response.Response != nil {
+				sc = result.Response.Response.StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
+	if err := validation.Validate([]validation.Validation{
+		{TargetValue: resourceGroupName,
+			Constraints: []validation.Constraint{{Target: "resourceGroupName", Name: validation.MinLength, Rule: 1, Chain: nil}}}}); err != nil {
+		return result, validation.NewError("containerservice.ManagedClustersClient", "ListClusterAdminCredentials", err.Error())
+	}
+
 	req, err := client.ListClusterAdminCredentialsPreparer(ctx, resourceGroupName, resourceName)
 	if err != nil {
 		err = autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "ListClusterAdminCredentials", nil, "Failure preparing request")
@@ -647,8 +780,7 @@ func (client ManagedClustersClient) ListClusterAdminCredentialsPreparer(ctx cont
 // ListClusterAdminCredentialsSender sends the ListClusterAdminCredentials request. The method will close the
 // http.Response Body if it receives an error.
 func (client ManagedClustersClient) ListClusterAdminCredentialsSender(req *http.Request) (*http.Response, error) {
-	return autorest.SendWithSender(client, req,
-		azure.DoRetryWithRegistration(client.Client))
+	return client.Send(req, azure.DoRetryWithRegistration(client.Client))
 }
 
 // ListClusterAdminCredentialsResponder handles the response to the ListClusterAdminCredentials request. The method always
@@ -664,12 +796,28 @@ func (client ManagedClustersClient) ListClusterAdminCredentialsResponder(resp *h
 	return
 }
 
-// ListClusterUserCredentials gets clusteruser credential of the managed cluster with a specified resource group and
+// ListClusterUserCredentials gets cluster user credential of the managed cluster with a specified resource group and
 // name.
 // Parameters:
 // resourceGroupName - the name of the resource group.
 // resourceName - the name of the managed cluster resource.
 func (client ManagedClustersClient) ListClusterUserCredentials(ctx context.Context, resourceGroupName string, resourceName string) (result CredentialResults, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.ListClusterUserCredentials")
+		defer func() {
+			sc := -1
+			if result.Response.Response != nil {
+				sc = result.Response.Response.StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
+	if err := validation.Validate([]validation.Validation{
+		{TargetValue: resourceGroupName,
+			Constraints: []validation.Constraint{{Target: "resourceGroupName", Name: validation.MinLength, Rule: 1, Chain: nil}}}}); err != nil {
+		return result, validation.NewError("containerservice.ManagedClustersClient", "ListClusterUserCredentials", err.Error())
+	}
+
 	req, err := client.ListClusterUserCredentialsPreparer(ctx, resourceGroupName, resourceName)
 	if err != nil {
 		err = autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "ListClusterUserCredentials", nil, "Failure preparing request")
@@ -715,8 +863,7 @@ func (client ManagedClustersClient) ListClusterUserCredentialsPreparer(ctx conte
 // ListClusterUserCredentialsSender sends the ListClusterUserCredentials request. The method will close the
 // http.Response Body if it receives an error.
 func (client ManagedClustersClient) ListClusterUserCredentialsSender(req *http.Request) (*http.Response, error) {
-	return autorest.SendWithSender(client, req,
-		azure.DoRetryWithRegistration(client.Client))
+	return client.Send(req, azure.DoRetryWithRegistration(client.Client))
 }
 
 // ListClusterUserCredentialsResponder handles the response to the ListClusterUserCredentials request. The method always
@@ -732,12 +879,201 @@ func (client ManagedClustersClient) ListClusterUserCredentialsResponder(resp *ht
 	return
 }
 
+// ResetAADProfile update the AAD Profile for a managed cluster.
+// Parameters:
+// resourceGroupName - the name of the resource group.
+// resourceName - the name of the managed cluster resource.
+// parameters - parameters supplied to the Reset AAD Profile operation for a Managed Cluster.
+func (client ManagedClustersClient) ResetAADProfile(ctx context.Context, resourceGroupName string, resourceName string, parameters ManagedClusterAADProfile) (result ManagedClustersResetAADProfileFuture, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.ResetAADProfile")
+		defer func() {
+			sc := -1
+			if result.Response() != nil {
+				sc = result.Response().StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
+	if err := validation.Validate([]validation.Validation{
+		{TargetValue: resourceGroupName,
+			Constraints: []validation.Constraint{{Target: "resourceGroupName", Name: validation.MinLength, Rule: 1, Chain: nil}}},
+		{TargetValue: parameters,
+			Constraints: []validation.Constraint{{Target: "parameters.ClientAppID", Name: validation.Null, Rule: true, Chain: nil},
+				{Target: "parameters.ServerAppID", Name: validation.Null, Rule: true, Chain: nil}}}}); err != nil {
+		return result, validation.NewError("containerservice.ManagedClustersClient", "ResetAADProfile", err.Error())
+	}
+
+	req, err := client.ResetAADProfilePreparer(ctx, resourceGroupName, resourceName, parameters)
+	if err != nil {
+		err = autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "ResetAADProfile", nil, "Failure preparing request")
+		return
+	}
+
+	result, err = client.ResetAADProfileSender(req)
+	if err != nil {
+		err = autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "ResetAADProfile", result.Response(), "Failure sending request")
+		return
+	}
+
+	return
+}
+
+// ResetAADProfilePreparer prepares the ResetAADProfile request.
+func (client ManagedClustersClient) ResetAADProfilePreparer(ctx context.Context, resourceGroupName string, resourceName string, parameters ManagedClusterAADProfile) (*http.Request, error) {
+	pathParameters := map[string]interface{}{
+		"resourceGroupName": autorest.Encode("path", resourceGroupName),
+		"resourceName":      autorest.Encode("path", resourceName),
+		"subscriptionId":    autorest.Encode("path", client.SubscriptionID),
+	}
+
+	const APIVersion = "2018-03-31"
+	queryParameters := map[string]interface{}{
+		"api-version": APIVersion,
+	}
+
+	preparer := autorest.CreatePreparer(
+		autorest.AsContentType("application/json; charset=utf-8"),
+		autorest.AsPost(),
+		autorest.WithBaseURL(client.BaseURI),
+		autorest.WithPathParameters("/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.ContainerService/managedClusters/{resourceName}/resetAADProfile", pathParameters),
+		autorest.WithJSON(parameters),
+		autorest.WithQueryParameters(queryParameters))
+	return preparer.Prepare((&http.Request{}).WithContext(ctx))
+}
+
+// ResetAADProfileSender sends the ResetAADProfile request. The method will close the
+// http.Response Body if it receives an error.
+func (client ManagedClustersClient) ResetAADProfileSender(req *http.Request) (future ManagedClustersResetAADProfileFuture, err error) {
+	var resp *http.Response
+	resp, err = client.Send(req, azure.DoRetryWithRegistration(client.Client))
+	if err != nil {
+		return
+	}
+	future.Future, err = azure.NewFutureFromResponse(resp)
+	return
+}
+
+// ResetAADProfileResponder handles the response to the ResetAADProfile request. The method always
+// closes the http.Response Body.
+func (client ManagedClustersClient) ResetAADProfileResponder(resp *http.Response) (result autorest.Response, err error) {
+	err = autorest.Respond(
+		resp,
+		client.ByInspecting(),
+		azure.WithErrorUnlessStatusCode(http.StatusOK, http.StatusAccepted),
+		autorest.ByClosing())
+	result.Response = resp
+	return
+}
+
+// ResetServicePrincipalProfile update the service principal Profile for a managed cluster.
+// Parameters:
+// resourceGroupName - the name of the resource group.
+// resourceName - the name of the managed cluster resource.
+// parameters - parameters supplied to the Reset Service Principal Profile operation for a Managed Cluster.
+func (client ManagedClustersClient) ResetServicePrincipalProfile(ctx context.Context, resourceGroupName string, resourceName string, parameters ManagedClusterServicePrincipalProfile) (result ManagedClustersResetServicePrincipalProfileFuture, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.ResetServicePrincipalProfile")
+		defer func() {
+			sc := -1
+			if result.Response() != nil {
+				sc = result.Response().StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
+	if err := validation.Validate([]validation.Validation{
+		{TargetValue: resourceGroupName,
+			Constraints: []validation.Constraint{{Target: "resourceGroupName", Name: validation.MinLength, Rule: 1, Chain: nil}}},
+		{TargetValue: parameters,
+			Constraints: []validation.Constraint{{Target: "parameters.ClientID", Name: validation.Null, Rule: true, Chain: nil}}}}); err != nil {
+		return result, validation.NewError("containerservice.ManagedClustersClient", "ResetServicePrincipalProfile", err.Error())
+	}
+
+	req, err := client.ResetServicePrincipalProfilePreparer(ctx, resourceGroupName, resourceName, parameters)
+	if err != nil {
+		err = autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "ResetServicePrincipalProfile", nil, "Failure preparing request")
+		return
+	}
+
+	result, err = client.ResetServicePrincipalProfileSender(req)
+	if err != nil {
+		err = autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "ResetServicePrincipalProfile", result.Response(), "Failure sending request")
+		return
+	}
+
+	return
+}
+
+// ResetServicePrincipalProfilePreparer prepares the ResetServicePrincipalProfile request.
+func (client ManagedClustersClient) ResetServicePrincipalProfilePreparer(ctx context.Context, resourceGroupName string, resourceName string, parameters ManagedClusterServicePrincipalProfile) (*http.Request, error) {
+	pathParameters := map[string]interface{}{
+		"resourceGroupName": autorest.Encode("path", resourceGroupName),
+		"resourceName":      autorest.Encode("path", resourceName),
+		"subscriptionId":    autorest.Encode("path", client.SubscriptionID),
+	}
+
+	const APIVersion = "2018-03-31"
+	queryParameters := map[string]interface{}{
+		"api-version": APIVersion,
+	}
+
+	preparer := autorest.CreatePreparer(
+		autorest.AsContentType("application/json; charset=utf-8"),
+		autorest.AsPost(),
+		autorest.WithBaseURL(client.BaseURI),
+		autorest.WithPathParameters("/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.ContainerService/managedClusters/{resourceName}/resetServicePrincipalProfile", pathParameters),
+		autorest.WithJSON(parameters),
+		autorest.WithQueryParameters(queryParameters))
+	return preparer.Prepare((&http.Request{}).WithContext(ctx))
+}
+
+// ResetServicePrincipalProfileSender sends the ResetServicePrincipalProfile request. The method will close the
+// http.Response Body if it receives an error.
+func (client ManagedClustersClient) ResetServicePrincipalProfileSender(req *http.Request) (future ManagedClustersResetServicePrincipalProfileFuture, err error) {
+	var resp *http.Response
+	resp, err = client.Send(req, azure.DoRetryWithRegistration(client.Client))
+	if err != nil {
+		return
+	}
+	future.Future, err = azure.NewFutureFromResponse(resp)
+	return
+}
+
+// ResetServicePrincipalProfileResponder handles the response to the ResetServicePrincipalProfile request. The method always
+// closes the http.Response Body.
+func (client ManagedClustersClient) ResetServicePrincipalProfileResponder(resp *http.Response) (result autorest.Response, err error) {
+	err = autorest.Respond(
+		resp,
+		client.ByInspecting(),
+		azure.WithErrorUnlessStatusCode(http.StatusOK, http.StatusAccepted),
+		autorest.ByClosing())
+	result.Response = resp
+	return
+}
+
 // UpdateTags updates a managed cluster with the specified tags.
 // Parameters:
 // resourceGroupName - the name of the resource group.
 // resourceName - the name of the managed cluster resource.
 // parameters - parameters supplied to the Update Managed Cluster Tags operation.
 func (client ManagedClustersClient) UpdateTags(ctx context.Context, resourceGroupName string, resourceName string, parameters TagsObject) (result ManagedClustersUpdateTagsFuture, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/ManagedClustersClient.UpdateTags")
+		defer func() {
+			sc := -1
+			if result.Response() != nil {
+				sc = result.Response().StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
+	if err := validation.Validate([]validation.Validation{
+		{TargetValue: resourceGroupName,
+			Constraints: []validation.Constraint{{Target: "resourceGroupName", Name: validation.MinLength, Rule: 1, Chain: nil}}}}); err != nil {
+		return result, validation.NewError("containerservice.ManagedClustersClient", "UpdateTags", err.Error())
+	}
+
 	req, err := client.UpdateTagsPreparer(ctx, resourceGroupName, resourceName, parameters)
 	if err != nil {
 		err = autorest.NewErrorWithError(err, "containerservice.ManagedClustersClient", "UpdateTags", nil, "Failure preparing request")
@@ -780,8 +1116,7 @@ func (client ManagedClustersClient) UpdateTagsPreparer(ctx context.Context, reso
 // http.Response Body if it receives an error.
 func (client ManagedClustersClient) UpdateTagsSender(req *http.Request) (future ManagedClustersUpdateTagsFuture, err error) {
 	var resp *http.Response
-	resp, err = autorest.SendWithSender(client, req,
-		azure.DoRetryWithRegistration(client.Client))
+	resp, err = client.Send(req, azure.DoRetryWithRegistration(client.Client))
 	if err != nil {
 		return
 	}

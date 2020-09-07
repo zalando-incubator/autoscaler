@@ -21,9 +21,9 @@ import (
 	"flag"
 	"time"
 
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	vpa_clientset "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned"
-	vpa_api "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned/typed/autoscaling.k8s.io/v1beta2"
+	vpa_api "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned/typed/autoscaling.k8s.io/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/checkpoint"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/logic"
@@ -160,9 +160,8 @@ func getCappedRecommendation(vpaID model.VpaID, resources logic.RecommendedPodRe
 func (r *recommender) MaintainCheckpoints(ctx context.Context, minCheckpointsPerRun int) {
 	now := time.Now()
 	if r.useCheckpoints {
-		err := r.checkpointWriter.StoreCheckpoints(ctx, now, minCheckpointsPerRun)
-		if err != nil {
-			klog.Errorf("Unable to store checkpoints: %v", err)
+		if err := r.checkpointWriter.StoreCheckpoints(ctx, now, minCheckpointsPerRun); err != nil {
+			klog.Warningf("Failed to store checkpoints. Reason: %+v", err)
 		}
 		if time.Now().Sub(r.lastCheckpointGC) > r.checkpointsGCInterval {
 			r.lastCheckpointGC = now
@@ -250,8 +249,8 @@ func NewRecommender(config *rest.Config, checkpointsGCInterval time.Duration, us
 	return RecommenderFactory{
 		ClusterState:           clusterState,
 		ClusterStateFeeder:     input.NewClusterStateFeeder(config, clusterState, *memorySaver),
-		CheckpointWriter:       checkpoint.NewCheckpointWriter(clusterState, vpa_clientset.NewForConfigOrDie(config).AutoscalingV1beta2()),
-		VpaClient:              vpa_clientset.NewForConfigOrDie(config).AutoscalingV1beta2(),
+		CheckpointWriter:       checkpoint.NewCheckpointWriter(clusterState, vpa_clientset.NewForConfigOrDie(config).AutoscalingV1()),
+		VpaClient:              vpa_clientset.NewForConfigOrDie(config).AutoscalingV1(),
 		PodResourceRecommender: logic.CreatePodResourceRecommender(),
 		CheckpointsGCInterval:  checkpointsGCInterval,
 		UseCheckpoints:         useCheckpoints,

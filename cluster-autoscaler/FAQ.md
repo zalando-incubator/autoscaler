@@ -23,6 +23,7 @@ this document:
   * [How is Cluster Autoscaler different from CPU-usage-based node autoscalers?](#how-is-cluster-autoscaler-different-from-cpu-usage-based-node-autoscalers)
   * [Is Cluster Autoscaler compatible with CPU-usage-based node autoscalers?](#is-cluster-autoscaler-compatible-with-cpu-usage-based-node-autoscalers)
   * [How does Cluster Autoscaler work with Pod Priority and Preemption?](#how-does-cluster-autoscaler-work-with-pod-priority-and-preemption)
+  * [How does Cluster Autoscaler remove nodes?](#how-does-cluster-autoscaler-remove-nodes)
 * [How to?](#how-to)
   * [I'm running cluster with nodes in multiple zones for HA purposes. Is that supported by Cluster Autoscaler?](#im-running-cluster-with-nodes-in-multiple-zones-for-ha-purposes-is-that-supported-by-cluster-autoscaler)
   * [How can I monitor Cluster Autoscaler?](#how-can-i-monitor-cluster-autoscaler)
@@ -91,6 +92,8 @@ matching anti-affinity, etc)
 "cluster-autoscaler.kubernetes.io/safe-to-evict": "true"
 ```
 
+__Or__ you have have overridden this behaviour with one of the relevant flags. [See below for more information on these flags.](#what-are-the-parameters-to-ca)
+
 ### Which version on Cluster Autoscaler should I use in my cluster?
 
 See [Cluster Autoscaler Releases](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler#releases)
@@ -158,7 +161,7 @@ space in the cluster.
 If there are not enough resources, CA will try to bring up some nodes, so that the
 HPA-created pods have a place to run.
 If the load decreases, HPA will stop some of the replicas. As a result, some nodes may become
-underutilized or completely empty, and then CA will delete such unneeded nodes.
+underutilized or completely empty, and then CA will terminate such unneeded nodes.
 
 ### What are the key best practices for running Cluster Autoscaler?
 
@@ -202,7 +205,7 @@ Cluster Autoscaler.
 
 Pods with priority lower than this cutoff:
 * don't trigger scale-ups - no new node is added in order to run them,
-* don't prevent scale-downs - nodes running such pods can be deleted.
+* don't prevent scale-downs - nodes running such pods can be terminated.
 
 Nothing changes for pods with priority greater or equal to cutoff, and pods without priority.
 
@@ -218,6 +221,11 @@ More about Pod Priority and Preemption:
  * [Pod Preemption in Kubernetes](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/scheduling/pod-preemption.md),
  * [Pod Priority and Preemption tutorial](https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/).
 
+### How does Cluster Autoscaler remove nodes?
+
+Cluster Autoscaler terminates the underlying instance in a cloud-provider-dependent manner.
+
+It does _not_ delete the [Node object](https://kubernetes.io/docs/concepts/architecture/nodes/#api-object) from Kubernetes. Cleaning up Node objects corresponding to terminated instances is the responsibility of the [cloud node controller](https://kubernetes.io/docs/concepts/architecture/cloud-controller/#node-controller), which can run as part of [kube-controller-manager](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/) or [cloud-controller-manager](https://kubernetes.io/docs/reference/command-line-tools-reference/cloud-controller-manager/).
 
 
 ****************
@@ -256,7 +264,7 @@ available [here](https://github.com/kubernetes/autoscaler/blob/master/cluster-au
 ### How can I scale my cluster to just 1 node?
 
 Prior to version 0.6, Cluster Autoscaler was not touching nodes that were running important
-kube-system pods like DNS, Heapster, Dashboard etc. If these pods landed on different nodes,
+kube-system pods like DNS, Metrics Server, Dashboard, etc. If these pods landed on different nodes,
 CA could not scale the cluster down and the user could end up with a completely empty
 3 node cluster. In 0.6, we added an option to tell CA that some system pods can be moved around.
 If the user configures a [PodDisruptionBudget](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/)
@@ -348,7 +356,7 @@ description: "Priority class used by overprovisioning."
 
 **For 1.11:**
 
-```
+```yaml
 apiVersion: scheduling.k8s.io/v1beta1
 kind: PriorityClass
 metadata:
@@ -484,15 +492,15 @@ the scheduler will place the pods somewhere else.
 
 * It doesn't have scale-down disabled annotation (see [How can I prevent Cluster Autoscaler from scaling down a particular node?](#how-can-i-prevent-cluster-autoscaler-from-scaling-down-a-particular-node))
 
-If a node is unneeded for more than 10 minutes, it will be deleted. (This time can
+If a node is unneeded for more than 10 minutes, it will be terminated. (This time can
 be configured by flags - please see [I have a couple of nodes with low utilization, but they are not scaled down. Why?](#i-have-a-couple-of-nodes-with-low-utilization-but-they-are-not-scaled-down-why) section for a more detailed explanation.)
-Cluster Autoscaler deletes one non-empty node at a time to reduce the risk of
-creating new unschedulable pods. The next node may possibly be deleted just after the first one,
+Cluster Autoscaler terminates one non-empty node at a time to reduce the risk of
+creating new unschedulable pods. The next node may possibly be terminated just after the first one,
 if it was also unneeded for more than 10 min and didn't rely on the same nodes
 in simulation (see below example scenario), but not together.
-Empty nodes, on the other hand, can be deleted in bulk, up to 10 nodes at a time (configurable by `--max-empty-bulk-delete` flag.)
+Empty nodes, on the other hand, can be terminated in bulk, up to 10 nodes at a time (configurable by `--max-empty-bulk-delete` flag.)
 
-What happens when a non-empty node is deleted? As mentioned above, all pods should be migrated
+What happens when a non-empty node is terminated? As mentioned above, all pods should be migrated
 elsewhere. Cluster Autoscaler does this by evicting them and tainting the node, so they aren't
 scheduled there again.
 
@@ -503,22 +511,22 @@ A, B, C are below utilization threshold.
 In simulation, pods from A fit on X, pods from B fit on X, and pods from C fit
 on Y.
 
-Node A was deleted. OK, but what about B and C, which were also eligible for deletion? Well, it depends.
+Node A was terminated. OK, but what about B and C, which were also eligible for deletion? Well, it depends.
 
-Pods from B may no longer fit on X after pods from A were moved there. Cluster Autoscaler has to find place for them somewhere else, and it is not sure that if A had been deleted much earlier than B, there would always have been a place for them. So the condition of having been unneeded for 10 min may not be true for B anymore.
+Pods from B may no longer fit on X after pods from A were moved there. Cluster Autoscaler has to find place for them somewhere else, and it is not sure that if A had been terminated much earlier than B, there would always have been a place for them. So the condition of having been unneeded for 10 min may not be true for B anymore.
 
-But for node C, it's still true as long as nothing happened to Y. So C can be deleted immediately after A, but B may not.
+But for node C, it's still true as long as nothing happened to Y. So C can be terminated immediately after A, but B may not.
 
 Cluster Autoscaler does all of this accounting based on the simulations and memorized new pod location.
 They may not always be precise (pods can be scheduled elsewhere in the end), but it seems to be a good heuristic so far.
 
 ### Does CA work with PodDisruptionBudget in scale-down?
 
-From 0.5 CA (K8S 1.6) respects PDBs. Before starting to delete a node, CA makes sure that PodDisruptionBudgets for pods scheduled there allow for removing at least one replica. Then it deletes all pods from a node through the pod eviction API, retrying, if needed, for up to 2 min. During that time other CA activity is stopped. If one of the evictions fails, the node is saved and it is not deleted, but another attempt to delete it may be conducted in the near future.
+From 0.5 CA (K8S 1.6) respects PDBs. Before starting to terminate a node, CA makes sure that PodDisruptionBudgets for pods scheduled there allow for removing at least one replica. Then it deletes all pods from a node through the pod eviction API, retrying, if needed, for up to 2 min. During that time other CA activity is stopped. If one of the evictions fails, the node is saved and it is not terminated, but another attempt to terminate it may be conducted in the near future.
 
 ### Does CA respect GracefulTermination in scale-down?
 
-CA, from version 1.0, gives pods at most 10 minutes graceful termination time by default (configurable via `--max-graceful-termination-sec`). If the pod is not stopped within these 10 min then the node is deleted anyway. Earlier versions of CA gave 1 minute or didn't respect graceful termination at all.
+CA, from version 1.0, gives pods at most 10 minutes graceful termination time by default (configurable via `--max-graceful-termination-sec`). If the pod is not stopped within these 10 min then the node is terminated anyway. Earlier versions of CA gave 1 minute or didn't respect graceful termination at all.
 
 ### How does CA deal with unready nodes?
 
@@ -553,7 +561,7 @@ running is determined by three major factors:
 * node provisioning time.
 
 By default, pods' CPU usage is scraped by kubelet every 10 seconds, and it is obtained from kubelet
-by Heapster every 1 minute. HPA checks CPU load metrics in Heapster every 30 seconds.
+by Metrics Server every 1 minute. HPA checks CPU load metrics in Metrics Server every 30 seconds.
 However, after changing the number of replicas, HPA backs off for 3 minutes before taking
 further action. So it can be up to 3 minutes before pods are added or deleted,
 but usually it's closer to 1 minute.
@@ -621,14 +629,14 @@ However, CA does not consider "soft" constraints like `preferredDuringScheduling
 
 The following startup parameters are supported for cluster autoscaler:
 
-| Parameter | Description | Default | 
+| Parameter | Description | Default |
 | --- | --- | --- |
-| `cluster-name` | Autoscaled cluster name, if available | "" 
-| `address` | The address to expose prometheus metrics | :8085 
-| `kubernetes` | Kubernetes master location. Leave blank for default | "" 
+| `cluster-name` | Autoscaled cluster name, if available | ""
+| `address` | The address to expose prometheus metrics | :8085
+| `kubernetes` | Kubernetes master location. Leave blank for default | ""
 | `kubeconfig` | Path to kubeconfig file with authorization and master location information | ""
 | `cloud-config` | The path to the cloud provider configuration file.  Empty string for no configuration file | ""
-| `namespace` | Namespace in which cluster-autoscaler run | "kube-system" 
+| `namespace` | Namespace in which cluster-autoscaler run | "kube-system"
 | `scale-down-enabled` | Should CA scale down the cluster | true
 | `scale-down-delay-after-add` | How long after scale up that scale down evaluation resumes | 10 minutes
 | `scale-down-delay-after-delete` | How long after node deletion that scale down evaluation resumes, defaults to scan-interval | scan-interval
@@ -651,7 +659,7 @@ The following startup parameters are supported for cluster autoscaler:
 | `ok-total-unready-count` | Number of allowed unready nodes, irrespective of max-total-unready-percentage  | 3
 | `max-node-provision-time` | Maximum time CA waits for node to be provisioned | 15 minutes
 | `nodes` | sets min,max size and other configuration data for a node group in a format accepted by cloud provider. Can be used multiple times. Format: <min>:<max>:<other...> | ""
-| `node-group-auto-discovery` | One or more definition(s) of node group auto-discovery.<br>A definition is expressed `<name of discoverer>:[<key>[=<value>]]`<br>The `aws` and `gce` cloud providers are currently supported. AWS matches by ASG tags, e.g. `asg:tag=tagKey,anotherTagKey`<br>GCE matches by IG name prefix, and requires you to specify min and max nodes per IG, e.g. `mig:namePrefix=pfx,min=0,max=10`<br>Can be used multiple times | ""
+| `node-group-auto-discovery` | One or more definition(s) of node group auto-discovery.<br>A definition is expressed `<name of discoverer>:[<key>[=<value>]]`<br>The `aws`, `gce`, and `azure` cloud providers are currently supported. AWS matches by ASG tags, e.g. `asg:tag=tagKey,anotherTagKey`<br>GCE matches by IG name prefix, and requires you to specify min and max nodes per IG, e.g. `mig:namePrefix=pfx,min=0,max=10`<br> Azure matches by tags on VMSS, e.g. `label:foo=bar`, and will auto-detect `min` and `max` tags on the VMSS to set scaling limits.<br>Can be used multiple times | ""
 | `estimator` | Type of resource estimator to be used in scale up | binpacking
 | `expander` | Type of node group expander to be used in scale up.  | random
 | `write-status-configmap` | Should CA write status information to a configmap  | true
@@ -668,6 +676,10 @@ The following startup parameters are supported for cluster autoscaler:
 | `leader-elect-renew-deadline` | The interval between attempts by the acting master to renew a leadership slot before it stops leading.<br>This must be less than or equal to the lease duration.<br>This is only applicable if leader election is enabled | 10 seconds
 | `leader-elect-retry-period` | The duration the clients should wait between attempting acquisition and renewal of a leadership.<br>This is only applicable if leader election is enabled | 2 seconds
 | `leader-elect-resource-lock` | The type of resource object that is used for locking during leader election.<br>Supported options are `endpoints` (default) and `configmaps` | "endpoints"
+| `aws-use-static-instance-list` | Should CA fetch instance types in runtime or use a static list. AWS only | false
+| `skip-nodes-with-system-pods` | If true cluster autoscaler will never delete nodes with pods from kube-system (except for DaemonSet or mirror pods | true
+| `skip-nodes-with-local-storage`| If true cluster autoscaler will never delete nodes with pods with local storage, e.g. EmptyDir or HostPath | true
+| `min-replica-count` | Minimum number or replicas that a replica set or replication controller should have to allow their pods deletion in scale down | 0
 
 # Troubleshooting:
 
@@ -696,7 +708,7 @@ CA doesn't remove underutilized nodes if they are running pods [that it shouldn'
 By default, kube-system pods prevent CA from removing nodes on which they are running. Users can manually add PDBs for the kube-system pods that can be safely rescheduled elsewhere:
 
 ```
-kubectl create poddisruptionbudget <pdb name> --namespace=kube-system --selector app:<app name> --max-unavailable 1
+kubectl create poddisruptionbudget <pdb name> --namespace=kube-system --selector app=<app name> --max-unavailable 1
 ```
 
 Here's how to do it for some common pods:
@@ -709,8 +721,8 @@ adding preventSinglePointFailure parameter. For example:
 linear:'{"coresPerReplica":256,"nodesPerReplica":16,"preventSinglePointFailure":true}'
 ```
 
-* Heapster is best left alone, as restarting it causes the loss of metrics for >1 minute, as well as metrics
-in dashboard from the last 15 minutes. Heapster downtime also means effective HPA downtime as it relies on metrics. Add PDB for it only if you're sure you don't mind. App name is k8s-heapster.
+* Metrics Server is best left alone, as restarting it causes the loss of metrics for >1 minute, as well as metrics
+in dashboard from the last 15 minutes. Metrics Server downtime also means effective HPA downtime as it relies on metrics. Add PDB for it only if you're sure you don't mind.
 
 ### I have a couple of pending pods, but there was no scale-up?
 
@@ -756,7 +768,7 @@ Most likely it's due to a problem with the cluster. Steps to debug:
 
 If both the cluster and CA appear healthy:
 
-* If you expect some nodes to be deleted, but they are not deleted for a long
+* If you expect some nodes to be terminated, but they are not terminated for a long
   time, check
   [I have a couple of nodes with low utilization, but they are not scaled down. Why?](#i-have-a-couple-of-nodes-with-low-utilization-but-they-are-not-scaled-down-why) section.
 
@@ -839,7 +851,7 @@ Depending on how long scale-ups have been failing, it may wait up to 30 minutes 
 
 ### How can I run e2e tests?
 
-1. Set up environment and build e2e.go as described in the [Kubernetes docs](https://github.com/kubernetes/community/blob/master/contributors/devel/e2e-tests.md#building-and-running-the-tests).
+1. Set up environment and build e2e.go as described in the [Kubernetes docs](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-testing/e2e-tests.md#building-and-running-the-tests).
 2. Set up the following env variables:
     ```sh
     export KUBE_AUTOSCALER_MIN_NODES=3
@@ -900,4 +912,43 @@ We are aware that this process is tedious and we will work to improve it.
 
 ### How can I update CA dependencies (particularly k8s.io/kubernetes)?
 
-TODO - update needed after k8s migrated to go modules
+Cluster Autoscaler imports a huge chunk of internal k8s code as it calls out to scheduler implementation.
+Therefore we want to keep set of libraries used in CA as close to one used by k8s, to avoid
+unexpected problems coming from version incompatibilities.
+
+Cluster Autoscaler depends on `go modules` mechanism for dependency management, but do not use it directly
+during build process. `go.mod` file is just used to generate the `vendor` directory and further compilation
+is run against set of libraries stored in `vendor`. `vendor` directory can be regenerated using [`update-vendor.sh`](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/hack/update-vendor.sh) script.
+The `update-vendor.sh` script is responsible for autogenerating `go.mod` file used by Cluster Autoscaler. The base
+of the file is `go.mod` file coming from [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) repository. 
+On top of that script adds modifications as defined
+locally in [`go.mod-extra`](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/go.mod-extra) file. 
+
+Note: It is important that one should **never manually edit** `go.mod` file as it is regenerated
+on each `update-vendor.sh` call. Any extra libraries or version overrides should be put in `go.mod-extra` file (syntax of the file
+is same as syntax of `go.mod` file). 
+
+Finally `vendor` directry is materialized and validation tests are run.
+
+If everything completes correctly a commit with updated `vendor` directory is created automatically. The pull-request with changed vendor
+must be sent out manually. The PR should include the auto-generated commit as well as commits containing any manual changes/fixes that need to
+go together.
+
+Execution of `update-vendor.sh` can be parametrized using command line argumets:
+ - `-f` - kubernetes/kubernetes fork to use. On `master` it defaults to `git@github.com:kubernetes/kubernetes.git`
+ - `-r` - revision in kubernetes/kubernetes which should be used to get base `go.mod` file
+ - `-d` - specifies script workdir; useful to speed up execution if script needs to be run multiple times, because updating vendor resulted in some compilation errors on Cluster-Autoscaler side which need to be fixed
+ 
+Example execution looks like this:
+```
+./hack/update-vendor.sh -d/tmp/ca-update-vendor.ou1l -fgit@github.com:kubernetes/kubernetes.git -rmaster
+```
+
+Caveats:
+ - `update-vendor.sh` is called directly in shell (no docker is used) therefore its operation may differ from environment to environment.
+ - It is important that go version, which isn in use in the shell in which `update-vendor.sh` is called, matches the `go <version>` directive specified in `go.mod` file
+   in `kubernetes/kubernetes` revision against which revendoring is done.
+ - `update-vendor.sh` automatically runs unit tests as part of verification process. If one needs to suppress that, it can be done by overriding `VERIFY_COMMAND` variable (`VERIFY_COMMAND=true ./hack/update-vendor.sh ...`)
+ - If one wants to only add new libraries to `go.mod-extra`, but not change the base `go.mod`, `-r` should be used with kubernetes/kubernets revision, which was used last time `update-vendor.sh` was called. One can determine that revision by looking at `git log` in Cluster Autoscaler repository. Following command will do the trick `git log | grep "Updating vendor against"`.
+
+

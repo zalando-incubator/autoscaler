@@ -19,6 +19,8 @@ package processors
 import (
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroups"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/nodeinfos"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/nodes"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/pods"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
 )
@@ -34,12 +36,16 @@ type AutoscalingProcessors struct {
 	NodeGroupSetProcessor nodegroupset.NodeGroupSetProcessor
 	// ScaleUpStatusProcessor is used to process the state of the cluster after a scale-up.
 	ScaleUpStatusProcessor status.ScaleUpStatusProcessor
+	// ScaleDownNodeProcessor is used to process the nodes of the cluster before scale-down.
+	ScaleDownNodeProcessor nodes.ScaleDownNodeProcessor
 	// ScaleDownStatusProcessor is used to process the state of the cluster after a scale-down.
 	ScaleDownStatusProcessor status.ScaleDownStatusProcessor
 	// AutoscalingStatusProcessor is used to process the state of the cluster after each autoscaling iteration.
 	AutoscalingStatusProcessor status.AutoscalingStatusProcessor
 	// NodeGroupManager is responsible for creating/deleting node groups.
 	NodeGroupManager nodegroups.NodeGroupManager
+	// NodeInfoProcessor is used to process nodeInfos after they're created.
+	NodeInfoProcessor nodeinfos.NodeInfoProcessor
 }
 
 // DefaultProcessors returns default set of processors.
@@ -47,11 +53,13 @@ func DefaultProcessors() *AutoscalingProcessors {
 	return &AutoscalingProcessors{
 		PodListProcessor:           pods.NewDefaultPodListProcessor(),
 		NodeGroupListProcessor:     nodegroups.NewDefaultNodeGroupListProcessor(),
-		NodeGroupSetProcessor:      nodegroupset.NewDefaultNodeGroupSetProcessor(),
+		NodeGroupSetProcessor:      nodegroupset.NewDefaultNodeGroupSetProcessor([]string{}),
 		ScaleUpStatusProcessor:     status.NewDefaultScaleUpStatusProcessor(),
+		ScaleDownNodeProcessor:     nodes.NewPreFilteringScaleDownNodeProcessor(),
 		ScaleDownStatusProcessor:   status.NewDefaultScaleDownStatusProcessor(),
 		AutoscalingStatusProcessor: status.NewDefaultAutoscalingStatusProcessor(),
 		NodeGroupManager:           nodegroups.NewDefaultNodeGroupManager(),
+		NodeInfoProcessor:          nodeinfos.NewDefaultNodeInfoProcessor(),
 	}
 }
 
@@ -64,4 +72,6 @@ func (ap *AutoscalingProcessors) CleanUp() {
 	ap.ScaleDownStatusProcessor.CleanUp()
 	ap.AutoscalingStatusProcessor.CleanUp()
 	ap.NodeGroupManager.CleanUp()
+	ap.ScaleDownNodeProcessor.CleanUp()
+	ap.NodeInfoProcessor.CleanUp()
 }

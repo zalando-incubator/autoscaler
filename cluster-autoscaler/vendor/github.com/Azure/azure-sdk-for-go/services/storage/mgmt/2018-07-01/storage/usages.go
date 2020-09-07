@@ -22,6 +22,7 @@ import (
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/validation"
+	"github.com/Azure/go-autorest/tracing"
 	"net/http"
 )
 
@@ -35,7 +36,8 @@ func NewUsagesClient(subscriptionID string) UsagesClient {
 	return NewUsagesClientWithBaseURI(DefaultBaseURI, subscriptionID)
 }
 
-// NewUsagesClientWithBaseURI creates an instance of the UsagesClient client.
+// NewUsagesClientWithBaseURI creates an instance of the UsagesClient client using a custom endpoint.  Use this when
+// interacting with an Azure cloud that uses a non-standard base URI (sovereign clouds, Azure stack).
 func NewUsagesClientWithBaseURI(baseURI string, subscriptionID string) UsagesClient {
 	return UsagesClient{NewWithBaseURI(baseURI, subscriptionID)}
 }
@@ -44,6 +46,16 @@ func NewUsagesClientWithBaseURI(baseURI string, subscriptionID string) UsagesCli
 // Parameters:
 // location - the location of the Azure Storage resource.
 func (client UsagesClient) ListByLocation(ctx context.Context, location string) (result UsageListResult, err error) {
+	if tracing.IsEnabled() {
+		ctx = tracing.StartSpan(ctx, fqdn+"/UsagesClient.ListByLocation")
+		defer func() {
+			sc := -1
+			if result.Response.Response != nil {
+				sc = result.Response.Response.StatusCode
+			}
+			tracing.EndSpan(ctx, sc, err)
+		}()
+	}
 	if err := validation.Validate([]validation.Validation{
 		{TargetValue: client.SubscriptionID,
 			Constraints: []validation.Constraint{{Target: "client.SubscriptionID", Name: validation.MinLength, Rule: 1, Chain: nil}}}}); err != nil {
@@ -94,8 +106,7 @@ func (client UsagesClient) ListByLocationPreparer(ctx context.Context, location 
 // ListByLocationSender sends the ListByLocation request. The method will close the
 // http.Response Body if it receives an error.
 func (client UsagesClient) ListByLocationSender(req *http.Request) (*http.Response, error) {
-	return autorest.SendWithSender(client, req,
-		azure.DoRetryWithRegistration(client.Client))
+	return client.Send(req, azure.DoRetryWithRegistration(client.Client))
 }
 
 // ListByLocationResponder handles the response to the ListByLocation request. The method always

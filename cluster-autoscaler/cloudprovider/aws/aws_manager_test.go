@@ -17,6 +17,7 @@ limitations under the License.
 package aws
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,10 +25,12 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/ec2metadata"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
@@ -56,13 +59,13 @@ func TestGetRegion(t *testing.T) {
 	expected1 := "the-shire-1"
 	os.Setenv(key, expected1)
 	assert.Equal(t, expected1, getRegion())
-	// Ensure without environment variable, EC2 Metadata used... and it merely
-	// chops the last character off the Availability Zone.
+	// Ensure without environment variable, EC2 Metadata is used.
 	expected2 := "mordor-2"
-	expected2a := expected2 + "a"
+	expectedjson := ec2metadata.EC2InstanceIdentityDocument{Region: expected2}
+	js, _ := json.Marshal(expectedjson)
 	os.Unsetenv(key)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(expected2a))
+		w.Write(js)
 	}))
 	cfg := aws.NewConfig().WithEndpoint(server.URL)
 	assert.Equal(t, expected2, getRegion(cfg))
@@ -70,7 +73,7 @@ func TestGetRegion(t *testing.T) {
 
 func TestBuildGenericLabels(t *testing.T) {
 	labels := buildGenericLabels(&asgTemplate{
-		InstanceType: &instanceType{
+		InstanceType: &InstanceType{
 			InstanceType: "c4.large",
 			VCPU:         2,
 			MemoryMb:     3840,
@@ -107,6 +110,74 @@ func TestExtractAllocatableResourcesFromAsg(t *testing.T) {
 	assert.Equal(t, (&expectedMemory).String(), labels["memory"].String())
 	expectedEphemeralStorage := resource.MustParse("20G")
 	assert.Equal(t, (&expectedEphemeralStorage).String(), labels["ephemeral-storage"].String())
+}
+
+func TestBuildNodeFromTemplate(t *testing.T) {
+	awsManager := &AwsManager{}
+	asg := &asg{AwsRef: AwsRef{Name: "test-auto-scaling-group"}}
+	c5Instance := &InstanceType{
+		InstanceType: "c5.xlarge",
+		VCPU:         4,
+		MemoryMb:     8192,
+		GPU:          0,
+	}
+
+	// Node with custom resource
+	ephemeralStorageKey := "ephemeral-storage"
+	ephemeralStorageValue := int64(20)
+	vpcIPKey := "vpc.amazonaws.com/PrivateIPv4Address"
+	observedNode, observedErr := awsManager.buildNodeFromTemplate(asg, &asgTemplate{
+		InstanceType: c5Instance,
+		Tags: []*autoscaling.TagDescription{
+			{
+				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/resources/%s", ephemeralStorageKey)),
+				Value: aws.String(strconv.FormatInt(ephemeralStorageValue, 10)),
+			},
+		},
+	})
+	assert.NoError(t, observedErr)
+	esValue, esExist := observedNode.Status.Capacity[apiv1.ResourceName(ephemeralStorageKey)]
+	assert.True(t, esExist)
+	assert.Equal(t, int64(20), esValue.Value())
+	_, ipExist := observedNode.Status.Capacity[apiv1.ResourceName(vpcIPKey)]
+	assert.False(t, ipExist)
+
+	// Nod with labels
+	GPULabelValue := "nvidia-telsa-v100"
+	observedNode, observedErr = awsManager.buildNodeFromTemplate(asg, &asgTemplate{
+		InstanceType: c5Instance,
+		Tags: []*autoscaling.TagDescription{
+			{
+				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/label/%s", GPULabel)),
+				Value: aws.String(GPULabelValue),
+			},
+		},
+	})
+	assert.NoError(t, observedErr)
+	gpuValue, gpuLabelExist := observedNode.Labels[GPULabel]
+	assert.True(t, gpuLabelExist)
+	assert.Equal(t, GPULabelValue, gpuValue)
+
+	// Node with taints
+	gpuTaint := apiv1.Taint{
+		Key:    "nvidia.com/gpu",
+		Value:  "present",
+		Effect: "NoSchedule",
+	}
+	observedNode, observedErr = awsManager.buildNodeFromTemplate(asg, &asgTemplate{
+		InstanceType: c5Instance,
+		Tags: []*autoscaling.TagDescription{
+			{
+				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/taint/%s", gpuTaint.Key)),
+				Value: aws.String(fmt.Sprintf("%s:%s", gpuTaint.Value, gpuTaint.Effect)),
+			},
+		},
+	})
+
+	assert.NoError(t, observedErr)
+	observedTaints := observedNode.Spec.Taints
+	assert.Equal(t, 1, len(observedTaints))
+	assert.Equal(t, gpuTaint, observedTaints[0])
 }
 
 func TestExtractLabelsFromAsg(t *testing.T) {
@@ -207,9 +278,16 @@ func TestFetchExplicitAsgs(t *testing.T) {
 		mock.AnythingOfType("func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool"),
 	).Run(func(args mock.Arguments) {
 		fn := args.Get(1).(func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool)
+		zone := "test-1a"
 		fn(&autoscaling.DescribeAutoScalingGroupsOutput{
 			AutoScalingGroups: []*autoscaling.Group{
-				{AutoScalingGroupName: aws.String(groupname)},
+				{
+					AvailabilityZones:    []*string{&zone},
+					AutoScalingGroupName: aws.String(groupname),
+					MinSize:              aws.Int64(int64(min)),
+					MaxSize:              aws.Int64(int64(max)),
+					DesiredCapacity:      aws.Int64(int64(min)),
+				},
 			}}, false)
 	}).Return(nil)
 
@@ -226,7 +304,7 @@ func TestFetchExplicitAsgs(t *testing.T) {
 	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
 	os.Setenv("AWS_REGION", "fanghorn")
 	// fetchExplicitASGs is called at manager creation time.
-	m, err := createAWSManagerInternal(nil, do, &autoScalingWrapper{s, map[string]string{}}, nil)
+	m, err := createAWSManagerInternal(nil, do, &autoScalingWrapper{s, newLaunchConfigurationInstanceTypeCache()}, nil)
 	assert.NoError(t, err)
 
 	asgs := m.asgCache.Get()
@@ -258,14 +336,73 @@ func TestBuildInstanceType(t *testing.T) {
 	assert.NoError(t, err)
 
 	asg := asg{
-		LaunchTemplateName:    ltName,
-		LaunchTemplateVersion: ltVersion,
+		LaunchTemplate: &launchTemplate{name: ltName, version: ltVersion},
 	}
 
 	builtInstanceType, err := m.buildInstanceType(&asg)
 
 	assert.NoError(t, err)
 	assert.Equal(t, instanceType, builtInstanceType)
+}
+
+func TestBuildInstanceTypeMixedInstancePolicyOverride(t *testing.T) {
+	ltName, ltVersion, instanceType := "launcher", "1", "t2.large"
+	instanceTypes := []string{}
+
+	s := &EC2Mock{}
+	s.On("DescribeLaunchTemplateVersions", &ec2.DescribeLaunchTemplateVersionsInput{
+		LaunchTemplateName: aws.String(ltName),
+		Versions:           []*string{aws.String(ltVersion)},
+	}).Return(&ec2.DescribeLaunchTemplateVersionsOutput{
+		LaunchTemplateVersions: []*ec2.LaunchTemplateVersion{
+			{
+				LaunchTemplateData: &ec2.ResponseLaunchTemplateData{
+					InstanceType: aws.String(instanceType),
+				},
+			},
+		},
+	})
+
+	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
+	os.Setenv("AWS_REGION", "fanghorn")
+	m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, &ec2Wrapper{s})
+	assert.NoError(t, err)
+
+	lt := &launchTemplate{name: ltName, version: ltVersion}
+	asg := asg{
+		MixedInstancesPolicy: &mixedInstancesPolicy{
+			launchTemplate:         lt,
+			instanceTypesOverrides: instanceTypes,
+		},
+	}
+
+	builtInstanceType, err := m.buildInstanceType(&asg)
+
+	assert.NoError(t, err)
+	assert.Equal(t, instanceType, builtInstanceType)
+}
+
+func TestBuildInstanceTypeMixedInstancePolicyNoOverride(t *testing.T) {
+	ltName, ltVersion := "launcher", "1"
+	instanceTypes := []string{"m4.xlarge", "m5.xlarge"}
+
+	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
+	os.Setenv("AWS_REGION", "fanghorn")
+	m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, &ec2Wrapper{})
+	assert.NoError(t, err)
+
+	lt := &launchTemplate{name: ltName, version: ltVersion}
+	asg := asg{
+		MixedInstancesPolicy: &mixedInstancesPolicy{
+			launchTemplate:         lt,
+			instanceTypesOverrides: instanceTypes,
+		},
+	}
+
+	builtInstanceType, err := m.buildInstanceType(&asg)
+
+	assert.NoError(t, err)
+	assert.Equal(t, instanceTypes[0], builtInstanceType)
 }
 
 func TestGetASGTemplate(t *testing.T) {
@@ -323,11 +460,12 @@ func TestGetASGTemplate(t *testing.T) {
 			assert.NoError(t, err)
 
 			asg := &asg{
-				AwsRef:                AwsRef{Name: "sample"},
-				AvailabilityZones:     test.availabilityZones,
-				LaunchTemplateName:    ltName,
-				LaunchTemplateVersion: ltVersion,
-				Tags:                  tags,
+				AwsRef:            AwsRef{Name: "sample"},
+				AvailabilityZones: test.availabilityZones,
+				LaunchTemplate: &launchTemplate{
+					name:    ltName,
+					version: ltVersion},
+				Tags: tags,
 			}
 
 			template, err := m.getAsgTemplate(asg)
@@ -381,11 +519,14 @@ func TestFetchAutoAsgs(t *testing.T) {
 		mock.AnythingOfType("func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool"),
 	).Run(func(args mock.Arguments) {
 		fn := args.Get(1).(func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool)
+		zone := "test-1a"
 		fn(&autoscaling.DescribeAutoScalingGroupsOutput{
 			AutoScalingGroups: []*autoscaling.Group{{
+				AvailabilityZones:    []*string{&zone},
 				AutoScalingGroupName: aws.String(groupname),
 				MinSize:              aws.Int64(int64(min)),
 				MaxSize:              aws.Int64(int64(max)),
+				DesiredCapacity:      aws.Int64(int64(min)),
 			}}}, false)
 	}).Return(nil).Twice()
 
@@ -397,7 +538,7 @@ func TestFetchAutoAsgs(t *testing.T) {
 	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
 	os.Setenv("AWS_REGION", "fanghorn")
 	// fetchAutoASGs is called at manager creation time, via forceRefresh
-	m, err := createAWSManagerInternal(nil, do, &autoScalingWrapper{s, map[string]string{}}, nil)
+	m, err := createAWSManagerInternal(nil, do, &autoScalingWrapper{s, newLaunchConfigurationInstanceTypeCache()}, nil)
 	assert.NoError(t, err)
 
 	asgs := m.asgCache.Get()
@@ -706,4 +847,65 @@ func flatTagSlice(filters []*autoscaling.Filter) []string {
 	// Sort slice for compare
 	sort.Strings(tags)
 	return tags
+}
+
+func TestParseASGAutoDiscoverySpecs(t *testing.T) {
+	cases := []struct {
+		name    string
+		specs   []string
+		want    []asgAutoDiscoveryConfig
+		wantErr bool
+	}{
+		{
+			name: "GoodSpecs",
+			specs: []string{
+				"asg:tag=tag,anothertag",
+				"asg:tag=cooltag,anothertag",
+				"asg:tag=label=value,anothertag",
+			},
+			want: []asgAutoDiscoveryConfig{
+				{Tags: map[string]string{"tag": "", "anothertag": ""}},
+				{Tags: map[string]string{"cooltag": "", "anothertag": ""}},
+				{Tags: map[string]string{"label": "value", "anothertag": ""}},
+			},
+		},
+		{
+			name:    "MissingASGType",
+			specs:   []string{"tag=tag,anothertag"},
+			wantErr: true,
+		},
+		{
+			name:    "WrongType",
+			specs:   []string{"mig:tag=tag,anothertag"},
+			wantErr: true,
+		},
+		{
+			name:    "KeyMissingValue",
+			specs:   []string{"asg:tag="},
+			wantErr: true,
+		},
+		{
+			name:    "ValueMissingKey",
+			specs:   []string{"asg:=tag"},
+			wantErr: true,
+		},
+		{
+			name:    "KeyMissingSeparator",
+			specs:   []string{"asg:tag"},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			do := cloudprovider.NodeGroupDiscoveryOptions{NodeGroupAutoDiscoverySpecs: tc.specs}
+			got, err := parseASGAutoDiscoverySpecs(do)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.True(t, assert.ObjectsAreEqualValues(tc.want, got), "\ngot: %#v\nwant: %#v", got, tc.want)
+		})
+	}
 }

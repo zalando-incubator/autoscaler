@@ -16,7 +16,6 @@
 
 set -o nounset
 set -o pipefail
-set -o errexit
 
 SCRIPT_ROOT=$(dirname ${BASH_SOURCE})/..
 
@@ -43,10 +42,29 @@ fi
 
 SUITE=$1
 
+export GO111MODULE=on
+
 case ${SUITE} in
   recommender|updater|admission-controller|actuation|full-vpa)
     export KUBECONFIG=$HOME/.kube/config
-    go test ${SCRIPT_ROOT}/e2e/v1beta2/*go -v -test.timeout=60m  --args --ginkgo.v=true --ginkgo.focus="\[VPA\] \[${SUITE}\]" --report-dir=/workspace/_artifacts --disable-log-dump
+    pushd ${SCRIPT_ROOT}/e2e
+    go test -mod vendor ./v1beta2/*go -v --test.timeout=60m --args --ginkgo.v=true --ginkgo.focus="\[VPA\] \[${SUITE}\]" --report-dir=/workspace/_artifacts --disable-log-dump
+    V1BETA2_RESULT=$?
+    go test -mod vendor ./v1/*go -v --test.timeout=60m --args --ginkgo.v=true --ginkgo.focus="\[VPA\] \[${SUITE}\]" --report-dir=/workspace/_artifacts --disable-log-dump
+    V1_RESULT=$?
+    popd
+    echo v1beta2 test result: ${V1BETA2_RESULT}
+    if [ $V1BETA2_RESULT -gt 0 ]; then
+      echo "Please check v1beta2 \"go test\" logs!"
+    fi
+    echo v1 test result: ${V1_RESULT}
+    if [ $V1_RESULT -gt 0 ]; then
+      echo "Please check v1 \"go test\" logs!"
+    fi
+    if [ $V1BETA2_RESULT -gt 0 ] || [ $V1_RESULT -gt 0 ]; then
+      echo "Tests failed"
+      exit 1
+    fi
     ;;
   *)
     print_help

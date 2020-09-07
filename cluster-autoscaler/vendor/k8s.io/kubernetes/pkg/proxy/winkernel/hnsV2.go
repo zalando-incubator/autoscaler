@@ -83,6 +83,9 @@ func (hns hnsV2) getEndpointByIpAddress(ip string, networkName string) (*endpoin
 	}
 
 	endpoints, err := hcn.ListEndpoints()
+	if err != nil {
+		return nil, fmt.Errorf("Failed to list endpoints: %v", err)
+	}
 	for _, endpoint := range endpoints {
 		equal := false
 		if endpoint.IpConfigurations != nil && len(endpoint.IpConfigurations) > 0 {
@@ -186,6 +189,8 @@ func (hns hnsV2) getLoadBalancer(endpoints []endpointsInfo, flags loadBalancerFl
 				if len(plist.FrontendVIPs) == 0 || plist.FrontendVIPs[0] != vip {
 					continue
 				}
+			} else if len(plist.FrontendVIPs) != 0 {
+				continue
 			}
 			LogJson(plist, "Found existing Hns loadbalancer policy resource", 1)
 			return &loadBalancerInfo{

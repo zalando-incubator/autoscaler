@@ -19,7 +19,7 @@ package azure
 import (
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-10-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-12-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2017-05-10/resources"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/stretchr/testify/assert"
@@ -29,12 +29,17 @@ import (
 )
 
 func newTestAzureManager(t *testing.T) *AzureManager {
+	vmssName := "test-asg"
+	skuName := "Standard_D4_v2"
+	location := "eastus"
+	var vmssCapacity int64 = 3
 	manager := &AzureManager{
 		env:                  azure.PublicCloud,
 		explicitlyConfigured: make(map[string]bool),
 		config: &Config{
-			ResourceGroup: "test",
-			VMType:        vmTypeVMSS,
+			ResourceGroup:       "test",
+			VMType:              vmTypeVMSS,
+			MaxDeploymentsCount: 2,
 		},
 
 		azClient: &azClient{
@@ -48,11 +53,24 @@ func newTestAzureManager(t *testing.T) *AzureManager {
 				FakeStore: make(map[string]map[string]compute.VirtualMachine),
 			},
 			virtualMachineScaleSetsClient: &VirtualMachineScaleSetsClientMock{
-				FakeStore: make(map[string]map[string]compute.VirtualMachineScaleSet),
+				FakeStore: map[string]map[string]compute.VirtualMachineScaleSet{
+					"test": {
+						"test-asg": {
+							Name: &vmssName,
+							Sku: &compute.Sku{
+								Capacity: &vmssCapacity,
+								Name:     &skuName,
+							},
+							VirtualMachineScaleSetProperties: &compute.VirtualMachineScaleSetProperties{},
+							Location:                         &location,
+						},
+					},
+				},
 			},
 			virtualMachineScaleSetVMsClient: &VirtualMachineScaleSetVMsClientMock{},
 		},
 	}
+
 	cache, error := newAsgCache()
 	assert.NoError(t, error)
 
@@ -108,6 +126,8 @@ func TestNodeGroupForNode(t *testing.T) {
 			ProviderID: "azure://" + fakeVirtualMachineScaleSetVMID,
 		},
 	}
+	// refresh cache
+	provider.azureManager.regenerateCache()
 	group, err := provider.NodeGroupForNode(node)
 	assert.NoError(t, err)
 	assert.NotNil(t, group, "Group should not be nil")
@@ -124,4 +144,22 @@ func TestNodeGroupForNode(t *testing.T) {
 	group, err = provider.NodeGroupForNode(nodeNotInGroup)
 	assert.NoError(t, err)
 	assert.Nil(t, group)
+}
+
+func TestNodeGroupForNodeWithNoProviderId(t *testing.T) {
+	provider := newTestProvider(t)
+	registered := provider.azureManager.RegisterAsg(
+		newTestScaleSet(provider.azureManager, "test-asg"))
+	assert.True(t, registered)
+	assert.Equal(t, len(provider.NodeGroups()), 1)
+
+	node := &apiv1.Node{
+		Spec: apiv1.NodeSpec{
+			ProviderID: "",
+		},
+	}
+	group, err := provider.NodeGroupForNode(node)
+
+	assert.NoError(t, err)
+	assert.Equal(t, group, nil)
 }

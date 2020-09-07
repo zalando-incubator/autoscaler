@@ -33,13 +33,16 @@ const (
 	// owner: @tallclair
 	// alpha: v1.5
 	// beta: v1.6
+	// deprecated: v1.18
 	//
 	// StreamingProxyRedirects controls whether the apiserver should intercept (and follow)
 	// redirects from the backend (Kubelet) for streaming requests (exec/attach/port-forward).
+	//
+	// This feature is deprecated, and will be removed in v1.22.
 	StreamingProxyRedirects featuregate.Feature = "StreamingProxyRedirects"
 
 	// owner: @tallclair
-	// alpha: v1.10
+	// alpha: v1.12
 	// beta: v1.14
 	//
 	// ValidateProxyRedirects controls whether the apiserver should validate that redirects are only
@@ -86,8 +89,16 @@ const (
 	// committing.
 	DryRun featuregate.Feature = "DryRun"
 
+	// owner: @caesarxuchao
+	// alpha: v1.15
+	//
+	// Allow apiservers to show a count of remaining items in the response
+	// to a chunking list request.
+	RemainingItemCount featuregate.Feature = "RemainingItemCount"
+
 	// owner: @apelisse, @lavalamp
 	// alpha: v1.14
+	// beta: v1.16
 	//
 	// Server-side apply. Merging happens on the server.
 	ServerSideApply featuregate.Feature = "ServerSideApply"
@@ -114,6 +125,8 @@ const (
 
 	// owner: @wojtek-t
 	// alpha: v1.15
+	// beta: v1.16
+	// GA: v1.17
 	//
 	// Enables support for watch bookmark events.
 	WatchBookmark featuregate.Feature = "WatchBookmark"
@@ -123,7 +136,19 @@ const (
 	//
 	//
 	// Enables managing request concurrency with prioritization and fairness at each server
-	RequestManagement featuregate.Feature = "RequestManagement"
+	APIPriorityAndFairness featuregate.Feature = "APIPriorityAndFairness"
+
+	// owner: @wojtek-t
+	// alpha: v1.16
+	//
+	// Deprecates and removes SelfLink from ObjectMeta and ListMeta.
+	RemoveSelfLink featuregate.Feature = "RemoveSelfLink"
+
+	// owner: @shaloulcy
+	// alpha: v1.18
+	//
+	// Allows label and field based indexes in apiserver watch cache to accelerate list operations.
+	SelectorIndex featuregate.Feature = "SelectorIndex"
 )
 
 func init() {
@@ -134,17 +159,20 @@ func init() {
 // To add a new feature, define a key for it above and add it here. The features will be
 // available throughout Kubernetes binaries.
 var defaultKubernetesFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
-	StreamingProxyRedirects: {Default: true, PreRelease: featuregate.Beta},
+	StreamingProxyRedirects: {Default: true, PreRelease: featuregate.Deprecated},
 	ValidateProxyRedirects:  {Default: true, PreRelease: featuregate.Beta},
 	AdvancedAuditing:        {Default: true, PreRelease: featuregate.GA},
 	DynamicAuditing:         {Default: false, PreRelease: featuregate.Alpha},
-	APIResponseCompression:  {Default: false, PreRelease: featuregate.Alpha},
+	APIResponseCompression:  {Default: true, PreRelease: featuregate.Beta},
 	APIListChunking:         {Default: true, PreRelease: featuregate.Beta},
 	DryRun:                  {Default: true, PreRelease: featuregate.Beta},
-	ServerSideApply:         {Default: false, PreRelease: featuregate.Alpha},
+	RemainingItemCount:      {Default: true, PreRelease: featuregate.Beta},
+	ServerSideApply:         {Default: true, PreRelease: featuregate.Beta},
 	StorageVersionHash:      {Default: true, PreRelease: featuregate.Beta},
 	WinOverlay:              {Default: false, PreRelease: featuregate.Alpha},
 	WinDSR:                  {Default: false, PreRelease: featuregate.Alpha},
-	WatchBookmark:           {Default: false, PreRelease: featuregate.Alpha},
-	RequestManagement:       {Default: false, PreRelease: featuregate.Alpha},
+	WatchBookmark:           {Default: true, PreRelease: featuregate.GA, LockToDefault: true},
+	APIPriorityAndFairness:  {Default: false, PreRelease: featuregate.Alpha},
+	RemoveSelfLink:          {Default: false, PreRelease: featuregate.Alpha},
+	SelectorIndex:           {Default: false, PreRelease: featuregate.Alpha},
 }

@@ -26,6 +26,25 @@ import (
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
+const (
+	// AzureProviderName gets the provider name of azure
+	AzureProviderName = "azure"
+	// AlicloudProviderName gets the provider name of alicloud
+	AlicloudProviderName = "alicloud"
+	// AwsProviderName gets the provider name of aws
+	AwsProviderName = "aws"
+	// BaiducloudProviderName gets the provider name of baiducloud
+	BaiducloudProviderName = "baiducloud"
+	// DigitalOceanProviderName gets the provider name of digitalocean
+	DigitalOceanProviderName = "digitalocean"
+	// GceProviderName gets the provider name of gce
+	GceProviderName = "gce"
+	// MagnumProviderName gets the provider name of magnum
+	MagnumProviderName = "magnum"
+	// KubemarkProviderName gets the provider name of kubemark
+	KubemarkProviderName = "kubemark"
+)
+
 // CloudProvider contains configuration info and functions for interacting with
 // cloud provider (GCE, AWS, etc).
 type CloudProvider interface {
@@ -122,6 +141,7 @@ type NodeGroup interface {
 	// Nodes returns a list of all nodes that belong to this node group.
 	// It is required that Instance objects returned by this method have Id field set.
 	// Other fields are optional.
+	// This list should include also instances that might have not become a kubernetes node yet.
 	Nodes() ([]Instance, error)
 
 	// TemplateNodeInfo returns a schedulernodeinfo.NodeInfo structure of an empty

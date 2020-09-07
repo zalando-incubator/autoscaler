@@ -1,7 +1,7 @@
 # Zalando Changes
 
 The current forked version of the Vertical Pod Autoscaler (VPA) is based on
-upstream **v0.7.1** with a number of changes that we've found useful when
+upstream **v0.8.0** with a number of changes that we've found useful when
 running a significant number of vertical pod autoscaled workloads in
 Kubernetes.
 
@@ -26,4 +26,3 @@ changes around the OOMKill handling to improve this situation:
 * Recommender: don't ignore errors ([#19](https://github.com/zalando-incubator/autoscaler/pull/19))
 * Fix error logging for container metrics input ([#20](https://github.com/zalando-incubator/autoscaler/pull/20))
 * Added a timeout of 10 seconds for the webhook call ([#26](https://github.com/zalando-incubator/autoscaler/pull/26))
-* VPA: state we have no side effects in the CRD ([#27](https://github.com/zalando-incubator/autoscaler/pull/27))

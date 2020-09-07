@@ -54,6 +54,7 @@ func TestGetDaemonSetPodsForNode(t *testing.T) {
 
 	{
 		daemonSets, err := GetDaemonSetPodsForNode(nodeInfo, []*appsv1.DaemonSet{ds1, ds2}, predicateChecker)
+
 		assert.NoError(t, err)
 		assert.Equal(t, 1, len(daemonSets))
 		assert.True(t, strings.HasPrefix(daemonSets[0].Name, "ds1"))

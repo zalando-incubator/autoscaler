@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -75,6 +76,13 @@ func GetNodeInfosForGroups(nodes []*apiv1.Node, nodeInfoCache map[string]*schedu
 			return true, id, nil
 		}
 		return false, "", nil
+	}
+
+	// If this is enabled, always construct a sample node from the provider template node
+	if forceTemplateFromCloudProvider {
+		processNode = func(node *apiv1.Node) (bool, string, errors.AutoscalerError) {
+			return false, "", nil
+		}
 	}
 
 	for _, node := range nodes {
@@ -172,10 +180,11 @@ func GetNodeInfoFromTemplate(nodeGroup cloudprovider.NodeGroup, daemonsets []*ap
 		return nil, errors.ToAutoscalerError(errors.CloudProviderError, err)
 	}
 
-	pods, err := daemonset.GetDaemonSetPodsForNode(baseNodeInfo, daemonsets, predicateChecker)
+	daemonsetPods, err := daemonset.GetDaemonSetPodsForNode(baseNodeInfo, daemonsets, predicateChecker)
 	if err != nil {
 		return nil, errors.ToAutoscalerError(errors.InternalError, err)
 	}
+	pods := effectiveNodePods(daemonsetPods, baseNodeInfo.Pods())
 	pods = append(pods, baseNodeInfo.Pods()...)
 	fullNodeInfo := schedulernodeinfo.NewNodeInfo(pods...)
 	fullNodeInfo.SetNode(baseNodeInfo.Node())
@@ -184,6 +193,29 @@ func GetNodeInfoFromTemplate(nodeGroup cloudprovider.NodeGroup, daemonsets []*ap
 		return nil, typedErr
 	}
 	return sanitizedNodeInfo, nil
+}
+
+// effectiveNodePods tries to remove the hardcoded kube-proxy mirror pod for AWS cloud provider
+// that is assumed to be present if kube-proxy is running as a daemonset. This is a ridiculous hack,
+// but so is the hardcoding itself, so whatever. Returns a concatenation of daemonsetPods and nodePods,
+// with nodePods either including the fake kube-proxy pod or not.
+func effectiveNodePods(daemonsetPods, nodePods []*apiv1.Pod) []*apiv1.Pod {
+	foundDaemonsetKubeProxy := false
+	for _, pod := range daemonsetPods {
+		if pod.Namespace == "kube-system" && strings.Contains(pod.Name, "kube-proxy") {
+			foundDaemonsetKubeProxy = true
+		}
+	}
+
+	result := make([]*apiv1.Pod, len(daemonsetPods))
+	copy(result, daemonsetPods)
+	for _, pod := range nodePods {
+		if cloudprovider.IsFakeKubeProxyPod(pod) && foundDaemonsetKubeProxy {
+			continue
+		}
+		result = append(result, pod)
+	}
+	return result
 }
 
 // FilterOutNodesFromNotAutoscaledGroups return subset of input nodes for which cloud provider does not

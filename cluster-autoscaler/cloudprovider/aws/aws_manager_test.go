@@ -345,7 +345,7 @@ func TestBuildInstanceTypes(t *testing.T) {
 }
 
 func TestBuildInstanceTypeMixedInstancePolicyOverride(t *testing.T) {
-	ltName, ltVersion, instanceType := "launcher", "1", "t2.large"
+	ltName, ltVersion, instanceType := "launcher", "1", []string{"t2.large"}
 	instanceTypeOverrides := []string{}
 
 	s := &EC2Mock{}
@@ -356,7 +356,7 @@ func TestBuildInstanceTypeMixedInstancePolicyOverride(t *testing.T) {
 		LaunchTemplateVersions: []*ec2.LaunchTemplateVersion{
 			{
 				LaunchTemplateData: &ec2.ResponseLaunchTemplateData{
-					InstanceType: aws.String(instanceType),
+					InstanceType: aws.String(instanceType[0]),
 				},
 			},
 		},
@@ -379,7 +379,7 @@ func TestBuildInstanceTypeMixedInstancePolicyOverride(t *testing.T) {
 	builtInstanceType, err := m.buildInstanceTypes(&asg)
 
 	assert.NoError(t, err)
-	assert.Equal(t, []string{instanceType}, builtInstanceType)
+	assert.Equal(t, instanceType, builtInstanceType)
 }
 
 func TestBuildInstanceTypeMixedInstancePolicyNoOverride(t *testing.T) {

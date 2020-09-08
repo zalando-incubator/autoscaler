@@ -452,8 +452,7 @@ func TestScaleUpTemplateFromCloudProvider(t *testing.T) {
 			{groupName: "ng2", sizeChange: 1},
 		},
 		scaleUpStatus: scaleUpStatusInfo{
-			// TODO
-			podsTriggeredScaleUp: []string{"extra-gpu-pod-1", "extra-gpu-pod-2", "extra-gpu-pod-3"},
+			podsTriggeredScaleUp: []string{"p-new"},
 		},
 	}
 
@@ -518,8 +517,7 @@ func TestScaleUpTemplateFromCloudProviderReservedResources(t *testing.T) {
 			{groupName: "ng4", sizeChange: 1},
 		},
 		scaleUpStatus: scaleUpStatusInfo{
-			// TODO
-			podsTriggeredScaleUp: []string{"extra-gpu-pod-1", "extra-gpu-pod-2", "extra-gpu-pod-3"},
+			podsTriggeredScaleUp: []string{"p-new"},
 		},
 	}
 

@@ -42,9 +42,9 @@ func FastGetPodsToMove(nodeInfo *schedulernodeinfo.NodeInfo, skipNodesWithSystem
 	// Ideally this should be in drain.GetPodsForDeletionOnNodeDrain, but I don't want to modify
 	// its already complicated signature and logic because of the merge conflicts later. Let's
 	// plop it here instead.
-	err := checkJobPods(nodeInfo.Pods())
+	blockingPod, err := checkJobPods(nodeInfo.Pods())
 	if err != nil {
-		return nil, nil, err
+		return nil, blockingPod, err
 	}
 
 	pods, blockingPod, err := drain.GetPodsForDeletionOnNodeDrain(
@@ -79,9 +79,9 @@ func DetailedGetPodsForMove(nodeInfo *schedulernodeinfo.NodeInfo, skipNodesWithS
 	// Ideally this should be in drain.GetPodsForDeletionOnNodeDrain, but I don't want to modify
 	// its already complicated signature and logic because of the merge conflicts later. Let's
 	// plop it here instead.
-	err := checkJobPods(nodeInfo.Pods())
+	blockingPod, err := checkJobPods(nodeInfo.Pods())
 	if err != nil {
-		return nil, nil, err
+		return nil, blockingPod, err
 	}
 
 	pods, blockingPod, err := drain.GetPodsForDeletionOnNodeDrain(
@@ -103,15 +103,15 @@ func DetailedGetPodsForMove(nodeInfo *schedulernodeinfo.NodeInfo, skipNodesWithS
 	return pods, nil, nil
 }
 
-func checkJobPods(pods []*apiv1.Pod) error {
+func checkJobPods(pods []*apiv1.Pod) (*drain.BlockingPod, error) {
 	for _, pod := range pods {
 		for _, ownerReference := range pod.OwnerReferences {
 			if strings.HasPrefix(ownerReference.APIVersion, "batch/") && ownerReference.Kind == "Job" {
-				return fmt.Errorf("job pod %s/%s is unmovable", pod.Namespace, pod.Name)
+				return &drain.BlockingPod{Pod: pod, Reason: drain.NotReplicated}, fmt.Errorf("job pod %s/%s is unmovable", pod.Namespace, pod.Name)
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func checkPdbs(pods []*apiv1.Pod, pdbs []*policyv1.PodDisruptionBudget) (*drain.BlockingPod, error) {

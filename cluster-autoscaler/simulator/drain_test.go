@@ -222,6 +222,7 @@ func TestFastGetPodsToMove(t *testing.T) {
 			OwnerReferences: GenerateOwnerReferences("job", "Job", "batch/v1", ""),
 		},
 	}
-	_, _, err = FastGetPodsToMove(schedulernodeinfo.NewNodeInfo(pod10), true, true, nil)
+	_, blockingPod, err = FastGetPodsToMove(schedulernodeinfo.NewNodeInfo(pod10), true, true, nil)
 	assert.Error(t, err)
+	assert.Equal(t, &drain.BlockingPod{Pod: pod10, Reason: drain.NotReplicated}, blockingPod)
 }

@@ -550,9 +550,9 @@ func buildGenericLabels(template *asgTemplate, nodeName string) map[string]strin
 	result[apiv1.LabelHostname] = nodeName
 
 	// TODO remove when we update to a recent version
-	result["node.kubernetes.io/instance-type"] = result[apiv1.LabelInstanceType]
-	result["topology.kubernetes.io/region"] = template.Region
-	result["topology.kubernetes.io/zone"] = template.Zone
+	result[apiv1.LabelInstanceTypeStable] = result[apiv1.LabelInstanceType]
+	result[apiv1.LabelZoneRegionStable] = template.Region
+	result[apiv1.LabelZoneFailureDomainStable] = template.Zone
 
 	return result
 }

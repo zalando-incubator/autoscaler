@@ -74,17 +74,17 @@ type AwsManager struct {
 	reservedResources apiv1.ResourceList
 }
 
+type instanceResourceInfo struct {
+	InstanceType string
+	Capacity     apiv1.ResourceList
+	Allocatable  apiv1.ResourceList
+}
+
 type asgTemplate struct {
 	AvailableResources []*instanceResourceInfo
 	Region             string
 	Zone               string
 	Tags               []*autoscaling.TagDescription
-}
-
-type instanceResourceInfo struct {
-	InstanceType string
-	Capacity     apiv1.ResourceList
-	Allocatable  apiv1.ResourceList
 }
 
 func validateOverrides(cfg *provider_aws.CloudConfig) error {
@@ -376,7 +376,7 @@ func (m *AwsManager) buildInstanceTypes(asg *asg) ([]string, error) {
 		return []string{mainType}, err
 	}
 
-	return nil, fmt.Errorf("Unable to get instance type from launch config or launch template")
+	return nil, errors.New("Unable to get instance type from launch config or launch template")
 }
 
 func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*apiv1.Node, error) {

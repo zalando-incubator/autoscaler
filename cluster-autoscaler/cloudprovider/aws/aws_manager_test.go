@@ -75,12 +75,8 @@ func TestGetRegion(t *testing.T) {
 
 func TestBuildGenericLabels(t *testing.T) {
 	labels := buildGenericLabels(&asgTemplate{
-		AvailableResources: []*instanceResourceInfo{{InstanceType: &InstanceType{
-			InstanceType: "c4.large",
-			VCPU:         2,
-			MemoryMb:     3840,
-		}}},
-		Region: "us-east-1",
+		AvailableResources: []*instanceResourceInfo{{InstanceType: "c4.large"}},
+		Region:             "us-east-1",
 	}, "sillyname")
 	assert.Equal(t, "us-east-1", labels[apiv1.LabelZoneRegion])
 	assert.Equal(t, "sillyname", labels[apiv1.LabelHostname])
@@ -129,7 +125,7 @@ func TestBuildNodeFromTemplate(t *testing.T) {
 	ephemeralStorageValue := int64(20)
 	vpcIPKey := "vpc.amazonaws.com/PrivateIPv4Address"
 	observedNode, observedErr := awsManager.buildNodeFromTemplate(asg, &asgTemplate{
-		AvailableResources: []*instanceResourceInfo{{InstanceType: c5Instance}},
+		AvailableResources: []*instanceResourceInfo{{InstanceType: c5Instance.InstanceType}},
 		Tags: []*autoscaling.TagDescription{
 			{
 				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/resources/%s", ephemeralStorageKey)),
@@ -147,7 +143,7 @@ func TestBuildNodeFromTemplate(t *testing.T) {
 	// Nod with labels
 	GPULabelValue := "nvidia-telsa-v100"
 	observedNode, observedErr = awsManager.buildNodeFromTemplate(asg, &asgTemplate{
-		AvailableResources: []*instanceResourceInfo{{InstanceType: c5Instance}},
+		AvailableResources: []*instanceResourceInfo{{InstanceType: c5Instance.InstanceType}},
 		Tags: []*autoscaling.TagDescription{
 			{
 				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/label/%s", GPULabel)),
@@ -167,7 +163,7 @@ func TestBuildNodeFromTemplate(t *testing.T) {
 		Effect: "NoSchedule",
 	}
 	observedNode, observedErr = awsManager.buildNodeFromTemplate(asg, &asgTemplate{
-		AvailableResources: []*instanceResourceInfo{{InstanceType: c5Instance}},
+		AvailableResources: []*instanceResourceInfo{{InstanceType: c5Instance.InstanceType}},
 		Tags: []*autoscaling.TagDescription{
 			{
 				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/taint/%s", gpuTaint.Key)),
@@ -480,7 +476,7 @@ func TestGetASGTemplate(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				if assert.NotNil(t, template) {
-					assert.Equal(t, test.instanceType, template.AvailableResources[0].InstanceType.InstanceType)
+					assert.Equal(t, test.instanceType, template.AvailableResources[0].InstanceType)
 					assert.Equal(t, region, template.Region)
 					assert.Equal(t, test.availabilityZones[0], template.Zone)
 					assert.Equal(t, tags, template.Tags)

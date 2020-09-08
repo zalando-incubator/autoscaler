@@ -82,7 +82,7 @@ type asgTemplate struct {
 }
 
 type instanceResourceInfo struct {
-	InstanceType *InstanceType
+	InstanceType string
 	Capacity     apiv1.ResourceList
 	Allocatable  apiv1.ResourceList
 }
@@ -450,7 +450,7 @@ func (m *AwsManager) availableResources(instanceType string) (*instanceResourceI
 	// and subtract the maximum reserved CPU/memory across all the nodes in the cluster to get
 	// the allocatable value.
 	template := &instanceResourceInfo{
-		InstanceType: &InstanceType{InstanceType: awsTemplate.InstanceType},
+		InstanceType: awsTemplate.InstanceType,
 		Capacity: apiv1.ResourceList{
 			apiv1.ResourceCPU:     cpuCapacity,
 			apiv1.ResourceMemory:  memCapacity,
@@ -487,7 +487,7 @@ func (m *AwsManager) updateAvailableResources(nodes []*apiv1.Node) {
 		resources, ok := instanceResources[instanceType]
 		if !ok {
 			resources = &instanceResourceInfo{
-				InstanceType: &InstanceType{InstanceType: instanceType},
+				InstanceType: instanceType,
 				Capacity:     make(apiv1.ResourceList),
 				Allocatable:  make(apiv1.ResourceList),
 			}
@@ -540,7 +540,7 @@ func buildGenericLabels(template *asgTemplate, nodeName string) map[string]strin
 	result[kubeletapis.LabelOS] = cloudprovider.DefaultOS
 
 	if len(template.AvailableResources) == 1 {
-		result[apiv1.LabelInstanceType] = template.AvailableResources[0].InstanceType.InstanceType
+		result[apiv1.LabelInstanceType] = template.AvailableResources[0].InstanceType
 	} else {
 		result[apiv1.LabelInstanceType] = "<multiple>"
 	}

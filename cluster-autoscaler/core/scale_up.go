@@ -602,11 +602,6 @@ func buildNodeInfoForNodeTemplate(nodeTemplate *schedulernodeinfo.NodeInfo, inde
 	return nodeInfo
 }
 
-type podsPredicatePassingCheckFunctions struct {
-	getPodsPassingPredicates    func(nodeGroupId string) ([]*apiv1.Pod, error)
-	getPodsNotPassingPredicates func(nodeGroupId string) (map[*apiv1.Pod]status.Reasons, error)
-}
-
 func getRemainingPods(egs []*podEquivalenceGroup, skipped map[string]status.Reasons) []status.NoScaleUpInfo {
 	remaining := []status.NoScaleUpInfo{}
 	for _, eg := range egs {

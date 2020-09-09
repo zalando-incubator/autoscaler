@@ -444,7 +444,8 @@ func TestScaleUpTemplateFromCloudProvider(t *testing.T) {
 			{"t-n1", 100, 100 * utils.MiB, 0, true, "ng1"},
 			{"t-n2", 1000, 1000 * utils.MiB, 0, true, "ng2"},
 		},
-		options: options,
+		expansionOptionToChoose: groupSizeChange{groupName: "ng2", sizeChange: 1},
+		options:                 options,
 	}
 	results := &scaleTestResults{
 		finalOption: groupSizeChange{groupName: "ng2", sizeChange: 1},
@@ -465,55 +466,59 @@ func TestScaleUpTemplateFromCloudProviderReservedResources(t *testing.T) {
 
 	config := &scaleTestConfig{
 		nodes: []nodeConfig{
-			{"n1", 500, 500, 0, true, "ng1"},
-			{"n2", 500, 500, 0, true, "ng2"},
-			{"n3", 500, 500, 0, true, "ng3"},
+			{"n1", 500, 500 * utils.MiB, 0, true, "ng1"},
+			{"n2", 500, 500 * utils.MiB, 0, true, "ng2"},
+			{"n3", 500, 500 * utils.MiB, 0, true, "ng3"},
 		},
 		pods: []podConfig{
-			{"p1", 80, 0, 0, "n1", false},
-			{"p2", 80, 0, 0, "n2", false},
-			{"p3", 80, 0, 0, "n3", false},
+			{"p1", 80, 0 * utils.MiB, 0, "n1", false},
+			{"p2", 80, 0 * utils.MiB, 0, "n2", false},
+			{"p3", 80, 0 * utils.MiB, 0, "n3", false},
 		},
 		extraPods: []podConfig{
-			{"p-new", 400, 400, 0, "", false},
+			{"p-new", 400, 400 * utils.MiB, 0, "", false},
 		},
 		templateNodes: []nodeConfig{
-			{"t-n1", 500, 500, 0, true, "ng1"},
-			{"t-n2", 500, 500, 0, true, "ng2"},
-			{"t-n3", 500, 500, 0, true, "ng3"},
-			{"t-n4", 600, 600, 0, true, "ng4"},
+			{"t-n1", 500, 500 * utils.MiB, 0, true, "ng1"},
+			{"t-n2", 500, 500 * utils.MiB, 0, true, "ng2"},
+			{"t-n3", 500, 500 * utils.MiB, 0, true, "ng3"},
+			{"t-n4", 600, 600 * utils.MiB, 0, true, "ng4"},
 		},
 		reservedResources: map[string]apiv1.ResourceList{
 			"n1": {
 				apiv1.ResourceCPU:    resource.MustParse("200m"),
-				apiv1.ResourceMemory: resource.MustParse("100"),
+				apiv1.ResourceMemory: resource.MustParse("100Mi"),
 			},
 			"n2": {
 				apiv1.ResourceCPU:    resource.MustParse("100m"),
-				apiv1.ResourceMemory: resource.MustParse("200"),
+				apiv1.ResourceMemory: resource.MustParse("200Mi"),
 			},
 			"n3": {
 				apiv1.ResourceCPU:    resource.MustParse("50m"),
-				apiv1.ResourceMemory: resource.MustParse("50"),
+				apiv1.ResourceMemory: resource.MustParse("50Mi"),
 			},
 			"t-n1": {
 				apiv1.ResourceCPU:    resource.MustParse("50m"),
-				apiv1.ResourceMemory: resource.MustParse("50"),
+				apiv1.ResourceMemory: resource.MustParse("50Mi"),
 			},
 			"t-n2": {
 				apiv1.ResourceCPU:    resource.MustParse("50m"),
-				apiv1.ResourceMemory: resource.MustParse("50"),
+				apiv1.ResourceMemory: resource.MustParse("50Mi"),
 			},
 			"t-n3": {
 				apiv1.ResourceCPU:    resource.MustParse("50m"),
-				apiv1.ResourceMemory: resource.MustParse("50"),
+				apiv1.ResourceMemory: resource.MustParse("50Mi"),
 			},
 		},
-		options: options,
+		expansionOptionToChoose: groupSizeChange{groupName: "ng4", sizeChange: 1},
+		options:                 options,
 	}
 	results := &scaleTestResults{
 		finalOption: groupSizeChange{groupName: "ng4", sizeChange: 1},
 		expansionOptions: []groupSizeChange{
+			{groupName: "ng1", sizeChange: 1},
+			{groupName: "ng2", sizeChange: 1},
+			{groupName: "ng3", sizeChange: 1},
 			{groupName: "ng4", sizeChange: 1},
 		},
 		scaleUpStatus: scaleUpStatusInfo{

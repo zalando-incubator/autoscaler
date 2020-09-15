@@ -213,4 +213,16 @@ func TestFastGetPodsToMove(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Nil(t, blockingPod)
 	assert.Equal(t, 1, len(r9))
+
+	// Job
+	pod10 := &apiv1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "pod10",
+			Namespace:       "ns",
+			OwnerReferences: GenerateOwnerReferences("job", "Job", "batch/v1", ""),
+		},
+	}
+	_, blockingPod, err = FastGetPodsToMove(schedulernodeinfo.NewNodeInfo(pod10), true, true, nil)
+	assert.Error(t, err)
+	assert.Equal(t, &drain.BlockingPod{Pod: pod10, Reason: drain.NotReplicated}, blockingPod)
 }

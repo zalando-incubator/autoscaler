@@ -36,6 +36,7 @@ import (
 	"k8s.io/apiserver/pkg/server/routes"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	cloudBuilder "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/builder"
+	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/core"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
@@ -43,6 +44,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
 	ca_processors "k8s.io/autoscaler/cluster-autoscaler/processors"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/backoff"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/units"
@@ -168,9 +170,15 @@ var (
 	regional                      = flag.Bool("regional", false, "Cluster is regional.")
 	newPodScaleUpDelay            = flag.Duration("new-pod-scale-up-delay", 0*time.Second, "Pods less than this old will not be considered for scale-up.")
 
+	scaleUpTemplateFromCloudProvider = flag.Bool("scale-up-cloud-provider-template", false,
+		"Should CA build the template nodes using up-to-date cloud provider configuration instead of a random existing node.")
+
 	ignoreTaintsFlag         = multiStringFlag("ignore-taint", "Specifies a taint to ignore in node templates when considering to scale a node group")
 	awsUseStaticInstanceList = flag.Bool("aws-use-static-instance-list", false, "Should CA fetch instance types in runtime or use a static list. AWS only")
 	enableProfiling          = flag.Bool("profiling", false, "Is debug/pprof endpoint enabled")
+	nodePoolBackoffInitial   = flag.Duration("node-pool-backoff-initial", clusterstate.InitialNodeGroupBackoffDuration, "Duration of first backoff after a new node failed to start.")
+	nodePoolBackoffMax       = flag.Duration("node-pool-backoff-max", clusterstate.MaxNodeGroupBackoffDuration, "Maximum backoff duration after new nodes failed to start.")
+	nodePoolBackoffReset     = flag.Duration("node-pool-backoff-reset", clusterstate.NodeGroupBackoffResetTimeout, "Time after last failed scale-up when the backoff duration is reset.")
 )
 
 func createAutoscalingOptions() config.AutoscalingOptions {
@@ -234,11 +242,16 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		ExpendablePodsPriorityCutoff:     *expendablePodsPriorityCutoff,
 		Regional:                         *regional,
 		NewPodScaleUpDelay:               *newPodScaleUpDelay,
+		ScaleUpTemplateFromCloudProvider: *scaleUpTemplateFromCloudProvider,
 		IgnoredTaints:                    *ignoreTaintsFlag,
 		KubeConfigPath:                   *kubeConfigFile,
 		NodeDeletionDelayTimeout:         *nodeDeletionDelayTimeout,
 		AWSUseStaticInstanceList:         *awsUseStaticInstanceList,
 	}
+}
+
+func createBackoff() backoff.Backoff {
+	return backoff.NewIdBasedExponentialBackoff(*nodePoolBackoffInitial, *nodePoolBackoffMax, *nodePoolBackoffReset)
 }
 
 func getKubeConfig() *rest.Config {
@@ -304,6 +317,7 @@ func buildAutoscaler() (core.Autoscaler, error) {
 		KubeClient:         kubeClient,
 		EventsKubeClient:   eventsKubeClient,
 		Processors:         processors,
+		Backoff:            createBackoff(),
 	}
 
 	// This metric should be published only once.

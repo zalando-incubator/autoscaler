@@ -83,6 +83,9 @@ type scaleTestConfig struct {
 
 	expectedScaleDowns     []string
 	expectedScaleDownCount int
+
+	reservedResources map[string]apiv1.ResourceList // separate so we don't have to modify nodeConfig and constantly deal with conflicts later
+	templateNodes     []nodeConfig
 }
 
 type scaleTestResults struct {

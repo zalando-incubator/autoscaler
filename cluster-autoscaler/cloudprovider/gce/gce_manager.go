@@ -71,7 +71,7 @@ var (
 // GceManager handles GCE communication and data caching.
 type GceManager interface {
 	// Refresh triggers refresh of cached resources.
-	Refresh() error
+	Refresh(existingNodes []*apiv1.Node) error
 	// Cleanup cleans up open resources before the cloud provider is destroyed, i.e. go routines etc.
 	Cleanup() error
 
@@ -276,7 +276,7 @@ func (m *gceManagerImpl) GetMigNodes(mig Mig) ([]cloudprovider.Instance, error) 
 }
 
 // Refresh triggers refresh of cached resources.
-func (m *gceManagerImpl) Refresh() error {
+func (m *gceManagerImpl) Refresh(existingNodes []*apiv1.Node) error {
 	m.cache.InvalidateAllMigTargetSizes()
 	if m.lastRefresh.Add(refreshInterval).After(time.Now()) {
 		return nil

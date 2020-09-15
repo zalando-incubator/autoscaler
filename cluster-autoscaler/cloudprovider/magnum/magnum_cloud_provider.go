@@ -128,7 +128,7 @@ func (mcp *magnumCloudProvider) GetInstanceID(node *apiv1.Node) string {
 // Refresh is called before every autoscaler main loop.
 //
 // Currently only prints debug information.
-func (mcp *magnumCloudProvider) Refresh() error {
+func (mcp *magnumCloudProvider) Refresh(existingNodes []*apiv1.Node) error {
 	for _, nodegroup := range mcp.nodeGroups {
 		klog.V(3).Info(nodegroup.Debug())
 	}

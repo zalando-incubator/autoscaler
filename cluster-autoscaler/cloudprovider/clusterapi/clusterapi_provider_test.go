@@ -69,7 +69,7 @@ func TestProviderConstructorProperties(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 
-	if err := provider.Refresh(); err != nil {
+	if err := provider.Refresh(nil); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 

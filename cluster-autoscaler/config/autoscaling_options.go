@@ -139,4 +139,7 @@ type AutoscalingOptions struct {
 	AWSUseStaticInstanceList bool
 	// Path to kube configuration if available
 	KubeConfigPath string
+	// ScaleUpTemplateFromCloudProvider tells if template node should be built from the up-to-date provider configuration (e.g. ASG launch configuration)
+	// instead of a random existing node.
+	ScaleUpTemplateFromCloudProvider bool
 }

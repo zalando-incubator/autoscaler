@@ -27,6 +27,7 @@ import (
 	autoscaler_errors "k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	apiv1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1beta1"
@@ -903,11 +904,11 @@ func TestScaleDown(t *testing.T) {
 	deletedNodes := make(chan string, 10)
 	fakeClient := &fake.Clientset{}
 
-	job := batchv1.Job{
+	rs := appsv1.ReplicaSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "job",
+			Name:      "rs",
 			Namespace: "default",
-			SelfLink:  "/apivs/batch/v1/namespaces/default/jobs/job",
+			SelfLink:  "/apis/apps/v1/namespaces/default/replicasets/rs",
 		},
 	}
 	n1 := BuildTestNode("n1", 1000, 1000)
@@ -915,7 +916,7 @@ func TestScaleDown(t *testing.T) {
 	n2 := BuildTestNode("n2", 1000, 1000)
 	SetNodeReadyState(n2, true, time.Time{})
 	p1 := BuildTestPod("p1", 100, 0)
-	p1.OwnerReferences = GenerateOwnerReferences(job.Name, "Job", "batch/v1", "")
+	p1.OwnerReferences = GenerateOwnerReferences(rs.Name, "ReplicaSet", "apps/v1", "")
 
 	p2 := BuildTestPod("p2", 800, 0)
 
@@ -964,9 +965,9 @@ func TestScaleDown(t *testing.T) {
 		ScaleDownUnneededTime:         time.Minute,
 		MaxGracefulTerminationSec:     60,
 	}
-	jobLister, err := kube_util.NewTestJobLister([]*batchv1.Job{&job})
+	rsLister, err := kube_util.NewTestReplicaSetLister([]*appsv1.ReplicaSet{&rs})
 	assert.NoError(t, err)
-	registry := kube_util.NewListerRegistry(nil, nil, nil, nil, nil, nil, nil, jobLister, nil, nil)
+	registry := kube_util.NewListerRegistry(nil, nil, nil, nil, nil, nil, nil, nil, rsLister, nil)
 
 	context, err := NewScaleTestAutoscalingContext(options, fakeClient, registry, provider, nil)
 	assert.NoError(t, err)

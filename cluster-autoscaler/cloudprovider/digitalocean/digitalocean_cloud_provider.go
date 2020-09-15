@@ -156,7 +156,7 @@ func (d *digitaloceanCloudProvider) Cleanup() error {
 // Refresh is called before every main loop and can be used to dynamically
 // update cloud provider state. In particular the list of node groups returned
 // by NodeGroups() can change as a result of CloudProvider.Refresh().
-func (d *digitaloceanCloudProvider) Refresh() error {
+func (d *digitaloceanCloudProvider) Refresh(existingNodes []*apiv1.Node) error {
 	klog.V(4).Info("Refreshing node group cache")
 	return d.manager.Refresh()
 }

@@ -62,8 +62,8 @@ func (m *gceManagerMock) GetMigNodes(mig Mig) ([]cloudprovider.Instance, error) 
 	return args.Get(0).([]cloudprovider.Instance), args.Error(1)
 }
 
-func (m *gceManagerMock) Refresh() error {
-	args := m.Called()
+func (m *gceManagerMock) Refresh(existingNodes []*apiv1.Node) error {
+	args := m.Called(existingNodes)
 	return args.Error(0)
 }
 

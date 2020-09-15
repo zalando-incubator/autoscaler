@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/glogx"
 
 	gce "google.golang.org/api/compute/v1"
 	"k8s.io/klog"
@@ -39,8 +40,12 @@ const (
 	// ErrorCodeQuotaExceeded is error code used in InstanceErrorInfo if quota exceeded error occurs.
 	ErrorCodeQuotaExceeded = "QUOTA_EXCEEDED"
 
-	// ErrorCodeStockout is error code used in InstanceErrorInfo if stockout occurs.
-	ErrorCodeStockout = "STOCKOUT"
+	// ErrorCodeResourcePoolExhausted is error code used in InstanceErrorInfo if requested resources
+	// cannot be provisioned by cloud provider.
+	ErrorCodeResourcePoolExhausted = "RESOURCE_POOL_EXHAUSTED"
+
+	// ErrorCodeOther is error code used in InstanceErrorInfo if other error occurs.
+	ErrorCodeOther = "OTHER"
 )
 
 // AutoscalingGceClient is used for communicating with GCE API.
@@ -48,16 +53,18 @@ type AutoscalingGceClient interface {
 	// reading resources
 	FetchMachineType(zone, machineType string) (*gce.MachineType, error)
 	FetchMachineTypes(zone string) ([]*gce.MachineType, error)
+	FetchAllMigs(zone string) ([]*gce.InstanceGroupManager, error)
 	FetchMigTargetSize(GceRef) (int64, error)
 	FetchMigBasename(GceRef) (string, error)
 	FetchMigInstances(GceRef) ([]cloudprovider.Instance, error)
 	FetchMigTemplate(GceRef) (*gce.InstanceTemplate, error)
 	FetchMigsWithName(zone string, filter *regexp.Regexp) ([]string, error)
 	FetchZones(region string) ([]string, error)
+	FetchAvailableCpuPlatforms() (map[string][]string, error)
 
 	// modifying resources
 	ResizeMig(GceRef, int64) error
-	DeleteInstances(migRef GceRef, instances []*GceRef) error
+	DeleteInstances(migRef GceRef, instances []GceRef) error
 }
 
 type autoscalingGceClientV1 struct {
@@ -110,11 +117,32 @@ func (client *autoscalingGceClientV1) FetchMachineType(zone, machineType string)
 
 func (client *autoscalingGceClientV1) FetchMachineTypes(zone string) ([]*gce.MachineType, error) {
 	registerRequest("machine_types", "list")
-	machines, err := client.gceService.MachineTypes.List(client.projectId, zone).Do()
+	var machineTypes []*gce.MachineType
+	err := client.gceService.MachineTypes.List(client.projectId, zone).Pages(
+		context.TODO(),
+		func(page *gce.MachineTypeList) error {
+			machineTypes = append(machineTypes, page.Items...)
+			return nil
+		})
 	if err != nil {
 		return nil, err
 	}
-	return machines.Items, nil
+	return machineTypes, nil
+}
+
+func (client *autoscalingGceClientV1) FetchAllMigs(zone string) ([]*gce.InstanceGroupManager, error) {
+	registerRequest("instance_group_managers", "list")
+	var migs []*gce.InstanceGroupManager
+	err := client.gceService.InstanceGroupManagers.List(client.projectId, zone).Pages(
+		context.TODO(),
+		func(page *gce.InstanceGroupManagerList) error {
+			migs = append(migs, page.Items...)
+			return nil
+		})
+	if err != nil {
+		return nil, err
+	}
+	return migs, nil
 }
 
 func (client *autoscalingGceClientV1) FetchMigTargetSize(migRef GceRef) (int64, error) {
@@ -160,14 +188,14 @@ func (client *autoscalingGceClientV1) waitForOp(operation *gce.Operation, projec
 	return fmt.Errorf("timeout while waiting for operation %s on %s to complete.", operation.Name, operation.TargetLink)
 }
 
-func (client *autoscalingGceClientV1) DeleteInstances(migRef GceRef, instances []*GceRef) error {
+func (client *autoscalingGceClientV1) DeleteInstances(migRef GceRef, instances []GceRef) error {
+	registerRequest("instance_group_managers", "delete_instances")
 	req := gce.InstanceGroupManagersDeleteInstancesRequest{
 		Instances: []string{},
 	}
 	for _, i := range instances {
-		req.Instances = append(req.Instances, GenerateInstanceUrl(*i))
+		req.Instances = append(req.Instances, GenerateInstanceUrl(i))
 	}
-	registerRequest("instance_group_managers", "delete_instances")
 	op, err := client.gceService.InstanceGroupManagers.DeleteInstances(migRef.Project, migRef.Zone, migRef.Name, &req).Do()
 	if err != nil {
 		return err
@@ -176,12 +204,15 @@ func (client *autoscalingGceClientV1) DeleteInstances(migRef GceRef, instances [
 }
 
 func (client *autoscalingGceClientV1) FetchMigInstances(migRef GceRef) ([]cloudprovider.Instance, error) {
+	registerRequest("instance_group_managers", "list_managed_instances")
 	gceInstances, err := client.gceService.InstanceGroupManagers.ListManagedInstances(migRef.Project, migRef.Zone, migRef.Name).Do()
 	if err != nil {
 		klog.V(4).Infof("Failed MIG info request for %s %s %s: %v", migRef.Project, migRef.Zone, migRef.Name, err)
 		return nil, err
 	}
 	infos := []cloudprovider.Instance{}
+	errorCodeCounts := make(map[string]int)
+	errorLoggingQuota := glogx.NewLoggingQuota(100)
 	for _, gceInstance := range gceInstances.ManagedInstances {
 		ref, err := ParseInstanceUrlRef(gceInstance.Instance)
 		if err != nil {
@@ -206,18 +237,26 @@ func (client *autoscalingGceClientV1) FetchMigInstances(migRef GceRef) ([]cloudp
 			var errorInfo cloudprovider.InstanceErrorInfo
 			errorMessages := []string{}
 			errorFound := false
-			for _, instanceError := range getLastAttemptErrors(gceInstance) {
-				if isStockoutErrorCode(instanceError.Code) {
+			lastAttemptErrors := getLastAttemptErrors(gceInstance)
+			for _, instanceError := range lastAttemptErrors {
+				errorCodeCounts[instanceError.Code]++
+				if isResourcePoolExhaustedErrorCode(instanceError.Code) {
 					errorInfo.ErrorClass = cloudprovider.OutOfResourcesErrorClass
-					errorInfo.ErrorCode = ErrorCodeStockout
+					errorInfo.ErrorCode = ErrorCodeResourcePoolExhausted
 				} else if isQuotaExceededErrorCoce(instanceError.Code) {
 					errorInfo.ErrorClass = cloudprovider.OutOfResourcesErrorClass
 					errorInfo.ErrorCode = ErrorCodeQuotaExceeded
-				} else if !errorFound {
-					errorInfo.ErrorClass = cloudprovider.OtherErrorClass
+				} else if isInstanceNotRunningYet(gceInstance) {
+					if !errorFound {
+						// do not override error code with OTHER
+						errorInfo.ErrorClass = cloudprovider.OtherErrorClass
+						errorInfo.ErrorCode = ErrorCodeOther
+					}
+				} else {
+					// no error
+					continue
 				}
 				errorFound = true
-
 				if instanceError.Message != "" {
 					errorMessages = append(errorMessages, instanceError.Message)
 				}
@@ -226,9 +265,23 @@ func (client *autoscalingGceClientV1) FetchMigInstances(migRef GceRef) ([]cloudp
 			if errorFound {
 				instance.Status.ErrorInfo = &errorInfo
 			}
-		}
 
+			if len(lastAttemptErrors) > 0 {
+				gceInstanceJSONBytes, err := gceInstance.MarshalJSON()
+				var gceInstanceJSON string
+				if err != nil {
+					gceInstanceJSON = fmt.Sprintf("Got error from MarshalJSON; %v", err)
+				} else {
+					gceInstanceJSON = string(gceInstanceJSONBytes)
+				}
+				glogx.V(4).UpTo(errorLoggingQuota).Infof("Got GCE instance which is being created and has lastAttemptErrors; gceInstance=%v; errorInfo=%#v", gceInstanceJSON, errorInfo)
+			}
+		}
 		infos = append(infos, instance)
+	}
+	glogx.V(4).Over(errorLoggingQuota).Infof("Got %v other GCE instances being created with lastAttemptErrors", -errorLoggingQuota.Left())
+	if len(errorCodeCounts) > 0 {
+		klog.V(4).Infof("Spotted following instance creation error codes: %#v", errorCodeCounts)
 	}
 	return infos, nil
 }
@@ -240,12 +293,16 @@ func getLastAttemptErrors(instance *gce.ManagedInstance) []*gce.ManagedInstanceL
 	return nil
 }
 
-func isStockoutErrorCode(errorCode string) bool {
+func isResourcePoolExhaustedErrorCode(errorCode string) bool {
 	return errorCode == "RESOURCE_POOL_EXHAUSTED" || errorCode == "ZONE_RESOURCE_POOL_EXHAUSTED" || errorCode == "ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS"
 }
 
 func isQuotaExceededErrorCoce(errorCode string) bool {
 	return strings.Contains(errorCode, "QUOTA")
+}
+
+func isInstanceNotRunningYet(gceInstance *gce.ManagedInstance) bool {
+	return gceInstance.InstanceStatus == "" || gceInstance.InstanceStatus == "PROVISIONING" || gceInstance.InstanceStatus == "STAGING"
 }
 
 func (client *autoscalingGceClientV1) FetchZones(region string) ([]string, error) {
@@ -259,6 +316,22 @@ func (client *autoscalingGceClientV1) FetchZones(region string) ([]string, error
 		zones[i] = path.Base(link)
 	}
 	return zones, nil
+}
+
+func (client *autoscalingGceClientV1) FetchAvailableCpuPlatforms() (map[string][]string, error) {
+	availableCpuPlatforms := make(map[string][]string)
+	err := client.gceService.Zones.List(client.projectId).Pages(
+		context.TODO(),
+		func(zones *gce.ZoneList) error {
+			for _, zone := range zones.Items {
+				availableCpuPlatforms[zone.Name] = zone.AvailableCpuPlatforms
+			}
+			return nil
+		})
+	if err != nil {
+		return nil, err
+	}
+	return availableCpuPlatforms, nil
 }
 
 func (client *autoscalingGceClientV1) FetchMigTemplate(migRef GceRef) (*gce.InstanceTemplate, error) {

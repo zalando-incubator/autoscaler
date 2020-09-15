@@ -1,5 +1,5 @@
 /*
-Copyright 2019 The Kubernetes Authors.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,101 +17,144 @@ limitations under the License.
 package priority
 
 import (
-	"strconv"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
+
+	apiv1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
+
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
-	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 )
 
-func TestPriorityBased(t *testing.T) {
-	provider := testprovider.NewTestCloudProvider(nil, nil)
+const (
+	testNamespace                  = "default"
+	configWarnGroupNotFoundMessage = "Warning PriorityConfigMapNotMatchedGroup Priority expander: node group " +
+		"%s not found in priority expander configuration. The group won't be used."
+	configWarnConfigMapEmpty = "Warning PriorityConfigMapInvalid Wrong configuration for priority expander: " +
+		"priority configuration in cluster-autoscaler-priority-expander configmap is empty; please provide " +
+		"valid configuration. Ignoring update."
+	configWarnEmptyMsg = "priority configuration in cluster-autoscaler-priority-expander configmap is empty; please provide valid configuration"
+	configWarnParseMsg = "Can't parse YAML with priorities in the configmap"
+)
 
-	groupOptions := make(map[string]expander.Option)
-	nodeInfos := make(map[string]*schedulernodeinfo.NodeInfo)
-
-	for ngId, priority := range map[string]*int64{
-		"highPriority":      intPtr(200),
-		"veryHighPriority":  intPtr(300),
-		"veryHighPriority2": intPtr(300),
-		"noPriority":        nil,
-		"zeroPriority":      intPtr(0),
-		"lowPriority":       intPtr(100),
-	} {
-		provider.AddNodeGroup(ngId, 1, 10, 1)
-		node := BuildTestNode(ngId, 1000, 1000)
-		if priority != nil {
-			node.Labels["zalando.org/scaling-priority"] = strconv.FormatInt(*priority, 10)
-		}
-		provider.AddNode(ngId, node)
-
-		nodeGroup, _ := provider.NodeGroupForNode(node)
-		nodeInfo := schedulernodeinfo.NewNodeInfo()
-		_ = nodeInfo.SetNode(node)
-
-		groupOptions[ngId] = expander.Option{
-			NodeGroup: nodeGroup,
-			NodeCount: 1,
-			Debug:     ngId,
-		}
-		nodeInfos[ngId] = nodeInfo
+var (
+	config = `
+5:
+  - ".*t2\\.micro.*"
+10: 
+  - ".*t2\\.large.*"
+  - ".*t3\\.large.*"
+50: 
+  - ".*m4\\.4xlarge.*"
+`
+	oneEntryConfig = `
+10: 
+  - ".*t2\\.large.*"
+`
+	notMatchingConfig = `
+5:
+  - ".*t\\.micro.*"
+10: 
+  - ".*t\\.large.*"
+`
+	eoT2Micro = expander.Option{
+		Debug:     "t2.micro",
+		NodeGroup: test.NewTestNodeGroup("my-asg.t2.micro", 10, 1, 1, true, false, "t2.micro", nil, nil),
 	}
+	eoT2Large = expander.Option{
+		Debug:     "t2.large",
+		NodeGroup: test.NewTestNodeGroup("my-asg.t2.large", 10, 1, 1, true, false, "t2.large", nil, nil),
+	}
+	eoT3Large = expander.Option{
+		Debug:     "t3.large",
+		NodeGroup: test.NewTestNodeGroup("my-asg.t3.large", 10, 1, 1, true, false, "t3.large", nil, nil),
+	}
+	eoM44XLarge = expander.Option{
+		Debug:     "m4.4xlarge",
+		NodeGroup: test.NewTestNodeGroup("my-asg.m4.4xlarge", 10, 1, 1, true, false, "m4.4xlarge", nil, nil),
+	}
+)
 
-	var (
-		zeroPriorityGroup      = groupOptions["zeroPriority"]
-		noPriorityGroup        = groupOptions["noPriority"]
-		lowPriorityGroup       = groupOptions["lowPriority"]
-		highPriorityGroup      = groupOptions["highPriority"]
-		veryHighPriorityGroup  = groupOptions["veryHighPriority"]
-		veryHighPriorityGroup2 = groupOptions["veryHighPriority2"]
-	)
-
-	e := NewStrategy()
-
-	// if there's no available options we return nil
-	ret := e.BestOption([]expander.Option{}, nodeInfos)
-	assert.Nil(t, ret)
-
-	// if there's only one group we return that group
-	ret = e.BestOption([]expander.Option{highPriorityGroup}, nodeInfos)
-	require.NotNil(t, ret)
-	assert.True(t, assert.ObjectsAreEqual(*ret, highPriorityGroup))
-
-	// if there's two groups we return the one with higher priority
-	ret = e.BestOption([]expander.Option{highPriorityGroup, lowPriorityGroup}, nodeInfos)
-	require.NotNil(t, ret)
-	assert.True(t, assert.ObjectsAreEqual(*ret, highPriorityGroup))
-
-	// if there's the same two groups in different order the result is the same
-	ret = e.BestOption([]expander.Option{lowPriorityGroup, highPriorityGroup}, nodeInfos)
-	require.NotNil(t, ret)
-	assert.True(t, assert.ObjectsAreEqual(*ret, highPriorityGroup))
-
-	// if there's many different priorities we return the pool with the highest
-	ret = e.BestOption([]expander.Option{highPriorityGroup, veryHighPriorityGroup, lowPriorityGroup}, nodeInfos)
-	require.NotNil(t, ret)
-	assert.True(t, assert.ObjectsAreEqual(*ret, veryHighPriorityGroup))
-
-	// if there's multiple groups with same priority we return either one
-	ret = e.BestOption([]expander.Option{highPriorityGroup, veryHighPriorityGroup, veryHighPriorityGroup2}, nodeInfos)
-	require.NotNil(t, ret)
-	assert.True(t, assert.ObjectsAreEqual(*ret, veryHighPriorityGroup) || assert.ObjectsAreEqual(*ret, veryHighPriorityGroup2))
-
-	// if there's a group with no priority it's assumed to be zero and therefore less than low priority.
-	ret = e.BestOption([]expander.Option{lowPriorityGroup, noPriorityGroup}, nodeInfos)
-	require.NotNil(t, ret)
-	assert.True(t, assert.ObjectsAreEqual(*ret, lowPriorityGroup))
-
-	// if there's a group with zero priority it's the same as no priority.
-	ret = e.BestOption([]expander.Option{zeroPriorityGroup, noPriorityGroup}, nodeInfos)
-	require.NotNil(t, ret)
-	assert.True(t, assert.ObjectsAreEqual(*ret, zeroPriorityGroup) || assert.ObjectsAreEqual(*ret, noPriorityGroup))
+func getStrategyInstance(t *testing.T, config string) (expander.Strategy, *record.FakeRecorder, *apiv1.ConfigMap, error) {
+	cm := &apiv1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      PriorityConfigMapName,
+		},
+		Data: map[string]string{
+			ConfigMapKey: config,
+		},
+	}
+	lister, err := kubernetes.NewTestConfigMapLister([]*apiv1.ConfigMap{cm})
+	assert.Nil(t, err)
+	r := record.NewFakeRecorder(100)
+	s, err := NewStrategy(lister.ConfigMaps(testNamespace), r)
+	return s, r, cm, err
 }
 
-func intPtr(v int64) *int64 {
-	return &v
+func TestPriorityExpanderCorrecltySelectsSingleMatchingOptionOutOfOne(t *testing.T) {
+	s, _, _, _ := getStrategyInstance(t, config)
+	ret := s.BestOption([]expander.Option{eoT2Large}, nil)
+	assert.Equal(t, *ret, eoT2Large)
+}
+
+func TestPriorityExpanderCorrecltySelectsSingleMatchingOptionOutOfMany(t *testing.T) {
+	s, _, _, _ := getStrategyInstance(t, config)
+	ret := s.BestOption([]expander.Option{eoT2Large, eoM44XLarge}, nil)
+	assert.Equal(t, *ret, eoM44XLarge)
+}
+
+func TestPriorityExpanderCorrecltySelectsOneOfTwoMatchingOptionsOutOfMany(t *testing.T) {
+	s, _, _, _ := getStrategyInstance(t, config)
+	for i := 0; i < 10; i++ {
+		ret := s.BestOption([]expander.Option{eoT2Large, eoT3Large, eoT2Micro}, nil)
+		assert.True(t, ret.NodeGroup.Id() == eoT2Large.NodeGroup.Id() || ret.NodeGroup.Id() == eoT3Large.NodeGroup.Id())
+	}
+}
+
+func TestPriorityExpanderCorrecltyFallsBackToRandomWhenNoMatches(t *testing.T) {
+	s, _, _, _ := getStrategyInstance(t, config)
+	for i := 0; i < 10; i++ {
+		ret := s.BestOption([]expander.Option{eoT2Large, eoT3Large}, nil)
+		assert.True(t, ret.NodeGroup.Id() == eoT2Large.NodeGroup.Id() || ret.NodeGroup.Id() == eoT3Large.NodeGroup.Id())
+	}
+}
+
+func TestPriorityExpanderCorrecltyHandlesConfigUpdate(t *testing.T) {
+	s, r, cm, _ := getStrategyInstance(t, oneEntryConfig)
+	ret := s.BestOption([]expander.Option{eoT2Large, eoT3Large, eoM44XLarge}, nil)
+	assert.Equal(t, *ret, eoT2Large)
+
+	var event string
+	for _, group := range []string{eoT3Large.NodeGroup.Id(), eoM44XLarge.NodeGroup.Id()} {
+		event = <-r.Events
+		assert.EqualValues(t, fmt.Sprintf(configWarnGroupNotFoundMessage, group), event)
+	}
+
+	cm.Data[ConfigMapKey] = config
+	ret = s.BestOption([]expander.Option{eoT2Large, eoT3Large, eoM44XLarge}, nil)
+
+	priority := s.(*priority)
+	assert.Equal(t, 2, priority.okConfigUpdates)
+	assert.Equal(t, *ret, eoM44XLarge)
+}
+
+func TestPriorityExpanderCorrecltySkipsBadChangeConfig(t *testing.T) {
+	s, r, cm, _ := getStrategyInstance(t, oneEntryConfig)
+	priority := s.(*priority)
+	assert.Equal(t, 0, priority.okConfigUpdates)
+
+	cm.Data[ConfigMapKey] = ""
+	ret := s.BestOption([]expander.Option{eoT2Large, eoT3Large, eoM44XLarge}, nil)
+
+	assert.Equal(t, 1, priority.badConfigUpdates)
+
+	event := <-r.Events
+	assert.EqualValues(t, configWarnConfigMapEmpty, event)
+	assert.Nil(t, ret)
 }

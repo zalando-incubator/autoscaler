@@ -20,18 +20,25 @@ import (
 	"io"
 	"os"
 
-	"k8s.io/klog"
-
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
+	"k8s.io/klog"
 )
 
 const (
-	// ProviderName is the cloud provider name for Azure
-	ProviderName = "azure"
+	// GPULabel is the label added to nodes with GPU resource.
+	GPULabel = "accelerator"
+)
+
+var (
+	availableGPUTypes = map[string]struct{}{
+		"nvidia-tesla-k80":  {},
+		"nvidia-tesla-p100": {},
+		"nvidia-tesla-v100": {},
+	}
 )
 
 // AzureCloudProvider provides implementation of CloudProvider interface for Azure.
@@ -61,6 +68,16 @@ func (azure *AzureCloudProvider) Name() string {
 	return "azure"
 }
 
+// GPULabel returns the label added to nodes with GPU resource.
+func (azure *AzureCloudProvider) GPULabel() string {
+	return GPULabel
+}
+
+// GetAvailableGPUTypes return all available GPU types cloud provider supports
+func (azure *AzureCloudProvider) GetAvailableGPUTypes() map[string]struct{} {
+	return availableGPUTypes
+}
+
 // NodeGroups returns all node groups configured for this cloud provider.
 func (azure *AzureCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
 	asgs := azure.azureManager.getAsgs()
@@ -74,8 +91,9 @@ func (azure *AzureCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
 
 // NodeGroupForNode returns the node group for the given node.
 func (azure *AzureCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovider.NodeGroup, error) {
+	klog.V(6).Infof("NodeGroupForNode: starts")
 	if node.Spec.ProviderID == "" {
-		klog.V(6).Infof("Skipping to search for node group for the node '%s'. Because doesn't have spec.ProviderID.\n", node.ObjectMeta.Name)
+		klog.V(6).Infof("Skipping the search for node group for the node '%s' because it has no spec.ProviderID", node.ObjectMeta.Name)
 		return nil, nil
 	}
 	klog.V(6).Infof("Searching for node group for the node: %s\n", node.Spec.ProviderID)
@@ -83,6 +101,7 @@ func (azure *AzureCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovid
 		Name: node.Spec.ProviderID,
 	}
 
+	klog.V(6).Infof("NodeGroupForNode: ref.Name %s", ref.Name)
 	return azure.azureManager.GetAsgForInstance(ref)
 }
 
@@ -124,13 +143,18 @@ func (m *azureRef) GetKey() string {
 	return m.Name
 }
 
+// String is represented by calling GetKey()
+func (m *azureRef) String() string {
+	return m.GetKey()
+}
+
 // BuildAzure builds Azure cloud provider, manager etc.
 func BuildAzure(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
 	var config io.ReadCloser
 	if opts.CloudConfig != "" {
 		klog.Infof("Creating Azure Manager using cloud-config file: %v", opts.CloudConfig)
 		var err error
-		config, err := os.Open(opts.CloudConfig)
+		config, err = os.Open(opts.CloudConfig)
 		if err != nil {
 			klog.Fatalf("Couldn't open cloud provider configuration %s: %#v", opts.CloudConfig, err)
 		}

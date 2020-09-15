@@ -30,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	cliflag "k8s.io/component-base/cli/flag"
-	"k8s.io/klog"
 	"k8s.io/kubelet/config/v1beta1"
 	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/features"
@@ -39,7 +38,6 @@ import (
 	kubeletscheme "k8s.io/kubernetes/pkg/kubelet/apis/config/scheme"
 	kubeletconfigvalidation "k8s.io/kubernetes/pkg/kubelet/apis/config/validation"
 	"k8s.io/kubernetes/pkg/kubelet/config"
-	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/master/ports"
 	utilflag "k8s.io/kubernetes/pkg/util/flag"
 	utiltaints "k8s.io/kubernetes/pkg/util/taints"
@@ -128,12 +126,6 @@ type KubeletFlags struct {
 	// Its corresponding flag only gets registered in Windows builds.
 	WindowsService bool
 
-	// EXPERIMENTAL FLAGS
-	// Whitelist of unsafe sysctls or sysctl patterns (ending in *).
-	// +optional
-	AllowedUnsafeSysctls []string
-	// containerized should be set to true if kubelet is running in a container.
-	Containerized bool
 	// remoteRuntimeEndpoint is the endpoint of remote runtime service
 	RemoteRuntimeEndpoint string
 	// remoteImageEndpoint is the endpoint of remote image service
@@ -195,19 +187,8 @@ type KubeletFlags struct {
 	// This flag, if set, instructs the kubelet to keep volumes from terminated pods mounted to the node.
 	// This can be useful for debugging volume related issues.
 	KeepTerminatedPodVolumes bool
-	// allowPrivileged enables containers to request privileged mode.
-	// Defaults to true.
-	AllowPrivileged bool
-	// hostNetworkSources is a comma-separated list of sources from which the
-	// Kubelet allows pods to use of host network. Defaults to "*". Valid
-	// options are "file", "http", "api", and "*" (all sources).
-	HostNetworkSources []string
-	// hostPIDSources is a comma-separated list of sources from which the
-	// Kubelet allows pods to use the host pid namespace. Defaults to "*".
-	HostPIDSources []string
-	// hostIPCSources is a comma-separated list of sources from which the
-	// Kubelet allows pods to use the host ipc namespace. Defaults to "*".
-	HostIPCSources []string
+	// EnableCAdvisorJSONEndpoints enables some cAdvisor endpoints that will be removed in future versions
+	EnableCAdvisorJSONEndpoints bool
 }
 
 // NewKubeletFlags will create a new KubeletFlags with default values
@@ -236,13 +217,9 @@ func NewKubeletFlags() *KubeletFlags {
 		VolumePluginDir:                     "/usr/libexec/kubernetes/kubelet-plugins/volume/exec/",
 		RegisterNode:                        true,
 		SeccompProfileRoot:                  filepath.Join(defaultRootDir, "seccomp"),
-		HostNetworkSources:                  []string{kubetypes.AllSource},
-		HostPIDSources:                      []string{kubetypes.AllSource},
-		HostIPCSources:                      []string{kubetypes.AllSource},
-		// TODO(#58010:v1.13.0): Remove --allow-privileged, it is deprecated
-		AllowPrivileged: true,
 		// prior to the introduction of this flag, there was a hardcoded cap of 50 images
-		NodeStatusMaxImages: 50,
+		NodeStatusMaxImages:         50,
+		EnableCAdvisorJSONEndpoints: false,
 	}
 }
 
@@ -263,9 +240,7 @@ func ValidateKubeletFlags(f *KubeletFlags) error {
 		}
 	}
 	if len(unknownLabels) > 0 {
-		// TODO(liggitt): in 1.16, return an error
-		klog.Warningf("unknown 'kubernetes.io' or 'k8s.io' labels specified with --node-labels: %v", unknownLabels.List())
-		klog.Warningf("in 1.16, --node-labels in the 'kubernetes.io' namespace must begin with an allowed prefix (%s) or be in the specifically allowed set (%s)", strings.Join(kubeletapis.KubeletLabelNamespaces(), ", "), strings.Join(kubeletapis.KubeletLabels(), ", "))
+		return fmt.Errorf("unknown 'kubernetes.io' or 'k8s.io' labels specified with --node-labels: %v\n--node-labels in the 'kubernetes.io' namespace must begin with an allowed prefix (%s) or be in the specifically allowed set (%s)", unknownLabels.List(), strings.Join(kubeletapis.KubeletLabelNamespaces(), ", "), strings.Join(kubeletapis.KubeletLabels(), ", "))
 	}
 
 	return nil
@@ -390,7 +365,7 @@ func (f *KubeletFlags) AddFlags(mainfs *pflag.FlagSet) {
 
 	fs.StringVar(&f.HostnameOverride, "hostname-override", f.HostnameOverride, "If non-empty, will use this string as identification instead of the actual hostname. If --cloud-provider is set, the cloud provider determines the name of the node (consult cloud provider documentation to determine if and how the hostname is used).")
 
-	fs.StringVar(&f.NodeIP, "node-ip", f.NodeIP, "IP address of the node. If set, kubelet will use this IP address for the node")
+	fs.StringVar(&f.NodeIP, "node-ip", f.NodeIP, "IP address of the node. If set, kubelet will use this IP address for the node. If unset, kubelet will use the node's default IPv4 address, if any, or its default IPv6 address if it has no IPv4 addresses. You can pass `::` to make it prefer the default IPv6 address rather than the default IPv4 address.")
 
 	fs.StringVar(&f.ProviderID, "provider-id", f.ProviderID, "Unique identifier for identifying the node in a machine database, i.e cloudprovider")
 
@@ -409,7 +384,6 @@ func (f *KubeletFlags) AddFlags(mainfs *pflag.FlagSet) {
 
 	// EXPERIMENTAL FLAGS
 	fs.StringVar(&f.ExperimentalMounterPath, "experimental-mounter-path", f.ExperimentalMounterPath, "[Experimental] Path of mounter binary. Leave empty to use the default mount.")
-	fs.StringSliceVar(&f.AllowedUnsafeSysctls, "allowed-unsafe-sysctls", f.AllowedUnsafeSysctls, "Comma-separated whitelist of unsafe sysctls or unsafe sysctl patterns (ending in *). Use these at your own risk. Sysctls feature gate is enabled by default.")
 	fs.BoolVar(&f.ExperimentalKernelMemcgNotification, "experimental-kernel-memcg-notification", f.ExperimentalKernelMemcgNotification, "If enabled, the kubelet will integrate with the kernel memcg notification to determine if memory eviction thresholds are crossed rather than polling.")
 	fs.StringVar(&f.RemoteRuntimeEndpoint, "container-runtime-endpoint", f.RemoteRuntimeEndpoint, "[Experimental] The endpoint of remote runtime service. Currently unix socket endpoint is supported on Linux, while npipe and tcp endpoints are supported on windows.  Examples:'unix:///var/run/dockershim.sock', 'npipe:////./pipe/dockershim'")
 	fs.StringVar(&f.RemoteImageEndpoint, "image-service-endpoint", f.RemoteImageEndpoint, "[Experimental] The endpoint of remote image service. If not specified, it will be the same with container-runtime-endpoint by default. Currently unix socket endpoint is supported on Linux, while npipe and tcp endpoints are supported on windows.  Examples:'unix:///var/run/dockershim.sock', 'npipe:////./pipe/dockershim'")
@@ -425,8 +399,6 @@ func (f *KubeletFlags) AddFlags(mainfs *pflag.FlagSet) {
 	fs.Int32Var(&f.NodeStatusMaxImages, "node-status-max-images", f.NodeStatusMaxImages, "<Warning: Alpha feature> The maximum number of images to report in Node.Status.Images. If -1 is specified, no cap will be applied.")
 
 	// DEPRECATED FLAGS
-	fs.BoolVar(&f.Containerized, "containerized", f.Containerized, "Running kubelet in a container.")
-	fs.MarkDeprecated("containerized", "This feature will be removed in a later release.")
 	fs.StringVar(&f.BootstrapKubeconfig, "experimental-bootstrap-kubeconfig", f.BootstrapKubeconfig, "")
 	fs.MarkDeprecated("experimental-bootstrap-kubeconfig", "Use --bootstrap-kubeconfig")
 	fs.DurationVar(&f.MinimumGCAge.Duration, "minimum-container-ttl-duration", f.MinimumGCAge.Duration, "Minimum age for a finished container before it is garbage collected.  Examples: '300ms', '10s' or '2h45m'")
@@ -443,18 +415,8 @@ func (f *KubeletFlags) AddFlags(mainfs *pflag.FlagSet) {
 	fs.MarkDeprecated("non-masquerade-cidr", "will be removed in a future version")
 	fs.BoolVar(&f.KeepTerminatedPodVolumes, "keep-terminated-pod-volumes", f.KeepTerminatedPodVolumes, "Keep terminated pod volumes mounted to the node after the pod terminates.  Can be useful for debugging volume related issues.")
 	fs.MarkDeprecated("keep-terminated-pod-volumes", "will be removed in a future version")
-	// TODO(#58010:v1.13.0): Remove --allow-privileged, it is deprecated
-	fs.BoolVar(&f.AllowPrivileged, "allow-privileged", f.AllowPrivileged, "If true, allow containers to request privileged mode. Default: true")
-	fs.MarkDeprecated("allow-privileged", "will be removed in a future version")
-	// TODO(#58010:v1.12.0): Remove --host-network-sources, it is deprecated
-	fs.StringSliceVar(&f.HostNetworkSources, "host-network-sources", f.HostNetworkSources, "Comma-separated list of sources from which the Kubelet allows pods to use of host network.")
-	fs.MarkDeprecated("host-network-sources", "will be removed in a future version")
-	// TODO(#58010:v1.12.0): Remove --host-pid-sources, it is deprecated
-	fs.StringSliceVar(&f.HostPIDSources, "host-pid-sources", f.HostPIDSources, "Comma-separated list of sources from which the Kubelet allows pods to use the host pid namespace.")
-	fs.MarkDeprecated("host-pid-sources", "will be removed in a future version")
-	// TODO(#58010:v1.12.0): Remove --host-ipc-sources, it is deprecated
-	fs.StringSliceVar(&f.HostIPCSources, "host-ipc-sources", f.HostIPCSources, "Comma-separated list of sources from which the Kubelet allows pods to use the host ipc namespace.")
-	fs.MarkDeprecated("host-ipc-sources", "will be removed in a future version")
+	fs.BoolVar(&f.EnableCAdvisorJSONEndpoints, "enable-cadvisor-json-endpoints", f.EnableCAdvisorJSONEndpoints, "Enable cAdvisor json /spec and /stats/* endpoints.")
+	fs.MarkDeprecated("enable-cadvisor-json-endpoints", "will be removed in a future version")
 
 }
 
@@ -556,6 +518,7 @@ func AddKubeletConfigFlags(mainfs *pflag.FlagSet, c *kubeletconfig.KubeletConfig
 	fs.StringVar(&c.CPUManagerPolicy, "cpu-manager-policy", c.CPUManagerPolicy, "CPU Manager policy to use. Possible values: 'none', 'static'. Default: 'none'")
 	fs.DurationVar(&c.CPUManagerReconcilePeriod.Duration, "cpu-manager-reconcile-period", c.CPUManagerReconcilePeriod.Duration, "<Warning: Alpha feature> CPU Manager reconciliation period. Examples: '10s', or '1m'. If not supplied, defaults to `NodeStatusUpdateFrequency`")
 	fs.Var(cliflag.NewMapStringString(&c.QOSReserved), "qos-reserved", "<Warning: Alpha feature> A set of ResourceName=Percentage (e.g. memory=50%) pairs that describe how pod resource requests are reserved at the QoS level. Currently only memory is supported. Requires the QOSReserved feature gate to be enabled.")
+	fs.StringVar(&c.TopologyManagerPolicy, "topology-manager-policy", c.TopologyManagerPolicy, "Topology Manager policy to use. Possible values: 'none', 'best-effort', 'restricted', 'single-numa-node'.")
 	fs.DurationVar(&c.RuntimeRequestTimeout.Duration, "runtime-request-timeout", c.RuntimeRequestTimeout.Duration, "Timeout of all runtime requests except long running request - pull, logs, exec and attach. When timeout exceeded, kubelet will cancel the request, throw out an error and retry later.")
 	fs.StringVar(&c.HairpinMode, "hairpin-mode", c.HairpinMode, "How should the kubelet setup hairpin NAT. This allows endpoints of a Service to loadbalance back to themselves if they should try to access their own Service. Valid values are \"promiscuous-bridge\", \"hairpin-veth\" and \"none\".")
 	fs.Int32Var(&c.MaxPods, "max-pods", c.MaxPods, "Number of Pods that can run on this Kubelet.")
@@ -572,6 +535,7 @@ func AddKubeletConfigFlags(mainfs *pflag.FlagSet, c *kubeletconfig.KubeletConfig
 	fs.Int32Var(&c.IPTablesDropBit, "iptables-drop-bit", c.IPTablesDropBit, "The bit of the fwmark space to mark packets for dropping. Must be within the range [0, 31].")
 	fs.StringVar(&c.ContainerLogMaxSize, "container-log-max-size", c.ContainerLogMaxSize, "<Warning: Beta feature> Set the maximum size (e.g. 10Mi) of container log file before it is rotated. This flag can only be used with --container-runtime=remote.")
 	fs.Int32Var(&c.ContainerLogMaxFiles, "container-log-max-files", c.ContainerLogMaxFiles, "<Warning: Beta feature> Set the maximum number of container log files that can be present for a container. The number must be >= 2. This flag can only be used with --container-runtime=remote.")
+	fs.StringSliceVar(&c.AllowedUnsafeSysctls, "allowed-unsafe-sysctls", c.AllowedUnsafeSysctls, "Comma-separated whitelist of unsafe sysctls or unsafe sysctl patterns (ending in *). Use these at your own risk.")
 
 	// Flags intended for testing, not recommended used in production environments.
 	fs.Int64Var(&c.MaxOpenFiles, "max-open-files", c.MaxOpenFiles, "Number of files that can be opened by Kubelet process.")
@@ -589,7 +553,7 @@ func AddKubeletConfigFlags(mainfs *pflag.FlagSet, c *kubeletconfig.KubeletConfig
 	fs.Var(cliflag.NewMapStringString(&c.EvictionMinimumReclaim), "eviction-minimum-reclaim", "A set of minimum reclaims (e.g. imagefs.available=2Gi) that describes the minimum amount of resource the kubelet will reclaim when performing a pod eviction if that resource is under pressure.")
 	fs.Int32Var(&c.PodsPerCore, "pods-per-core", c.PodsPerCore, "Number of Pods per core that can run on this Kubelet. The total number of Pods on this Kubelet cannot exceed max-pods, so max-pods will be used if this calculation results in a larger number of Pods allowed on the Kubelet. A value of 0 disables this limit.")
 	fs.BoolVar(&c.ProtectKernelDefaults, "protect-kernel-defaults", c.ProtectKernelDefaults, "Default kubelet behaviour for kernel tuning. If set, kubelet errors if any of kernel tunables is different than kubelet defaults.")
-
+	fs.StringVar(&c.ReservedSystemCPUs, "reserved-cpus", c.ReservedSystemCPUs, "A comma-separated list of CPUs or CPU ranges that are reserved for system and kubernetes usage. This specific list will supersede cpu counts in --system-reserved and --kube-reserved.")
 	// Node Allocatable Flags
 	fs.Var(cliflag.NewMapStringString(&c.SystemReserved), "system-reserved", "A set of ResourceName=ResourceQuantity (e.g. cpu=200m,memory=500Mi,ephemeral-storage=1Gi) pairs that describe resources reserved for non-kubernetes components. Currently only cpu and memory are supported. See http://kubernetes.io/docs/user-guide/compute-resources for more detail. [default=none]")
 	fs.Var(cliflag.NewMapStringString(&c.KubeReserved), "kube-reserved", "A set of ResourceName=ResourceQuantity (e.g. cpu=200m,memory=500Mi,ephemeral-storage=1Gi) pairs that describe resources reserved for kubernetes system components. Currently cpu, memory and local ephemeral storage for root file system are supported. See http://kubernetes.io/docs/user-guide/compute-resources for more detail. [default=none]")

@@ -34,9 +34,12 @@ type GpuLimits struct {
 type AutoscalingOptions struct {
 	// MaxEmptyBulkDelete is a number of empty nodes that can be removed at the same time.
 	MaxEmptyBulkDelete int
-	// ScaleDownUtilizationThreshold sets threshold for nodes to be considered for scale down.
+	// ScaleDownUtilizationThreshold sets threshold for nodes to be considered for scale down if cpu or memory utilization is over threshold.
 	// Well-utilized nodes are not touched.
 	ScaleDownUtilizationThreshold float64
+	// ScaleDownGpuUtilizationThreshold sets threshold for gpu nodes to be considered for scale down if gpu utilization is over threshold.
+	// Well-utilized nodes are not touched.
+	ScaleDownGpuUtilizationThreshold float64
 	// ScaleDownUnneededTime sets the duration CA expects a node to be unneeded/eligible for removal
 	// before scaling down the node.
 	ScaleDownUnneededTime time.Duration
@@ -73,6 +76,8 @@ type AutoscalingOptions struct {
 	MaxTotalUnreadyPercentage float64
 	// OkTotalUnreadyCount is the number of allowed unready nodes, irrespective of max-total-unready-percentage
 	OkTotalUnreadyCount int
+	// ScaleUpFromZero defines if CA should scale up when there 0 ready nodes.
+	ScaleUpFromZero bool
 	// CloudConfig is the path to the cloud provider configuration file. Empty string for no configuration file.
 	CloudConfig string
 	// CloudProviderName sets the type of the cloud provider CA is about to run in. Allowed values: gce, aws
@@ -100,6 +105,8 @@ type AutoscalingOptions struct {
 	// The formula to calculate additional candidates number is following:
 	// max(#nodes * ScaleDownCandidatesPoolRatio, ScaleDownCandidatesPoolMinCount)
 	ScaleDownCandidatesPoolMinCount int
+	// NodeDeletionDelayTimeout is maximum time CA waits for removing delay-deletion.cluster-autoscaler.kubernetes.io/ annotations before deleting the node.
+	NodeDeletionDelayTimeout time.Duration
 	// WriteStatusConfigMap tells if the status information should be written to a ConfigMap
 	WriteStatusConfigMap bool
 	// BalanceSimilarNodeGroups enables logic that identifies node groups with similar machines and tries to balance node count between them.
@@ -126,10 +133,12 @@ type AutoscalingOptions struct {
 	MaxBulkSoftTaintCount int
 	// MaxBulkSoftTaintTime sets the maximum duration of single run of PreferNoSchedule tainting.
 	MaxBulkSoftTaintTime time.Duration
-	// Filtering out schedulable pods before CA scale up by trying to pack the schedulable pods on free capacity on existing nodes.
-	// Setting it to false employs a more lenient filtering approach that does not try to pack the pods on the nodes.
-	// Pods with nominatedNodeName set are always filtered out.
-	FilterOutSchedulablePodsUsesPacking bool
+	// IgnoredTaints is a list of taints to ignore when considering a node template for scheduling.
+	IgnoredTaints []string
+	// AWSUseStaticInstanceList tells if AWS cloud provider use static instance type list or dynamically fetch from remote APIs.
+	AWSUseStaticInstanceList bool
+	// Path to kube configuration if available
+	KubeConfigPath string
 	// ScaleUpTemplateFromCloudProvider tells if template node should be built from the up-to-date provider configuration (e.g. ASG launch configuration)
 	// instead of a random existing node.
 	ScaleUpTemplateFromCloudProvider bool

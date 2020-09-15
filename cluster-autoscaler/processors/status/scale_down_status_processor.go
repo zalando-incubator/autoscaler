@@ -21,13 +21,53 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/drain"
+	"k8s.io/klog"
 )
 
 // ScaleDownStatus represents the state of scale down.
 type ScaleDownStatus struct {
 	Result            ScaleDownResult
 	ScaledDownNodes   []*ScaleDownNode
-	NodeDeleteResults map[string]error
+	UnremovableNodes  []*UnremovableNode
+	RemovedNodeGroups []cloudprovider.NodeGroup
+	NodeDeleteResults map[string]NodeDeleteResult
+}
+
+// SetUnremovableNodesInfo sets the status of nodes that were found to be unremovable.
+func (s *ScaleDownStatus) SetUnremovableNodesInfo(unremovableNodesMap map[string]*simulator.UnremovableNode, nodeUtilizationMap map[string]simulator.UtilizationInfo, cp cloudprovider.CloudProvider) {
+	s.UnremovableNodes = make([]*UnremovableNode, 0, len(unremovableNodesMap))
+
+	for _, unremovableNode := range unremovableNodesMap {
+		nodeGroup, err := cp.NodeGroupForNode(unremovableNode.Node)
+		if err != nil {
+			klog.Errorf("Couldn't find node group for unremovable node in cloud provider %s", unremovableNode.Node.Name)
+			continue
+		}
+
+		var utilInfoPtr *simulator.UtilizationInfo
+		if utilInfo, found := nodeUtilizationMap[unremovableNode.Node.Name]; found {
+			utilInfoPtr = &utilInfo
+			// It's okay if we don't find the util info, it's not computed for some unremovable nodes that are skipped early in the loop.
+		}
+
+		s.UnremovableNodes = append(s.UnremovableNodes, &UnremovableNode{
+			Node:        unremovableNode.Node,
+			NodeGroup:   nodeGroup,
+			UtilInfo:    utilInfoPtr,
+			Reason:      unremovableNode.Reason,
+			BlockingPod: unremovableNode.BlockingPod,
+		})
+	}
+}
+
+// UnremovableNode represents the state of a node that couldn't be removed.
+type UnremovableNode struct {
+	Node        *apiv1.Node
+	NodeGroup   cloudprovider.NodeGroup
+	UtilInfo    *simulator.UtilizationInfo
+	Reason      simulator.UnremovableReason
+	BlockingPod *drain.BlockingPod
 }
 
 // ScaleDownNode represents the state of a node that's being scaled down.
@@ -61,6 +101,32 @@ const (
 	ScaleDownInProgress
 )
 
+// NodeDeleteResultType denotes the type of the result of node deletion. It provides deeper
+// insight into why the node failed to be deleted.
+type NodeDeleteResultType int
+
+const (
+	// NodeDeleteOk - the node was deleted successfully.
+	NodeDeleteOk NodeDeleteResultType = iota
+
+	// NodeDeleteErrorFailedToMarkToBeDeleted - node deletion failed because the node couldn't be marked to be deleted.
+	NodeDeleteErrorFailedToMarkToBeDeleted
+	// NodeDeleteErrorFailedToEvictPods - node deletion failed because some of the pods couldn't be evicted from the node.
+	NodeDeleteErrorFailedToEvictPods
+	// NodeDeleteErrorFailedToDelete - failed to delete the node from the cloud provider.
+	NodeDeleteErrorFailedToDelete
+)
+
+// NodeDeleteResult contains information about the result of a node deletion.
+type NodeDeleteResult struct {
+	// Err contains nil if the delete was successful and an error otherwise.
+	Err error
+	// ResultType contains the type of the result of a node deletion.
+	ResultType NodeDeleteResultType
+	// PodEvictionResults maps pod names to the result of their eviction.
+	PodEvictionResults map[string]PodEvictionResult
+}
+
 // ScaleDownStatusProcessor processes the status of the cluster after a scale-down.
 type ScaleDownStatusProcessor interface {
 	Process(context *context.AutoscalingContext, status *ScaleDownStatus)
@@ -70,6 +136,18 @@ type ScaleDownStatusProcessor interface {
 // NewDefaultScaleDownStatusProcessor creates a default instance of ScaleUpStatusProcessor.
 func NewDefaultScaleDownStatusProcessor() ScaleDownStatusProcessor {
 	return &NoOpScaleDownStatusProcessor{}
+}
+
+// PodEvictionResult contains the result of an eviction of a pod.
+type PodEvictionResult struct {
+	Pod      *apiv1.Pod
+	TimedOut bool
+	Err      error
+}
+
+// WasEvictionSuccessful tells if the pod was successfully evicted.
+func (per PodEvictionResult) WasEvictionSuccessful() bool {
+	return per.Err == nil && !per.TimedOut
 }
 
 // NoOpScaleDownStatusProcessor is a ScaleDownStatusProcessor implementations useful for testing.

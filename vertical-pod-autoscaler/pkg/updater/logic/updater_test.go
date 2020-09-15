@@ -17,16 +17,23 @@ limitations under the License.
 package logic
 
 import (
+	"context"
 	"strconv"
 	"testing"
+	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/assert"
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	target_mock "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target/mock"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/eviction"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/priority"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/status"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/test"
 )
 
@@ -36,7 +43,85 @@ func parseLabelSelector(selector string) labels.Selector {
 	return parsedSelector
 }
 
-func TestRunOnce(t *testing.T) {
+func TestRunOnce_Mode(t *testing.T) {
+	tests := []struct {
+		name                  string
+		updateMode            vpa_types.UpdateMode
+		expectFetchCalls      bool
+		expectedEvictionCount int
+	}{
+		{
+			name:                  "with Auto mode",
+			updateMode:            vpa_types.UpdateModeAuto,
+			expectFetchCalls:      true,
+			expectedEvictionCount: 5,
+		},
+		{
+			name:                  "with Initial mode",
+			updateMode:            vpa_types.UpdateModeInitial,
+			expectFetchCalls:      false,
+			expectedEvictionCount: 0,
+		},
+		{
+			name:                  "with Off mode",
+			updateMode:            vpa_types.UpdateModeOff,
+			expectFetchCalls:      false,
+			expectedEvictionCount: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			testRunOnceBase(
+				t,
+				tc.updateMode,
+				newFakeValidator(true),
+				tc.expectFetchCalls,
+				tc.expectedEvictionCount,
+			)
+		})
+	}
+}
+
+func TestRunOnce_Status(t *testing.T) {
+	tests := []struct {
+		name                  string
+		statusValidator       status.Validator
+		expectFetchCalls      bool
+		expectedEvictionCount int
+	}{
+		{
+			name:                  "with valid status",
+			statusValidator:       newFakeValidator(true),
+			expectFetchCalls:      true,
+			expectedEvictionCount: 5,
+		},
+		{
+			name:                  "with invalid status",
+			statusValidator:       newFakeValidator(false),
+			expectFetchCalls:      false,
+			expectedEvictionCount: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			testRunOnceBase(
+				t,
+				vpa_types.UpdateModeAuto,
+				tc.statusValidator,
+				tc.expectFetchCalls,
+				tc.expectedEvictionCount,
+			)
+		})
+	}
+}
+
+func testRunOnceBase(
+	t *testing.T,
+	updateMode vpa_types.UpdateMode,
+	statusValidator status.Validator,
+	expectFetchCalls bool,
+	expectedEvictionCount int,
+) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -58,7 +143,10 @@ func TestRunOnce(t *testing.T) {
 	eviction := &test.PodsEvictionRestrictionMock{}
 
 	for i := range pods {
-		pods[i] = test.Pod().WithName("test_"+strconv.Itoa(i)).AddContainer(test.BuildTestContainer(containerName, "1", "100M")).WithCreator(&rc.ObjectMeta, &rc.TypeMeta).Get()
+		pods[i] = test.Pod().WithName("test_"+strconv.Itoa(i)).
+			AddContainer(test.BuildTestContainer(containerName, "1", "100M")).
+			WithCreator(&rc.ObjectMeta, &rc.TypeMeta).
+			Get()
 
 		pods[i].Labels = labels
 		eviction.On("CanEvict", pods[i]).Return(true)
@@ -77,69 +165,28 @@ func TestRunOnce(t *testing.T) {
 		WithMinAllowed("1", "100M").
 		WithMaxAllowed("3", "1G").
 		Get()
-	updateMode := vpa_types.UpdateModeAuto
 	vpaObj.Spec.UpdatePolicy = &vpa_types.PodUpdatePolicy{UpdateMode: &updateMode}
 	vpaLister.On("List").Return([]*vpa_types.VerticalPodAutoscaler{vpaObj}, nil).Once()
 
 	mockSelectorFetcher := target_mock.NewMockVpaTargetSelectorFetcher(ctrl)
 
 	updater := &updater{
-		vpaLister:               vpaLister,
-		podLister:               podLister,
-		evictionFactory:         factory,
-		recommendationProcessor: &test.FakeRecommendationProcessor{},
-		selectorFetcher:         mockSelectorFetcher,
+		vpaLister:                    vpaLister,
+		podLister:                    podLister,
+		evictionFactory:              factory,
+		evictionRateLimiter:          rate.NewLimiter(rate.Inf, 0),
+		recommendationProcessor:      &test.FakeRecommendationProcessor{},
+		selectorFetcher:              mockSelectorFetcher,
+		useAdmissionControllerStatus: true,
+		statusValidator:              statusValidator,
+		priorityProcessor:            priority.NewProcessor(),
 	}
 
-	mockSelectorFetcher.EXPECT().Fetch(gomock.Eq(vpaObj)).Return(selector, nil)
-	updater.RunOnce()
-	eviction.AssertNumberOfCalls(t, "Evict", 5)
-}
-
-func TestVPAOff(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	livePods := 5
-	labels := map[string]string{"app": "testingApp"}
-	containerName := "container1"
-	pods := make([]*apiv1.Pod, livePods)
-	eviction := &test.PodsEvictionRestrictionMock{}
-
-	for i := range pods {
-		pods[i] = test.Pod().WithName("test_" + strconv.Itoa(i)).AddContainer(test.BuildTestContainer(containerName, "1", "100M")).Get()
-		pods[i].Labels = labels
-		eviction.On("CanEvict", pods[i]).Return(true)
-		eviction.On("Evict", pods[i], nil).Return(nil)
+	if expectFetchCalls {
+		mockSelectorFetcher.EXPECT().Fetch(gomock.Eq(vpaObj)).Return(selector, nil)
 	}
-
-	factory := &fakeEvictFactory{eviction}
-	vpaLister := &test.VerticalPodAutoscalerListerMock{}
-
-	podLister := &test.PodListerMock{}
-	podLister.On("List").Return(pods, nil)
-
-	vpaObj := test.VerticalPodAutoscaler().
-		WithContainer(containerName).
-		WithTarget("2", "200M").
-		WithMinAllowed("1", "100M").
-		WithMaxAllowed("3", "1G").
-		Get()
-	vpaObj.Namespace = "default"
-	updateMode := vpa_types.UpdateModeInitial
-	vpaObj.Spec.UpdatePolicy = &vpa_types.PodUpdatePolicy{UpdateMode: &updateMode}
-	vpaLister.On("List").Return([]*vpa_types.VerticalPodAutoscaler{vpaObj}, nil).Once()
-
-	updater := &updater{
-		vpaLister:               vpaLister,
-		podLister:               podLister,
-		evictionFactory:         factory,
-		recommendationProcessor: &test.FakeRecommendationProcessor{},
-		selectorFetcher:         target_mock.NewMockVpaTargetSelectorFetcher(ctrl),
-	}
-
-	updater.RunOnce()
-	eviction.AssertNumberOfCalls(t, "Evict", 0)
+	updater.RunOnce(context.Background())
+	eviction.AssertNumberOfCalls(t, "Evict", expectedEvictionCount)
 }
 
 func TestRunOnceNotingToProcess(t *testing.T) {
@@ -150,12 +197,32 @@ func TestRunOnceNotingToProcess(t *testing.T) {
 	vpaLister.On("List").Return(nil, nil).Once()
 
 	updater := &updater{
-		vpaLister:               vpaLister,
-		podLister:               podLister,
-		evictionFactory:         factory,
-		recommendationProcessor: &test.FakeRecommendationProcessor{},
+		vpaLister:                    vpaLister,
+		podLister:                    podLister,
+		evictionFactory:              factory,
+		evictionRateLimiter:          rate.NewLimiter(rate.Inf, 0),
+		recommendationProcessor:      &test.FakeRecommendationProcessor{},
+		useAdmissionControllerStatus: true,
+		statusValidator:              newFakeValidator(true),
 	}
-	updater.RunOnce()
+	updater.RunOnce(context.Background())
+}
+
+func TestGetRateLimiter(t *testing.T) {
+	cases := []struct {
+		rateLimit       float64
+		rateLimitBurst  int
+		expectedLimiter *rate.Limiter
+	}{
+		{0.0, 1, rate.NewLimiter(rate.Inf, 0)},
+		{-1.0, 2, rate.NewLimiter(rate.Inf, 0)},
+		{10.0, 3, rate.NewLimiter(rate.Limit(10), 3)},
+	}
+	for _, tc := range cases {
+		limiter := getRateLimiter(tc.rateLimit, tc.rateLimitBurst)
+		assert.Equal(t, tc.expectedLimiter.Burst(), limiter.Burst())
+		assert.InDelta(t, float64(tc.expectedLimiter.Limit()), float64(limiter.Limit()), 1e-6)
+	}
 }
 
 type fakeEvictFactory struct {
@@ -164,4 +231,16 @@ type fakeEvictFactory struct {
 
 func (f fakeEvictFactory) NewPodsEvictionRestriction(pods []*apiv1.Pod) eviction.PodsEvictionRestriction {
 	return f.evict
+}
+
+type fakeValidator struct {
+	isValid bool
+}
+
+func newFakeValidator(isValid bool) status.Validator {
+	return &fakeValidator{isValid}
+}
+
+func (f *fakeValidator) IsStatusValid(statusTimeout time.Duration) (bool, error) {
+	return f.isValid, nil
 }

@@ -17,10 +17,12 @@ limitations under the License.
 package gce
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,7 +32,7 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
-	provider_gce "k8s.io/kubernetes/pkg/cloudprovider/providers/gce"
+	provider_gce "k8s.io/legacy-cloud-providers/gce"
 
 	"cloud.google.com/go/compute/metadata"
 	"golang.org/x/oauth2"
@@ -41,10 +43,14 @@ import (
 )
 
 const (
-	refreshInterval         = 1 * time.Minute
-	machinesRefreshInterval = 1 * time.Hour
-	httpTimeout             = 30 * time.Second
-	scaleToZeroSupported    = true
+	refreshInterval              = 1 * time.Minute
+	machinesRefreshInterval      = 1 * time.Hour
+	httpTimeout                  = 30 * time.Second
+	scaleToZeroSupported         = true
+	autoDiscovererTypeMIG        = "mig"
+	migAutoDiscovererKeyPrefix   = "namePrefix"
+	migAutoDiscovererKeyMinNodes = "min"
+	migAutoDiscovererKeyMaxNodes = "max"
 )
 
 var (
@@ -54,21 +60,27 @@ var (
 		"https://www.googleapis.com/auth/service.management.readonly",
 		"https://www.googleapis.com/auth/servicecontrol",
 	}
+
+	validMIGAutoDiscovererKeys = strings.Join([]string{
+		migAutoDiscovererKeyPrefix,
+		migAutoDiscovererKeyMinNodes,
+		migAutoDiscovererKeyMaxNodes,
+	}, ", ")
 )
 
 // GceManager handles GCE communication and data caching.
 type GceManager interface {
 	// Refresh triggers refresh of cached resources.
-	Refresh() error
+	Refresh(existingNodes []*apiv1.Node) error
 	// Cleanup cleans up open resources before the cloud provider is destroyed, i.e. go routines etc.
 	Cleanup() error
 
 	// GetMigs returns list of registered MIGs.
-	GetMigs() []*MigInformation
+	GetMigs() []Mig
 	// GetMigNodes returns mig nodes.
 	GetMigNodes(mig Mig) ([]cloudprovider.Instance, error)
 	// GetMigForInstance returns MIG to which the given instance belongs.
-	GetMigForInstance(instance *GceRef) (Mig, error)
+	GetMigForInstance(instance GceRef) (Mig, error)
 	// GetMigTemplateNode returns a template node for MIG.
 	GetMigTemplateNode(mig Mig) (*apiv1.Node, error)
 	// GetResourceLimiter returns resource limiter.
@@ -79,15 +91,17 @@ type GceManager interface {
 	// SetMigSize sets MIG size.
 	SetMigSize(mig Mig, size int64) error
 	// DeleteInstances deletes the given instances. All instances must be controlled by the same MIG.
-	DeleteInstances(instances []*GceRef) error
+	DeleteInstances(instances []GceRef) error
 }
 
 type gceManagerImpl struct {
-	cache                    GceCache
+	cache                    *GceCache
 	lastRefresh              time.Time
 	machinesCacheLastRefresh time.Time
 
-	GceService AutoscalingGceClient
+	GceService                   AutoscalingGceClient
+	migTargetSizesProvider       MigTargetSizesProvider
+	migInstanceTemplatesProvider MigInstanceTemplatesProvider
 
 	location              string
 	projectId             string
@@ -95,7 +109,7 @@ type gceManagerImpl struct {
 	interrupt             chan struct{}
 	regional              bool
 	explicitlyConfigured  map[GceRef]bool
-	migAutoDiscoverySpecs []cloudprovider.MIGAutoDiscoveryConfig
+	migAutoDiscoverySpecs []migAutoDiscoveryConfig
 }
 
 // CreateGceManager constructs GceManager object.
@@ -153,21 +167,24 @@ func CreateGceManager(configReader io.Reader, discoveryOpts cloudprovider.NodeGr
 	if err != nil {
 		return nil, err
 	}
+	cache := NewGceCache(gceService)
 	manager := &gceManagerImpl{
-		cache:                NewGceCache(gceService),
-		GceService:           gceService,
-		location:             location,
-		regional:             regional,
-		projectId:            projectId,
-		templates:            &GceTemplateBuilder{},
-		interrupt:            make(chan struct{}),
-		explicitlyConfigured: make(map[GceRef]bool),
+		cache:                        cache,
+		GceService:                   gceService,
+		migTargetSizesProvider:       NewCachingMigTargetSizesProvider(cache, gceService, projectId),
+		migInstanceTemplatesProvider: NewCachingMigInstanceTemplatesProvider(cache, gceService),
+		location:                     location,
+		regional:                     regional,
+		projectId:                    projectId,
+		templates:                    &GceTemplateBuilder{},
+		interrupt:                    make(chan struct{}),
+		explicitlyConfigured:         make(map[GceRef]bool),
 	}
 
 	if err := manager.fetchExplicitMigs(discoveryOpts.NodeGroupSpecs); err != nil {
 		return nil, fmt.Errorf("failed to fetch MIGs: %v", err)
 	}
-	if manager.migAutoDiscoverySpecs, err = discoveryOpts.ParseMIGAutoDiscoverySpecs(); err != nil {
+	if manager.migAutoDiscoverySpecs, err = parseMIGAutoDiscoverySpecs(discoveryOpts); err != nil {
 		return nil, err
 	}
 
@@ -206,26 +223,23 @@ func (m *gceManagerImpl) registerMig(mig Mig) bool {
 
 // GetMigSize gets MIG size.
 func (m *gceManagerImpl) GetMigSize(mig Mig) (int64, error) {
-	if migSize, found := m.cache.GetMigTargetSize(mig.GceRef()); found {
-		return migSize, nil
-	}
-	targetSize, err := m.GceService.FetchMigTargetSize(mig.GceRef())
-	if err != nil {
-		return -1, err
-	}
-	m.cache.SetMigTargetSize(mig.GceRef(), targetSize)
-	return targetSize, nil
+	return m.migTargetSizesProvider.GetMigTargetSize(mig.GceRef())
 }
 
 // SetMigSize sets MIG size.
 func (m *gceManagerImpl) SetMigSize(mig Mig, size int64) error {
 	klog.V(0).Infof("Setting mig size %s to %d", mig.Id(), size)
-	m.cache.InvalidateTargetSizeCacheForMig(mig.GceRef())
-	return m.GceService.ResizeMig(mig.GceRef(), size)
+	m.cache.InvalidateMigTargetSize(mig.GceRef())
+	err := m.GceService.ResizeMig(mig.GceRef(), size)
+	if err != nil {
+		return err
+	}
+	m.cache.SetMigTargetSize(mig.GceRef(), size)
+	return nil
 }
 
 // DeleteInstances deletes the given instances. All instances must be controlled by the same MIG.
-func (m *gceManagerImpl) DeleteInstances(instances []*GceRef) error {
+func (m *gceManagerImpl) DeleteInstances(instances []GceRef) error {
 	if len(instances) == 0 {
 		return nil
 	}
@@ -242,17 +256,17 @@ func (m *gceManagerImpl) DeleteInstances(instances []*GceRef) error {
 			return fmt.Errorf("cannot delete instances which don't belong to the same MIG.")
 		}
 	}
-	m.cache.InvalidateTargetSizeCacheForMig(commonMig.GceRef())
+	m.cache.InvalidateMigTargetSize(commonMig.GceRef())
 	return m.GceService.DeleteInstances(commonMig.GceRef(), instances)
 }
 
 // GetMigs returns list of registered MIGs.
-func (m *gceManagerImpl) GetMigs() []*MigInformation {
+func (m *gceManagerImpl) GetMigs() []Mig {
 	return m.cache.GetMigs()
 }
 
 // GetMigForInstance returns MIG to which the given instance belongs.
-func (m *gceManagerImpl) GetMigForInstance(instance *GceRef) (Mig, error) {
+func (m *gceManagerImpl) GetMigForInstance(instance GceRef) (Mig, error) {
 	return m.cache.GetMigForInstance(instance)
 }
 
@@ -262,8 +276,8 @@ func (m *gceManagerImpl) GetMigNodes(mig Mig) ([]cloudprovider.Instance, error) 
 }
 
 // Refresh triggers refresh of cached resources.
-func (m *gceManagerImpl) Refresh() error {
-	m.cache.InvalidateTargetSizeCache()
+func (m *gceManagerImpl) Refresh(existingNodes []*apiv1.Node) error {
+	m.cache.InvalidateAllMigTargetSizes()
 	if m.lastRefresh.Add(refreshInterval).After(time.Now()) {
 		return nil
 	}
@@ -310,7 +324,7 @@ func (m *gceManagerImpl) buildMigFromFlag(flag string) (Mig, error) {
 	return m.buildMigFromSpec(s)
 }
 
-func (m *gceManagerImpl) buildMigFromAutoCfg(link string, cfg cloudprovider.MIGAutoDiscoveryConfig) (Mig, error) {
+func (m *gceManagerImpl) buildMigFromAutoCfg(link string, cfg migAutoDiscoveryConfig) (Mig, error) {
 	s := &dynamic.NodeGroupSpec{
 		Name:               link,
 		MinSize:            cfg.MinSize,
@@ -372,8 +386,8 @@ func (m *gceManagerImpl) fetchAutoMigs() error {
 	}
 
 	for _, mig := range m.GetMigs() {
-		if !exists[mig.Config.GceRef()] && !m.explicitlyConfigured[mig.Config.GceRef()] {
-			m.cache.UnregisterMig(mig.Config)
+		if !exists[mig.GceRef()] && !m.explicitlyConfigured[mig.GceRef()] {
+			m.cache.UnregisterMig(mig)
 			changed = true
 		}
 	}
@@ -462,7 +476,8 @@ func (m *gceManagerImpl) findMigsInRegion(region string, name *regexp.Regexp) ([
 
 // GetMigTemplateNode constructs a node from GCE instance template of the given MIG.
 func (m *gceManagerImpl) GetMigTemplateNode(mig Mig) (*apiv1.Node, error) {
-	template, err := m.GceService.FetchMigTemplate(mig.GceRef())
+	template, err := m.migInstanceTemplatesProvider.GetMigInstanceTemplate(mig.GceRef())
+
 	if err != nil {
 		return nil, err
 	}
@@ -501,4 +516,77 @@ func parseCustomMachineType(machineType string) (cpu, mem int64, err error) {
 	// Mb to bytes
 	mem = mem * units.MiB
 	return
+}
+
+// parseMIGAutoDiscoverySpecs returns any provided NodeGroupAutoDiscoverySpecs
+// parsed into configuration appropriate for MIG autodiscovery.
+func parseMIGAutoDiscoverySpecs(o cloudprovider.NodeGroupDiscoveryOptions) ([]migAutoDiscoveryConfig, error) {
+	cfgs := make([]migAutoDiscoveryConfig, len(o.NodeGroupAutoDiscoverySpecs))
+	var err error
+	for i, spec := range o.NodeGroupAutoDiscoverySpecs {
+		cfgs[i], err = parseMIGAutoDiscoverySpec(spec)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return cfgs, nil
+}
+
+// A migAutoDiscoveryConfig specifies how to autodiscover GCE MIGs.
+type migAutoDiscoveryConfig struct {
+	// Re is a regexp passed using the eq filter to the GCE list API.
+	Re *regexp.Regexp
+	// MinSize specifies the minimum size for all MIGs that match Re.
+	MinSize int
+	// MaxSize specifies the maximum size for all MIGs that match Re.
+	MaxSize int
+}
+
+func parseMIGAutoDiscoverySpec(spec string) (migAutoDiscoveryConfig, error) {
+	cfg := migAutoDiscoveryConfig{}
+
+	tokens := strings.Split(spec, ":")
+	if len(tokens) != 2 {
+		return cfg, fmt.Errorf("spec \"%s\" should be discoverer:key=value,key=value", spec)
+	}
+	discoverer := tokens[0]
+	if discoverer != autoDiscovererTypeMIG {
+		return cfg, fmt.Errorf("unsupported discoverer specified: %s", discoverer)
+	}
+
+	for _, arg := range strings.Split(tokens[1], ",") {
+		kv := strings.Split(arg, "=")
+		if len(kv) != 2 {
+			return cfg, fmt.Errorf("invalid key=value pair %s", kv)
+		}
+		k, v := kv[0], kv[1]
+
+		var err error
+		switch k {
+		case migAutoDiscovererKeyPrefix:
+			if cfg.Re, err = regexp.Compile(fmt.Sprintf("^%s.+", v)); err != nil {
+				return cfg, fmt.Errorf("invalid instance group name prefix \"%s\" - \"^%s.+\" must be a valid RE2 regexp", v, v)
+			}
+		case migAutoDiscovererKeyMinNodes:
+			if cfg.MinSize, err = strconv.Atoi(v); err != nil {
+				return cfg, fmt.Errorf("invalid minimum nodes: %s", v)
+			}
+		case migAutoDiscovererKeyMaxNodes:
+			if cfg.MaxSize, err = strconv.Atoi(v); err != nil {
+				return cfg, fmt.Errorf("invalid maximum nodes: %s", v)
+			}
+		default:
+			return cfg, fmt.Errorf("unsupported key \"%s\" is specified for discoverer \"%s\". Supported keys are \"%s\"", k, discoverer, validMIGAutoDiscovererKeys)
+		}
+	}
+	if cfg.Re == nil || cfg.Re.String() == "^.+" {
+		return cfg, errors.New("empty instance group name prefix supplied")
+	}
+	if cfg.MinSize > cfg.MaxSize {
+		return cfg, fmt.Errorf("minimum size %d is greater than maximum size %d", cfg.MinSize, cfg.MaxSize)
+	}
+	if cfg.MaxSize < 1 {
+		return cfg, fmt.Errorf("maximum size %d must be at least 1", cfg.MaxSize)
+	}
+	return cfg, nil
 }

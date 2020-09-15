@@ -34,13 +34,17 @@ func TestGetNodePrice(t *testing.T) {
 		Name:    "kubernetes-minion-group",
 		Project: "mwielgus-proj",
 		Zone:    "us-central1-b"},
-		"n1-standard-8", "sillyname")
+		"n1-standard-8",
+		"sillyname",
+		OperatingSystemLinux)
 
 	labels2, _ := BuildGenericLabels(GceRef{
 		Name:    "kubernetes-minion-group",
 		Project: "mwielgus-proj",
 		Zone:    "us-central1-b"},
-		"n1-standard-8", "sillyname")
+		"n1-standard-8",
+		"sillyname",
+		OperatingSystemLinux)
 	labels2[preemptibleLabel] = "true"
 
 	model := &GcePriceModel{}
@@ -72,13 +76,13 @@ func TestGetNodePrice(t *testing.T) {
 	node4 := BuildTestNode("sillyname4", 8000, 30*units.GiB)
 	node4.Status.Capacity[gpu.ResourceNvidiaGPU] = *resource.NewQuantity(1, resource.DecimalSI)
 	node4.Labels = labels1
-	price4, err := model.NodePrice(node4, now, now.Add(time.Hour))
+	price4, _ := model.NodePrice(node4, now, now.Add(time.Hour))
 
 	// preemptible with gpu
 	node5 := BuildTestNode("sillyname5", 8000, 30*units.GiB)
 	node5.Labels = labels2
 	node5.Status.Capacity[gpu.ResourceNvidiaGPU] = *resource.NewQuantity(1, resource.DecimalSI)
-	price5, err := model.NodePrice(node5, now, now.Add(time.Hour))
+	price5, _ := model.NodePrice(node5, now, now.Add(time.Hour))
 
 	// Nodes with GPU are way more expensive than regular.
 	// Being preemptible doesn't bring much of a discount (less than 50%).

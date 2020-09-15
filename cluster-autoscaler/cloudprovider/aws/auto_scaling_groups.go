@@ -19,11 +19,9 @@ package aws
 import (
 	"fmt"
 	"reflect"
-	"regexp"
 	"strings"
 	"sync"
 
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -44,7 +42,7 @@ type asgCache struct {
 	service        autoScalingWrapper
 	interrupt      chan struct{}
 
-	asgAutoDiscoverySpecs []cloudprovider.ASGAutoDiscoveryConfig
+	asgAutoDiscoverySpecs []asgAutoDiscoveryConfig
 	explicitlyConfigured  map[AwsRef]bool
 }
 
@@ -72,7 +70,7 @@ type asg struct {
 	Tags                    []*autoscaling.TagDescription
 }
 
-func newASGCache(service autoScalingWrapper, explicitSpecs []string, autoDiscoverySpecs []cloudprovider.ASGAutoDiscoveryConfig) (*asgCache, error) {
+func newASGCache(service autoScalingWrapper, explicitSpecs []string, autoDiscoverySpecs []asgAutoDiscoveryConfig) (*asgCache, error) {
 	registry := &asgCache{
 		registeredAsgs:        make([]*asg, 0),
 		service:               service,
@@ -287,8 +285,7 @@ func (m *asgCache) DeleteInstances(instances []*AwsInstanceRef) error {
 
 // isPlaceholderInstance checks if the given instance is only a placeholder
 func (m *asgCache) isPlaceholderInstance(instance *AwsInstanceRef) bool {
-	matched, _ := regexp.MatchString(fmt.Sprintf("^%s.*\\d+$", placeholderInstanceNamePrefix), instance.Name)
-	return matched
+	return strings.HasPrefix(instance.Name, placeholderInstanceNamePrefix)
 }
 
 // Fetch automatically discovered ASGs. These ASGs should be unregistered if
@@ -355,6 +352,11 @@ func (m *asgCache) regenerate() error {
 	groups, err := m.service.getAutoscalingGroupsByNames(refreshNames)
 	if err != nil {
 		return err
+	}
+
+	err = m.service.populateLaunchConfigurationInstanceTypeCache(groups)
+	if err != nil {
+		klog.Warningf("Failed to fully populate all launchConfigurations: %v", err)
 	}
 
 	// If currently any ASG has more Desired than running Instances, introduce placeholders

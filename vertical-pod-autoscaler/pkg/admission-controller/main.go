@@ -19,26 +19,32 @@ package main
 import (
 	"flag"
 	"fmt"
+
 	"net/http"
 	"os"
 	"time"
 
-	kube_flag "k8s.io/apiserver/pkg/util/flag"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/common"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/logic"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/resource/pod"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/resource/vpa"
 	vpa_clientset "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/limitrange"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics"
 	metrics_admission "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/admission"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/status"
 	vpa_api_util "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
 	"k8s.io/client-go/informers"
 	kube_client "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	kube_flag "k8s.io/component-base/cli/flag"
 	"k8s.io/klog"
 )
 
 const (
-	defaultResyncPeriod time.Duration = 10 * time.Minute
+	defaultResyncPeriod  = 10 * time.Minute
+	statusUpdateInterval = 10 * time.Second
 )
 
 var (
@@ -51,12 +57,14 @@ var (
 	port           = flag.Int("port", 8000, "The port to listen on.")
 	address        = flag.String("address", ":8944", "The address to expose Prometheus metrics.")
 	namespace      = os.Getenv("NAMESPACE")
+	serviceName    = flag.String("webhook-service", "vpa-webhook", "Kubernetes service under which webhook is registered. Used when registerByURL is set to false.")
 	webhookAddress = flag.String("webhook-address", "", "Address under which webhook is registered. Used when registerByURL is set to true.")
 	webhookPort    = flag.String("webhook-port", "", "Server Port for Webhook")
 	registerByURL  = flag.Bool("register-by-url", false, "If set to true, admission webhook will be registered by URL (webhookAddress:webhookPort) instead of by service name")
 )
 
 func main() {
+	klog.InitFlags(nil)
 	kube_flag.InitFlags()
 	klog.V(1).Infof("Vertical Pod Autoscaler %s Admission Controller", common.VerticalPodAutoscalerVersion)
 
@@ -75,11 +83,33 @@ func main() {
 	vpaLister := vpa_api_util.NewAllVpasLister(vpaClient, make(chan struct{}))
 	kubeClient := kube_client.NewForConfigOrDie(config)
 	factory := informers.NewSharedInformerFactory(kubeClient, defaultResyncPeriod)
-	targetSelectorFetcher := target.NewCompositeTargetSelectorFetcher(
-		target.NewVpaTargetSelectorFetcher(config, kubeClient, factory),
-		target.NewBeta1TargetSelectorFetcher(config),
+	targetSelectorFetcher := target.NewVpaTargetSelectorFetcher(config, kubeClient, factory)
+	podPreprocessor := pod.NewDefaultPreProcessor()
+	vpaPreprocessor := vpa.NewDefaultPreProcessor()
+	var limitRangeCalculator limitrange.LimitRangeCalculator
+	limitRangeCalculator, err = limitrange.NewLimitsRangeCalculator(factory)
+	if err != nil {
+		klog.Errorf("Failed to create limitRangeCalculator, falling back to not checking limits. Error message: %s", err)
+		limitRangeCalculator = limitrange.NewNoopLimitsCalculator()
+	}
+	recommendationProvider := pod.NewRecommendationProvider(limitRangeCalculator, vpa_api_util.NewCappingRecommendationProcessor(limitRangeCalculator))
+	vpaMatcher := vpa.NewMatcher(vpaLister, targetSelectorFetcher)
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		klog.Fatalf("Unable to get hostname: %v", err)
+	}
+	stopCh := make(chan struct{})
+	statusUpdater := status.NewUpdater(
+		kubeClient,
+		status.AdmissionControllerStatusName,
+		status.AdmissionControllerStatusNamespace,
+		statusUpdateInterval,
+		hostname,
 	)
-	as := logic.NewAdmissionServer(logic.NewRecommendationProvider(vpaLister, vpa_api_util.NewCappingRecommendationProcessor(), targetSelectorFetcher), logic.NewDefaultPodPreProcessor())
+	defer close(stopCh)
+
+	as := logic.NewAdmissionServer(recommendationProvider, podPreprocessor, vpaPreprocessor, limitRangeCalculator, vpaMatcher)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		as.Serve(w, r)
 		healthCheck.UpdateLastActivity()
@@ -89,7 +119,11 @@ func main() {
 		Addr:      fmt.Sprintf(":%d", *port),
 		TLSConfig: configTLS(clientset, certs.serverCert, certs.serverKey),
 	}
-	url := fmt.Sprintf("%v:%v", webhookAddress, webhookPort)
-	go selfRegistration(clientset, certs.caCert, &namespace, url, *registerByURL)
+	url := fmt.Sprintf("%v:%v", *webhookAddress, *webhookPort)
+	go func() {
+		selfRegistration(clientset, certs.caCert, namespace, *serviceName, url, *registerByURL)
+		// Start status updates after the webhook is initialized.
+		statusUpdater.Run(stopCh)
+	}()
 	server.ListenAndServeTLS("", "")
 }

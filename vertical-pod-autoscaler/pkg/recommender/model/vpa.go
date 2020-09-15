@@ -24,8 +24,11 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 )
+
+// Map from VPA annotation key to value.
+type vpaAnnotationsMap map[string]string
 
 // Map from VPA condition type to condition.
 type vpaConditionsMap map[vpa_types.VerticalPodAutoscalerConditionType]vpa_types.VerticalPodAutoscalerCondition
@@ -67,6 +70,11 @@ func (conditionsMap *vpaConditionsMap) AsList() []vpa_types.VerticalPodAutoscale
 	return conditions
 }
 
+func (conditionsMap *vpaConditionsMap) ConditionActive(conditionType vpa_types.VerticalPodAutoscalerConditionType) bool {
+	condition, found := (*conditionsMap)[conditionType]
+	return found && condition.Status == apiv1.ConditionTrue
+}
+
 // Vpa (Vertical Pod Autoscaler) object is responsible for vertical scaling of
 // Pods matching a given label selector.
 type Vpa struct {
@@ -74,6 +82,8 @@ type Vpa struct {
 	// Labels selector that determines which Pods are controlled by this VPA
 	// object. Can be nil, in which case no Pod is matched.
 	PodSelector labels.Selector
+	// Map of the object annotations (key-value pairs).
+	Annotations vpaAnnotationsMap
 	// Map of the status conditions (keys are condition types).
 	Conditions vpaConditionsMap
 	// Most recently computed recommendation. Can be nil.
@@ -107,6 +117,7 @@ func NewVpa(id VpaID, selector labels.Selector, created time.Time) *Vpa {
 		aggregateContainerStates:        make(aggregateContainerStatesMap),
 		ContainersInitialAggregateState: make(ContainerNameToAggregateStateMap),
 		Created:                         created,
+		Annotations:                     make(vpaAnnotationsMap),
 		Conditions:                      make(vpaConditionsMap),
 		IsV1Beta1API:                    false,
 	}
@@ -114,10 +125,31 @@ func NewVpa(id VpaID, selector labels.Selector, created time.Time) *Vpa {
 }
 
 // UseAggregationIfMatching checks if the given aggregation matches (contributes to) this VPA
-// and adds it to the set of VPA's aggregations if that is the case.
-func (vpa *Vpa) UseAggregationIfMatching(aggregationKey AggregateStateKey, aggregation *AggregateContainerState) {
-	if !vpa.UsesAggregation(aggregationKey) && vpa.matchesAggregation(aggregationKey) {
+// and adds it to the set of VPA's aggregations if that is the case. Returns true
+// if the aggregation matches VPA.
+func (vpa *Vpa) UseAggregationIfMatching(aggregationKey AggregateStateKey, aggregation *AggregateContainerState) bool {
+	if vpa.UsesAggregation(aggregationKey) {
+		return true
+	}
+	if vpa.matchesAggregation(aggregationKey) {
 		vpa.aggregateContainerStates[aggregationKey] = aggregation
+		aggregation.IsUnderVPA = true
+		aggregation.UpdateMode = vpa.UpdateMode
+		return true
+	}
+	return false
+}
+
+// UpdateRecommendation updates the recommended resources in the VPA and its
+// aggregations with the given recommendation.
+func (vpa *Vpa) UpdateRecommendation(recommendation *vpa_types.RecommendedPodResources) {
+	vpa.Recommendation = recommendation
+	for _, containerRecommendation := range recommendation.ContainerRecommendations {
+		for container, state := range vpa.aggregateContainerStates {
+			if container.ContainerName() == containerRecommendation.ContainerName {
+				state.LastRecommendation = containerRecommendation.UncappedTarget
+			}
+		}
 	}
 }
 
@@ -129,6 +161,11 @@ func (vpa *Vpa) UsesAggregation(aggregationKey AggregateStateKey) bool {
 
 // DeleteAggregation deletes aggregation used by this container
 func (vpa *Vpa) DeleteAggregation(aggregationKey AggregateStateKey) {
+	state, ok := vpa.aggregateContainerStates[aggregationKey]
+	if !ok {
+		return
+	}
+	state.MarkNotAutoscaled()
 	delete(vpa.aggregateContainerStates, aggregationKey)
 }
 
@@ -163,4 +200,48 @@ func (vpa *Vpa) matchesAggregation(aggregationKey AggregateStateKey) bool {
 		return false
 	}
 	return vpa.PodSelector != nil && vpa.PodSelector.Matches(aggregationKey.Labels())
+}
+
+// UpdateConditions updates the conditions of VPA objects based on it's state.
+// PodsMatched is passed to indicate if there are currently active pods in the
+// cluster matching this VPA.
+func (vpa *Vpa) UpdateConditions(podsMatched bool) {
+	reason := ""
+	msg := ""
+	if podsMatched {
+		delete(vpa.Conditions, vpa_types.NoPodsMatched)
+	} else {
+		reason = "NoPodsMatched"
+		msg = "No pods match this VPA object"
+		vpa.Conditions.Set(vpa_types.NoPodsMatched, true, reason, msg)
+	}
+	if vpa.HasRecommendation() {
+		vpa.Conditions.Set(vpa_types.RecommendationProvided, true, "", "")
+	} else {
+		vpa.Conditions.Set(vpa_types.RecommendationProvided, false, reason, msg)
+	}
+
+}
+
+// AsStatus returns this objects equivalent of VPA Status. UpdateConditions
+// should be called first.
+func (vpa *Vpa) AsStatus() *vpa_types.VerticalPodAutoscalerStatus {
+	status := &vpa_types.VerticalPodAutoscalerStatus{
+		Conditions: vpa.Conditions.AsList(),
+	}
+	if vpa.Recommendation != nil {
+		status.Recommendation = vpa.Recommendation
+	}
+	return status
+}
+
+// HasMatchedPods returns true if there are are currently active pods in the
+// cluster matching this VPA, based on conditions. UpdateConditions should be
+// called first.
+func (vpa *Vpa) HasMatchedPods() bool {
+	noPodsMatched, found := vpa.Conditions[vpa_types.NoPodsMatched]
+	if found && noPodsMatched.Status == apiv1.ConditionTrue {
+		return false
+	}
+	return true
 }

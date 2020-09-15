@@ -25,6 +25,9 @@ Starting from Kubernetes 1.12, versioning scheme was changed to match Kubernetes
 
 | Kubernetes Version  | CA Version   |
 |--------|--------|
+| 1.16.X | 1.16.X  |
+| 1.15.X | 1.15.X  |
+| 1.14.X | 1.14.X  |
 | 1.13.X | 1.13.X  |
 | 1.12.X | 1.12.X  |
 | 1.11.X | 1.3.X  |
@@ -76,9 +79,9 @@ With this release we graduated Cluster Autoscaler to GA.
 * Improved eventing and monitoring.
 * Node allocatable support.
 * Removed Azure support. See: [PR removing support with reasoning behind this decision](https://github.com/kubernetes/autoscaler/pull/229)
-* cluster-autoscaler.kubernetes.io/scale-down-disabled` annotation for marking
+* `cluster-autoscaler.kubernetes.io/scale-down-disabled` annotation for marking
   nodes that should not be scaled down.
-* scale-down-delay-after-delete` and `scale-down-delay-after-failure` flags
+* `scale-down-delay-after-delete` and `scale-down-delay-after-failure` flags
     replaced `scale-down-trial-interval`
 
 CA Version 0.6:
@@ -137,3 +140,5 @@ Supported cloud providers:
 * AWS https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/aws/README.md
 * Azure https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/azure/README.md
 * Alibaba Cloud https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/alicloud/README.md
+* OpenStack Magnum https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/magnum/README.md
+* DigitalOcean https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/digitalocean/README.md

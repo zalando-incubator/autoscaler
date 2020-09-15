@@ -21,9 +21,11 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/context"
 )
 
-// PodListProcessor processes lists of unschedulable and scheduled pods before scaling of the cluster.
+// PodListProcessor processes lists of unschedulable pods.
 type PodListProcessor interface {
-	Process(context *context.AutoscalingContext, unschedulablePods []*apiv1.Pod, allScheduled []*apiv1.Pod, nodes []*apiv1.Node) ([]*apiv1.Pod, []*apiv1.Pod, error)
+	Process(
+		context *context.AutoscalingContext,
+		unschedulablePods []*apiv1.Pod) ([]*apiv1.Pod, error)
 	CleanUp()
 }
 
@@ -37,8 +39,10 @@ func NewDefaultPodListProcessor() PodListProcessor {
 }
 
 // Process processes lists of unschedulable and scheduled pods before scaling of the cluster.
-func (p *NoOpPodListProcessor) Process(context *context.AutoscalingContext, unschedulablePods []*apiv1.Pod, allScheduled []*apiv1.Pod, nodes []*apiv1.Node) ([]*apiv1.Pod, []*apiv1.Pod, error) {
-	return unschedulablePods, allScheduled, nil
+func (p *NoOpPodListProcessor) Process(
+	context *context.AutoscalingContext,
+	unschedulablePods []*apiv1.Pod) ([]*apiv1.Pod, error) {
+	return unschedulablePods, nil
 }
 
 // CleanUp cleans up the processor's internal structures.

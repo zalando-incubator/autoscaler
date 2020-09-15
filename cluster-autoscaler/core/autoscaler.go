@@ -41,7 +41,8 @@ type AutoscalerOptions struct {
 	EventsKubeClient       kube_client.Interface
 	AutoscalingKubeClients *context.AutoscalingKubeClients
 	CloudProvider          cloudprovider.CloudProvider
-	PredicateChecker       *simulator.PredicateChecker
+	PredicateChecker       simulator.PredicateChecker
+	ClusterSnapshot        simulator.ClusterSnapshot
 	ExpanderStrategy       expander.Strategy
 	EstimatorBuilder       estimator.EstimatorBuilder
 	Processors             *ca_processors.AutoscalingProcessors
@@ -51,6 +52,8 @@ type AutoscalerOptions struct {
 // Autoscaler is the main component of CA which scales up/down node groups according to its configuration
 // The configuration can be injected at the creation of an autoscaler
 type Autoscaler interface {
+	// Start starts components running in background.
+	Start() error
 	// RunOnce represents an iteration in the control-loop of CA
 	RunOnce(currentTime time.Time) errors.AutoscalerError
 	// ExitCleanUp is a clean-up performed just before process termination.
@@ -66,8 +69,10 @@ func NewAutoscaler(opts AutoscalerOptions) (Autoscaler, errors.AutoscalerError) 
 	return NewStaticAutoscaler(
 		opts.AutoscalingOptions,
 		opts.PredicateChecker,
+		opts.ClusterSnapshot,
 		opts.AutoscalingKubeClients,
-		opts.Processors, opts.CloudProvider,
+		opts.Processors,
+		opts.CloudProvider,
 		opts.ExpanderStrategy,
 		opts.EstimatorBuilder,
 		opts.Backoff), nil
@@ -83,18 +88,21 @@ func initializeDefaultOptions(opts *AutoscalerOptions) error {
 	}
 	if opts.PredicateChecker == nil {
 		predicateCheckerStopChannel := make(chan struct{})
-		predicateChecker, err := simulator.NewPredicateChecker(opts.KubeClient, predicateCheckerStopChannel)
+		predicateChecker, err := simulator.NewSchedulerBasedPredicateChecker(opts.KubeClient, predicateCheckerStopChannel)
 		if err != nil {
 			return err
 		}
 		opts.PredicateChecker = predicateChecker
+	}
+	if opts.ClusterSnapshot == nil {
+		opts.ClusterSnapshot = simulator.NewBasicClusterSnapshot()
 	}
 	if opts.CloudProvider == nil {
 		opts.CloudProvider = cloudBuilder.NewCloudProvider(opts.AutoscalingOptions)
 	}
 	if opts.ExpanderStrategy == nil {
 		expanderStrategy, err := factory.ExpanderStrategyFromString(opts.ExpanderName,
-			opts.CloudProvider, opts.AutoscalingKubeClients.AllNodeLister())
+			opts.CloudProvider, opts.AutoscalingKubeClients, opts.KubeClient, opts.ConfigNamespace)
 		if err != nil {
 			return err
 		}

@@ -155,6 +155,7 @@ func TestBalanceHittingMaxSize(t *testing.T) {
 	provider.AddNodeGroup("ng2", 1, 3, 1)
 	provider.AddNodeGroup("ng3", 1, 10, 3)
 	provider.AddNodeGroup("ng4", 1, 7, 5)
+	provider.AddNodeGroup("ng5", 1, 3, 6)
 	groupsMap := make(map[string]cloudprovider.NodeGroup)
 	for _, group := range provider.NodeGroups() {
 		groupsMap[group.Id()] = group
@@ -196,14 +197,14 @@ func TestBalanceHittingMaxSize(t *testing.T) {
 	assert.Equal(t, 3, scaleUpInfo[0].NewSize)
 
 	// First group maxes out before proceeding to next one
-	scaleUpInfo, err = processor.BalanceScaleUpBetweenGroups(context, getGroups("ng2", "ng3"), 4)
+	scaleUpInfo, _ = processor.BalanceScaleUpBetweenGroups(context, getGroups("ng2", "ng3"), 4)
 	assert.Equal(t, 2, len(scaleUpInfo))
 	scaleUpMap := toMap(scaleUpInfo)
 	assert.Equal(t, 3, scaleUpMap["ng2"].NewSize)
 	assert.Equal(t, 5, scaleUpMap["ng3"].NewSize)
 
 	// Last group maxes out before previous one
-	scaleUpInfo, err = processor.BalanceScaleUpBetweenGroups(context, getGroups("ng2", "ng3", "ng4"), 9)
+	scaleUpInfo, _ = processor.BalanceScaleUpBetweenGroups(context, getGroups("ng2", "ng3", "ng4"), 9)
 	assert.Equal(t, 3, len(scaleUpInfo))
 	scaleUpMap = toMap(scaleUpInfo)
 	assert.Equal(t, 3, scaleUpMap["ng2"].NewSize)
@@ -211,10 +212,16 @@ func TestBalanceHittingMaxSize(t *testing.T) {
 	assert.Equal(t, 7, scaleUpMap["ng4"].NewSize)
 
 	// Use all capacity, cap to max
-	scaleUpInfo, err = processor.BalanceScaleUpBetweenGroups(context, getGroups("ng2", "ng3", "ng4"), 900)
+	scaleUpInfo, _ = processor.BalanceScaleUpBetweenGroups(context, getGroups("ng2", "ng3", "ng4"), 900)
 	assert.Equal(t, 3, len(scaleUpInfo))
 	scaleUpMap = toMap(scaleUpInfo)
 	assert.Equal(t, 3, scaleUpMap["ng2"].NewSize)
 	assert.Equal(t, 10, scaleUpMap["ng3"].NewSize)
 	assert.Equal(t, 7, scaleUpMap["ng4"].NewSize)
+
+	// One node group exceeds max.
+	scaleUpInfo, _ = processor.BalanceScaleUpBetweenGroups(context, getGroups("ng2", "ng5"), 1)
+	assert.Equal(t, 1, len(scaleUpInfo))
+	scaleUpMap = toMap(scaleUpInfo)
+	assert.Equal(t, 2, scaleUpMap["ng2"].NewSize)
 }

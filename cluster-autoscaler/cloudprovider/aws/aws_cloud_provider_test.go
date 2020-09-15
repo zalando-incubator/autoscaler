@@ -66,7 +66,7 @@ func (e *EC2Mock) DescribeLaunchTemplateVersions(i *ec2.DescribeLaunchTemplateVe
 	return args.Get(0).(*ec2.DescribeLaunchTemplateVersionsOutput), nil
 }
 
-var testService = autoScalingWrapper{&AutoScalingMock{}, map[string]string{}}
+var testService = autoScalingWrapper{&AutoScalingMock{}, newLaunchConfigurationInstanceTypeCache()}
 
 var testAwsManager = &AwsManager{
 	asgCache: &asgCache{
@@ -79,8 +79,8 @@ var testAwsManager = &AwsManager{
 	autoScalingService: testService,
 }
 
-func newTestAwsManagerWithService(service autoScaling, autoDiscoverySpecs []cloudprovider.ASGAutoDiscoveryConfig) *AwsManager {
-	wrapper := autoScalingWrapper{service, map[string]string{}}
+func newTestAwsManagerWithService(service autoScaling, autoDiscoverySpecs []asgAutoDiscoveryConfig) *AwsManager {
+	wrapper := autoScalingWrapper{service, newLaunchConfigurationInstanceTypeCache()}
 	return &AwsManager{
 		autoScalingService: wrapper,
 		asgCache: &asgCache{
@@ -101,7 +101,7 @@ func newTestAwsManagerWithAsgs(t *testing.T, service autoScaling, specs []string
 	return m
 }
 
-func newTestAwsManagerWithAutoAsgs(t *testing.T, service autoScaling, specs []string, autoDiscoverySpecs []cloudprovider.ASGAutoDiscoveryConfig) *AwsManager {
+func newTestAwsManagerWithAutoAsgs(t *testing.T, service autoScaling, specs []string, autoDiscoverySpecs []asgAutoDiscoveryConfig) *AwsManager {
 	m := newTestAwsManagerWithService(service, autoDiscoverySpecs)
 	m.asgCache.parseExplicitAsgs(specs)
 	return m
@@ -150,7 +150,7 @@ func TestBuildAwsCloudProvider(t *testing.T) {
 
 func TestName(t *testing.T) {
 	provider := testProvider(t, testAwsManager)
-	assert.Equal(t, provider.Name(), ProviderName)
+	assert.Equal(t, provider.Name(), cloudprovider.AwsProviderName)
 }
 
 func TestNodeGroups(t *testing.T) {
@@ -165,7 +165,7 @@ func TestNodeGroups(t *testing.T) {
 
 func TestAutoDiscoveredNodeGroups(t *testing.T) {
 	service := &AutoScalingMock{}
-	provider := testProvider(t, newTestAwsManagerWithAutoAsgs(t, service, []string{}, []cloudprovider.ASGAutoDiscoveryConfig{
+	provider := testProvider(t, newTestAwsManagerWithAutoAsgs(t, service, []string{}, []asgAutoDiscoveryConfig{
 		{
 			Tags: map[string]string{"test": ""},
 		},
@@ -272,18 +272,56 @@ func TestNodeGroupForNodeWithNoProviderId(t *testing.T) {
 }
 
 func TestAwsRefFromProviderId(t *testing.T) {
-	_, err := AwsRefFromProviderId("aws123")
-	assert.Error(t, err)
-	_, err = AwsRefFromProviderId("aws://test-az/test-instance-id")
-	assert.Error(t, err)
+	tests := []struct {
+		provID string
+		expErr bool
+		expRef *AwsInstanceRef
+	}{
+		{
+			provID: "aws123",
+			expErr: true,
+		},
+		{
+			provID: "aws://test-az/test-instance-id",
+			expErr: true,
+		},
+		{
 
-	awsRef, err := AwsRefFromProviderId("aws:///us-east-1a/i-260942b3")
-	assert.NoError(t, err)
-	assert.Equal(t, awsRef, &AwsInstanceRef{Name: "i-260942b3", ProviderID: "aws:///us-east-1a/i-260942b3"})
+			provID: "aws:///us-east-1a/i-260942b3",
+			expErr: false,
+			expRef: &AwsInstanceRef{
+				Name:       "i-260942b3",
+				ProviderID: "aws:///us-east-1a/i-260942b3",
+			},
+		},
+		{
+			provID: "aws:///us-east-1a/i-placeholder-some.arbitrary.cluster.local",
+			expErr: false,
+			expRef: &AwsInstanceRef{
+				Name:       "i-placeholder-some.arbitrary.cluster.local",
+				ProviderID: "aws:///us-east-1a/i-placeholder-some.arbitrary.cluster.local",
+			},
+		},
+		{
+			// ref: https://github.com/kubernetes/autoscaler/issues/2285
+			provID: "aws:///eu-central-1c/i-placeholder-K3-EKS-spotr5xlasgsubnet02af43b02922e710f-10QH9H0C8PG7O-14",
+			expErr: false,
+			expRef: &AwsInstanceRef{
+				Name:       "i-placeholder-K3-EKS-spotr5xlasgsubnet02af43b02922e710f-10QH9H0C8PG7O-14",
+				ProviderID: "aws:///eu-central-1c/i-placeholder-K3-EKS-spotr5xlasgsubnet02af43b02922e710f-10QH9H0C8PG7O-14",
+			},
+		},
+	}
 
-	placeholderRef, err := AwsRefFromProviderId("aws:///us-east-1a/i-placeholder-some.arbitrary.cluster.local")
-	assert.NoError(t, err)
-	assert.Equal(t, placeholderRef, &AwsInstanceRef{Name: "i-placeholder-some.arbitrary.cluster.local", ProviderID: "aws:///us-east-1a/i-placeholder-some.arbitrary.cluster.local"})
+	for _, test := range tests {
+		got, err := AwsRefFromProviderId(test.provID)
+		if test.expErr {
+			assert.Error(t, err)
+		} else {
+			assert.NoError(t, err)
+			assert.Equal(t, got, test.expRef)
+		}
+	}
 }
 
 func TestTargetSize(t *testing.T) {

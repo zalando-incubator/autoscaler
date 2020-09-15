@@ -32,7 +32,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
 	"golang.org/x/net/http2"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,6 +43,7 @@ import (
 	restclientwatch "k8s.io/client-go/rest/watch"
 	"k8s.io/client-go/tools/metrics"
 	"k8s.io/client-go/util/flowcontrol"
+	"k8s.io/klog"
 )
 
 var (
@@ -114,7 +114,7 @@ type Request struct {
 // NewRequest creates a new request helper object for accessing runtime.Objects on a server.
 func NewRequest(client HTTPClient, verb string, baseURL *url.URL, versionedAPIPath string, content ContentConfig, serializers Serializers, backoff BackoffManager, throttle flowcontrol.RateLimiter, timeout time.Duration) *Request {
 	if backoff == nil {
-		glog.V(2).Infof("Not implementing request backoff strategy.")
+		klog.V(2).Infof("Not implementing request backoff strategy.")
 		backoff = &NoBackoff{}
 	}
 
@@ -198,7 +198,7 @@ func (r *Request) Throttle(limiter flowcontrol.RateLimiter) *Request {
 	return r
 }
 
-// SubResource sets a sub-resource path which can be multiple segments segment after the resource
+// SubResource sets a sub-resource path which can be multiple segments after the resource
 // name but before the suffix.
 func (r *Request) SubResource(subresources ...string) *Request {
 	if r.err != nil {
@@ -455,17 +455,9 @@ func (r *Request) URL() *url.URL {
 
 // finalURLTemplate is similar to URL(), but will make all specific parameter values equal
 // - instead of name or namespace, "{name}" and "{namespace}" will be used, and all query
-// parameters will be reset. This creates a copy of the request so as not to change the
-// underlying object.  This means some useful request info (like the types of field
-// selectors in use) will be lost.
-// TODO: preserve field selector keys
+// parameters will be reset. This creates a copy of the url so as not to change the
+// underlying object.
 func (r Request) finalURLTemplate() url.URL {
-	if len(r.resourceName) != 0 {
-		r.resourceName = "{name}"
-	}
-	if r.namespaceSet && len(r.namespace) != 0 {
-		r.namespace = "{namespace}"
-	}
 	newParams := url.Values{}
 	v := []string{"{value}"}
 	for k := range r.params {
@@ -473,17 +465,80 @@ func (r Request) finalURLTemplate() url.URL {
 	}
 	r.params = newParams
 	url := r.URL()
+	segments := strings.Split(r.URL().Path, "/")
+	groupIndex := 0
+	index := 0
+	if r.URL() != nil && r.baseURL != nil && strings.Contains(r.URL().Path, r.baseURL.Path) {
+		groupIndex += len(strings.Split(r.baseURL.Path, "/"))
+	}
+	if groupIndex >= len(segments) {
+		return *url
+	}
+
+	const CoreGroupPrefix = "api"
+	const NamedGroupPrefix = "apis"
+	isCoreGroup := segments[groupIndex] == CoreGroupPrefix
+	isNamedGroup := segments[groupIndex] == NamedGroupPrefix
+	if isCoreGroup {
+		// checking the case of core group with /api/v1/... format
+		index = groupIndex + 2
+	} else if isNamedGroup {
+		// checking the case of named group with /apis/apps/v1/... format
+		index = groupIndex + 3
+	} else {
+		// this should not happen that the only two possibilities are /api... and /apis..., just want to put an
+		// outlet here in case more API groups are added in future if ever possible:
+		// https://kubernetes.io/docs/concepts/overview/kubernetes-api/#api-groups
+		// if a wrong API groups name is encountered, return the {prefix} for url.Path
+		url.Path = "/{prefix}"
+		url.RawQuery = ""
+		return *url
+	}
+	//switch segLength := len(segments) - index; segLength {
+	switch {
+	// case len(segments) - index == 1:
+	// resource (with no name) do nothing
+	case len(segments)-index == 2:
+		// /$RESOURCE/$NAME: replace $NAME with {name}
+		segments[index+1] = "{name}"
+	case len(segments)-index == 3:
+		if segments[index+2] == "finalize" || segments[index+2] == "status" {
+			// /$RESOURCE/$NAME/$SUBRESOURCE: replace $NAME with {name}
+			segments[index+1] = "{name}"
+		} else {
+			// /namespace/$NAMESPACE/$RESOURCE: replace $NAMESPACE with {namespace}
+			segments[index+1] = "{namespace}"
+		}
+	case len(segments)-index >= 4:
+		segments[index+1] = "{namespace}"
+		// /namespace/$NAMESPACE/$RESOURCE/$NAME: replace $NAMESPACE with {namespace},  $NAME with {name}
+		if segments[index+3] != "finalize" && segments[index+3] != "status" {
+			// /$RESOURCE/$NAME/$SUBRESOURCE: replace $NAME with {name}
+			segments[index+3] = "{name}"
+		}
+	}
+	url.Path = path.Join(segments...)
 	return *url
 }
 
-func (r *Request) tryThrottle() {
+func (r *Request) tryThrottle() error {
+	if r.throttle == nil {
+		return nil
+	}
+
 	now := time.Now()
-	if r.throttle != nil {
+	var err error
+	if r.ctx != nil {
+		err = r.throttle.Wait(r.ctx)
+	} else {
 		r.throttle.Accept()
 	}
+
 	if latency := time.Since(now); latency > longThrottleLatency {
-		glog.V(4).Infof("Throttling request took %v, request: %s:%s", latency, r.verb, r.URL().String())
+		klog.V(4).Infof("Throttling request took %v, request: %s:%s", latency, r.verb, r.URL().String())
 	}
+
+	return err
 }
 
 // Watch attempts to begin watching the requested location.
@@ -547,10 +602,15 @@ func (r *Request) WatchWithSpecificDecoders(wrapperDecoderFn func(io.ReadCloser)
 		if result := r.transformResponse(resp, req); result.err != nil {
 			return nil, result.err
 		}
-		return nil, fmt.Errorf("for request '%+v', got status: %v", url, resp.StatusCode)
+		return nil, fmt.Errorf("for request %s, got status: %v", url, resp.StatusCode)
 	}
 	wrapperDecoder := wrapperDecoderFn(resp.Body)
-	return watch.NewStreamWatcher(restclientwatch.NewDecoder(wrapperDecoder, embeddedDecoder)), nil
+	return watch.NewStreamWatcher(
+		restclientwatch.NewDecoder(wrapperDecoder, embeddedDecoder),
+		// use 500 to indicate that the cause of the error is unknown - other error codes
+		// are more specific to HTTP interactions, and set a reason
+		errors.NewClientErrorReporter(http.StatusInternalServerError, r.verb, "ClientWatchDecoding"),
+	), nil
 }
 
 // updateURLMetrics is a convenience function for pushing metrics.
@@ -580,12 +640,17 @@ func (r *Request) Stream() (io.ReadCloser, error) {
 		return nil, r.err
 	}
 
-	r.tryThrottle()
+	if err := r.tryThrottle(); err != nil {
+		return nil, err
+	}
 
 	url := r.URL().String()
 	req, err := http.NewRequest(r.verb, url, nil)
 	if err != nil {
 		return nil, err
+	}
+	if r.body != nil {
+		req.Body = ioutil.NopCloser(r.body)
 	}
 	if r.ctx != nil {
 		req = req.WithContext(r.ctx)
@@ -626,6 +691,33 @@ func (r *Request) Stream() (io.ReadCloser, error) {
 	}
 }
 
+// requestPreflightCheck looks for common programmer errors on Request.
+//
+// We tackle here two programmer mistakes. The first one is to try to create
+// something(POST) using an empty string as namespace with namespaceSet as
+// true. If namespaceSet is true then namespace should also be defined. The
+// second mistake is, when under the same circumstances, the programmer tries
+// to GET, PUT or DELETE a named resource(resourceName != ""), again, if
+// namespaceSet is true then namespace must not be empty.
+func (r *Request) requestPreflightCheck() error {
+	if !r.namespaceSet {
+		return nil
+	}
+	if len(r.namespace) > 0 {
+		return nil
+	}
+
+	switch r.verb {
+	case "POST":
+		return fmt.Errorf("an empty namespace may not be set during creation")
+	case "GET", "PUT", "DELETE":
+		if len(r.resourceName) > 0 {
+			return fmt.Errorf("an empty namespace may not be set when a resource name is provided")
+		}
+	}
+	return nil
+}
+
 // request connects to the server and invokes the provided function when a server response is
 // received. It handles retry behavior and up front validation of requests. It will invoke
 // fn at most once. It will return an error if a problem occurred prior to connecting to the
@@ -638,16 +730,12 @@ func (r *Request) request(fn func(*http.Request, *http.Response)) error {
 	}()
 
 	if r.err != nil {
-		glog.V(4).Infof("Error in request: %v", r.err)
+		klog.V(4).Infof("Error in request: %v", r.err)
 		return r.err
 	}
 
-	// TODO: added to catch programmer errors (invoking operations with an object with an empty namespace)
-	if (r.verb == "GET" || r.verb == "PUT" || r.verb == "DELETE") && r.namespaceSet && len(r.resourceName) > 0 && len(r.namespace) == 0 {
-		return fmt.Errorf("an empty namespace may not be set when a resource name is provided")
-	}
-	if (r.verb == "POST") && r.namespaceSet && len(r.namespace) == 0 {
-		return fmt.Errorf("an empty namespace may not be set during creation")
+	if err := r.requestPreflightCheck(); err != nil {
+		return err
 	}
 
 	client := r.client
@@ -682,7 +770,9 @@ func (r *Request) request(fn func(*http.Request, *http.Response)) error {
 			// We are retrying the request that we already send to apiserver
 			// at least once before.
 			// This request should also be throttled with the client-internal throttler.
-			r.tryThrottle()
+			if err := r.tryThrottle(); err != nil {
+				return err
+			}
 		}
 		resp, err := client.Do(req)
 		updateURLMetrics(r, resp, err)
@@ -725,13 +815,13 @@ func (r *Request) request(fn func(*http.Request, *http.Response)) error {
 				if seeker, ok := r.body.(io.Seeker); ok && r.body != nil {
 					_, err := seeker.Seek(0, 0)
 					if err != nil {
-						glog.V(4).Infof("Could not retry request, can't Seek() back to beginning of body for %T", r.body)
+						klog.V(4).Infof("Could not retry request, can't Seek() back to beginning of body for %T", r.body)
 						fn(req, resp)
 						return true
 					}
 				}
 
-				glog.V(4).Infof("Got a Retry-After %ds response for attempt %d to %v", seconds, retries, url)
+				klog.V(4).Infof("Got a Retry-After %ds response for attempt %d to %v", seconds, retries, url)
 				r.backoffMgr.Sleep(time.Duration(seconds) * time.Second)
 				return false
 			}
@@ -748,12 +838,12 @@ func (r *Request) request(fn func(*http.Request, *http.Response)) error {
 // processing.
 //
 // Error type:
-//  * If the request can't be constructed, or an error happened earlier while building its
-//    arguments: *RequestConstructionError
 //  * If the server responds with a status: *errors.StatusError or *errors.UnexpectedObjectError
 //  * http.Client.Do errors are returned directly.
 func (r *Request) Do() Result {
-	r.tryThrottle()
+	if err := r.tryThrottle(); err != nil {
+		return Result{err: err}
+	}
 
 	var result Result
 	err := r.request(func(req *http.Request, resp *http.Response) {
@@ -767,7 +857,9 @@ func (r *Request) Do() Result {
 
 // DoRaw executes the request but does not process the response body.
 func (r *Request) DoRaw() ([]byte, error) {
-	r.tryThrottle()
+	if err := r.tryThrottle(); err != nil {
+		return nil, err
+	}
 
 	var result Result
 	err := r.request(func(req *http.Request, resp *http.Response) {
@@ -799,14 +891,14 @@ func (r *Request) transformResponse(resp *http.Response, req *http.Request) Resu
 			// 2. Apiserver sends back the headers and then part of the body
 			// 3. Apiserver closes connection.
 			// 4. client-go should catch this and return an error.
-			glog.V(2).Infof("Stream error %#v when reading response body, may be caused by closed connection.", err)
-			streamErr := fmt.Errorf("Stream error %#v when reading response body, may be caused by closed connection. Please retry.", err)
+			klog.V(2).Infof("Stream error %#v when reading response body, may be caused by closed connection.", err)
+			streamErr := fmt.Errorf("stream error when reading response body, may be caused by closed connection. Please retry. Original error: %v", err)
 			return Result{
 				err: streamErr,
 			}
 		default:
-			glog.Errorf("Unexpected error when reading response body: %#v", err)
-			unexpectedErr := fmt.Errorf("Unexpected error %#v when reading response body. Please retry.", err)
+			klog.Errorf("Unexpected error when reading response body: %v", err)
+			unexpectedErr := fmt.Errorf("unexpected error when reading response body. Please retry. Original error: %v", err)
 			return Result{
 				err: unexpectedErr,
 			}
@@ -869,11 +961,11 @@ func (r *Request) transformResponse(resp *http.Response, req *http.Request) Resu
 func truncateBody(body string) string {
 	max := 0
 	switch {
-	case bool(glog.V(10)):
+	case bool(klog.V(10)):
 		return body
-	case bool(glog.V(9)):
+	case bool(klog.V(9)):
 		max = 10240
-	case bool(glog.V(8)):
+	case bool(klog.V(8)):
 		max = 1024
 	}
 
@@ -888,13 +980,13 @@ func truncateBody(body string) string {
 // allocating a new string for the body output unless necessary. Uses a simple heuristic to determine
 // whether the body is printable.
 func glogBody(prefix string, body []byte) {
-	if glog.V(8) {
+	if klog.V(8) {
 		if bytes.IndexFunc(body, func(r rune) bool {
 			return r < 0x0a
 		}) != -1 {
-			glog.Infof("%s:\n%s", prefix, truncateBody(hex.Dump(body)))
+			klog.Infof("%s:\n%s", prefix, truncateBody(hex.Dump(body)))
 		} else {
-			glog.Infof("%s: %s", prefix, truncateBody(string(body)))
+			klog.Infof("%s: %s", prefix, truncateBody(string(body)))
 		}
 	}
 }
@@ -1055,7 +1147,8 @@ func (r Result) Into(obj runtime.Object) error {
 		return fmt.Errorf("serializer for %s doesn't exist", r.contentType)
 	}
 	if len(r.body) == 0 {
-		return fmt.Errorf("0-length response")
+		return fmt.Errorf("0-length response with status code: %d and content type: %s",
+			r.statusCode, r.contentType)
 	}
 
 	out, _, err := r.decoder.Decode(r.body, nil, obj)
@@ -1096,7 +1189,7 @@ func (r Result) Error() error {
 	// to be backwards compatible with old servers that do not return a version, default to "v1"
 	out, _, err := r.decoder.Decode(r.body, &schema.GroupVersionKind{Version: "v1"}, nil)
 	if err != nil {
-		glog.V(5).Infof("body was not decodable (unable to check for Status): %v", err)
+		klog.V(5).Infof("body was not decodable (unable to check for Status): %v", err)
 		return r.err
 	}
 	switch t := out.(type) {
@@ -1150,7 +1243,6 @@ func IsValidPathSegmentPrefix(name string) []string {
 func ValidatePathSegmentName(name string, prefix bool) []string {
 	if prefix {
 		return IsValidPathSegmentPrefix(name)
-	} else {
-		return IsValidPathSegmentName(name)
 	}
+	return IsValidPathSegmentName(name)
 }

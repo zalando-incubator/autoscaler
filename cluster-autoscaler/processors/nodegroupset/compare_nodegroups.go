@@ -31,21 +31,59 @@ const (
 	// MaxFreeDifferenceRatio describes how free resources (allocatable - daemon and system pods)
 	// can differ between groups in the same NodeGroupSet
 	MaxFreeDifferenceRatio = 0.05
+	// MaxCapacityMemoryDifferenceRatio describes how Node.Status.Capacity.Memory can differ between
+	// groups in the same NodeGroupSet
+	MaxCapacityMemoryDifferenceRatio = 0.015
 )
+
+// BasicIgnoredLabels define a set of basic labels that should be ignored when comparing the similarity
+// of two nodes. Customized IgnoredLabels can be implemented in the corresponding codes of
+// specific cloud provider and the BasicIgnoredLabels should always be considered part of them.
+var BasicIgnoredLabels = map[string]bool{
+	apiv1.LabelHostname:                   true,
+	apiv1.LabelZoneFailureDomain:          true,
+	apiv1.LabelZoneRegion:                 true,
+	apiv1.LabelZoneFailureDomainStable:    true,
+	apiv1.LabelZoneRegionStable:           true,
+	"beta.kubernetes.io/fluentd-ds-ready": true, // this is internal label used for determining if fluentd should be installed as deamon set. Used for migration 1.8 to 1.9.
+	"kops.k8s.io/instancegroup":           true, // this is a label used by kops to identify "instance group" names. it's value is variable, defeating check of similar node groups
+}
 
 // NodeInfoComparator is a function that tells if two nodes are from NodeGroups
 // similar enough to be considered a part of a single NodeGroupSet.
 type NodeInfoComparator func(n1, n2 *schedulernodeinfo.NodeInfo) bool
 
-func compareResourceMapsWithTolerance(resources map[apiv1.ResourceName][]resource.Quantity,
+func resourceMapsWithinTolerance(resources map[apiv1.ResourceName][]resource.Quantity,
 	maxDifferenceRatio float64) bool {
 	for _, qtyList := range resources {
-		if len(qtyList) != 2 {
+		if !resourceListWithinTolerance(qtyList, maxDifferenceRatio) {
 			return false
 		}
-		larger := math.Max(float64(qtyList[0].MilliValue()), float64(qtyList[1].MilliValue()))
-		smaller := math.Min(float64(qtyList[0].MilliValue()), float64(qtyList[1].MilliValue()))
-		if larger-smaller > larger*maxDifferenceRatio {
+	}
+	return true
+}
+
+func resourceListWithinTolerance(qtyList []resource.Quantity, maxDifferenceRatio float64) bool {
+	if len(qtyList) != 2 {
+		return false
+	}
+	larger := math.Max(float64(qtyList[0].MilliValue()), float64(qtyList[1].MilliValue()))
+	smaller := math.Min(float64(qtyList[0].MilliValue()), float64(qtyList[1].MilliValue()))
+	return larger-smaller <= larger*maxDifferenceRatio
+}
+
+func compareLabels(nodes []*schedulernodeinfo.NodeInfo, ignoredLabels map[string]bool) bool {
+	labels := make(map[string][]string)
+	for _, node := range nodes {
+		for label, value := range node.Node().ObjectMeta.Labels {
+			ignore, _ := ignoredLabels[label]
+			if !ignore {
+				labels[label] = append(labels[label], value)
+			}
+		}
+	}
+	for _, labelValues := range labels {
+		if len(labelValues) != 2 || labelValues[0] != labelValues[1] {
 			return false
 		}
 	}
@@ -58,6 +96,12 @@ func compareResourceMapsWithTolerance(resources map[apiv1.ResourceName][]resourc
 // are similar enough to likely be the same type of machine and if the set of labels
 // is the same (except for a pre-defined set of labels like hostname or zone).
 func IsNodeInfoSimilar(n1, n2 *schedulernodeinfo.NodeInfo) bool {
+	return IsCloudProviderNodeInfoSimilar(n1, n2, BasicIgnoredLabels)
+}
+
+// IsCloudProviderNodeInfoSimilar remains the same logic of IsNodeInfoSimilar with the
+// customized set of labels that should be ignored when comparing the similarity of two NodeInfos.
+func IsCloudProviderNodeInfoSimilar(n1, n2 *schedulernodeinfo.NodeInfo, ignoredLabels map[string]bool) bool {
 	capacity := make(map[apiv1.ResourceName][]resource.Quantity)
 	allocatable := make(map[apiv1.ResourceName][]resource.Quantity)
 	free := make(map[apiv1.ResourceName][]resource.Quantity)
@@ -76,44 +120,37 @@ func IsNodeInfoSimilar(n1, n2 *schedulernodeinfo.NodeInfo) bool {
 			free[res] = append(free[res], freeRes)
 		}
 	}
-	// For capacity we require exact match.
-	// If this is ever changed, enforcing MaxCoresTotal and MaxMemoryTotal limits
-	// as it is now may no longer work.
-	for _, qtyList := range capacity {
-		if len(qtyList) != 2 || qtyList[0].Cmp(qtyList[1]) != 0 {
+
+	for kind, qtyList := range capacity {
+		if len(qtyList) != 2 {
 			return false
 		}
-	}
-	// For allocatable and free we allow resource quantities to be within a few % of each other
-	if !compareResourceMapsWithTolerance(allocatable, MaxAllocatableDifferenceRatio) {
-		return false
-	}
-	if !compareResourceMapsWithTolerance(free, MaxFreeDifferenceRatio) {
-		return false
-	}
-
-	ignoredLabels := map[string]bool{
-		apiv1.LabelHostname:                   true,
-		apiv1.LabelZoneFailureDomain:          true,
-		apiv1.LabelZoneRegion:                 true,
-		"beta.kubernetes.io/fluentd-ds-ready": true, // this is internal label used for determining if fluentd should be installed as deamon set. Used for migration 1.8 to 1.9.
-		"kops.k8s.io/instancegroup":           true, // this is a label used by kops to identify "instance group" names. it's value is variable, defeating check of similar node groups
-		"alpha.eksctl.io/nodegroup-name":      true, // this is a label used by eksctl to identify "node group" names, similar in spirit to the kops label above
-	}
-
-	labels := make(map[string][]string)
-	for _, node := range nodes {
-		for label, value := range node.Node().ObjectMeta.Labels {
-			ignore, _ := ignoredLabels[label]
-			if !ignore {
-				labels[label] = append(labels[label], value)
+		switch kind {
+		case apiv1.ResourceMemory:
+			if !resourceListWithinTolerance(qtyList, MaxCapacityMemoryDifferenceRatio) {
+				return false
+			}
+		default:
+			// For other capacity types we require exact match.
+			// If this is ever changed, enforcing MaxCoresTotal limits
+			// as it is now may no longer work.
+			if qtyList[0].Cmp(qtyList[1]) != 0 {
+				return false
 			}
 		}
 	}
-	for _, labelValues := range labels {
-		if len(labelValues) != 2 || labelValues[0] != labelValues[1] {
-			return false
-		}
+
+	// For allocatable and free we allow resource quantities to be within a few % of each other
+	if !resourceMapsWithinTolerance(allocatable, MaxAllocatableDifferenceRatio) {
+		return false
 	}
+	if !resourceMapsWithinTolerance(free, MaxFreeDifferenceRatio) {
+		return false
+	}
+
+	if !compareLabels(nodes, ignoredLabels) {
+		return false
+	}
+
 	return true
 }

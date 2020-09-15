@@ -22,6 +22,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
+	processor_callbacks "k8s.io/autoscaler/cluster-autoscaler/processors/callbacks"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	kube_client "k8s.io/client-go/kubernetes"
@@ -40,11 +41,15 @@ type AutoscalingContext struct {
 	CloudProvider cloudprovider.CloudProvider
 	// TODO(kgolab) - move away too as it's not config
 	// PredicateChecker to check if a pod can fit into a node.
-	PredicateChecker *simulator.PredicateChecker
+	PredicateChecker simulator.PredicateChecker
+	// ClusterSnapshot denotes cluster snapshot used for predicate checking.
+	ClusterSnapshot simulator.ClusterSnapshot
 	// ExpanderStrategy is the strategy used to choose which node group to expand when scaling up
 	ExpanderStrategy expander.Strategy
 	// EstimatorBuilder is the builder function for node count estimator to be used.
 	EstimatorBuilder estimator.EstimatorBuilder
+	// ProcessorCallbacks is interface defining extra callback methods which can be called by processors used in extension points.
+	ProcessorCallbacks processor_callbacks.ProcessorCallbacks
 }
 
 // AutoscalingKubeClients contains all Kubernetes API clients,
@@ -80,15 +85,24 @@ func NewResourceLimiterFromAutoscalingOptions(options config.AutoscalingOptions)
 }
 
 // NewAutoscalingContext returns an autoscaling context from all the necessary parameters passed via arguments
-func NewAutoscalingContext(options config.AutoscalingOptions, predicateChecker *simulator.PredicateChecker,
-	autoscalingKubeClients *AutoscalingKubeClients, cloudProvider cloudprovider.CloudProvider, expanderStrategy expander.Strategy, estimatorBuilder estimator.EstimatorBuilder) *AutoscalingContext {
+func NewAutoscalingContext(
+	options config.AutoscalingOptions,
+	predicateChecker simulator.PredicateChecker,
+	clusterSnapshot simulator.ClusterSnapshot,
+	autoscalingKubeClients *AutoscalingKubeClients,
+	cloudProvider cloudprovider.CloudProvider,
+	expanderStrategy expander.Strategy,
+	estimatorBuilder estimator.EstimatorBuilder,
+	processorCallbacks processor_callbacks.ProcessorCallbacks) *AutoscalingContext {
 	return &AutoscalingContext{
 		AutoscalingOptions:     options,
 		CloudProvider:          cloudProvider,
 		AutoscalingKubeClients: *autoscalingKubeClients,
 		PredicateChecker:       predicateChecker,
+		ClusterSnapshot:        clusterSnapshot,
 		ExpanderStrategy:       expanderStrategy,
 		EstimatorBuilder:       estimatorBuilder,
+		ProcessorCallbacks:     processorCallbacks,
 	}
 }
 

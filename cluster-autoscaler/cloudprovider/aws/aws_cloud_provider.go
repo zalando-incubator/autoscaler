@@ -33,8 +33,16 @@ import (
 )
 
 const (
-	// ProviderName is the cloud provider name for AWS
-	ProviderName = "aws"
+	// GPULabel is the label added to nodes with GPU resource.
+	GPULabel = "k8s.amazonaws.com/accelerator"
+)
+
+var (
+	availableGPUTypes = map[string]struct{}{
+		"nvidia-tesla-k80":  {},
+		"nvidia-tesla-p100": {},
+		"nvidia-tesla-v100": {},
+	}
 )
 
 // awsCloudProvider implements CloudProvider interface.
@@ -60,7 +68,17 @@ func (aws *awsCloudProvider) Cleanup() error {
 
 // Name returns name of the cloud provider.
 func (aws *awsCloudProvider) Name() string {
-	return ProviderName
+	return cloudprovider.AwsProviderName
+}
+
+// GPULabel returns the label added to nodes with GPU resource.
+func (aws *awsCloudProvider) GPULabel() string {
+	return GPULabel
+}
+
+// GetAvailableGPUTypes return all available GPU types cloud provider supports
+func (aws *awsCloudProvider) GetAvailableGPUTypes() map[string]struct{} {
+	return availableGPUTypes
 }
 
 // NodeGroups returns all node groups configured for this cloud provider.
@@ -138,9 +156,9 @@ type AwsInstanceRef struct {
 	Name       string
 }
 
-var validAwsRefIdRegex = regexp.MustCompile(fmt.Sprintf(`^aws\:\/\/\/[-0-9a-z]*\/[-0-9a-z]*$|aws\:\/\/\/[-0-9a-z]*\/%s.*$`, placeholderInstanceNamePrefix))
+var validAwsRefIdRegex = regexp.MustCompile(fmt.Sprintf(`^aws\:\/\/\/[-0-9a-z]*\/[-0-9a-z]*(\/[-0-9a-z\.]*)?$|aws\:\/\/\/[-0-9a-z]*\/%s.*$`, placeholderInstanceNamePrefix))
 
-// AwsRefFromProviderId creates InstanceConfig object from provider id which
+// AwsRefFromProviderId creates AwsInstanceRef object from provider id which
 // must be in format: aws:///zone/name
 func AwsRefFromProviderId(id string) (*AwsInstanceRef, error) {
 	if validAwsRefIdRegex.FindStringSubmatch(id) == nil {
@@ -325,7 +343,41 @@ func BuildAWS(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscover
 		defer config.Close()
 	}
 
-	manager, err := CreateAwsManager(config, do)
+	// Generate EC2 list
+	instanceTypes, lastUpdateTime := GetStaticEC2InstanceTypes()
+	if opts.AWSUseStaticInstanceList {
+		klog.Warningf("Use static EC2 Instance Types and list could be outdated. Last update time: %s", lastUpdateTime)
+	} else {
+		region, err := GetCurrentAwsRegion()
+		if err != nil {
+			klog.Fatalf("Failed to get AWS Region: %v", err)
+		}
+
+		generatedInstanceTypes, err := GenerateEC2InstanceTypes(region)
+		if err != nil {
+			klog.Fatalf("Failed to generate AWS EC2 Instance Types: %v", err)
+		}
+		// fallback on the static list if we miss any instance types in the generated output
+		// credits to: https://github.com/lyft/cni-ipvlan-vpc-k8s/pull/80
+		for k, v := range instanceTypes {
+			_, ok := generatedInstanceTypes[k]
+			if ok {
+				continue
+			}
+			klog.Infof("Using static instance type %s", k)
+			generatedInstanceTypes[k] = v
+		}
+		instanceTypes = generatedInstanceTypes
+
+		keys := make([]string, 0, len(instanceTypes))
+		for key := range instanceTypes {
+			keys = append(keys, key)
+		}
+
+		klog.Infof("Successfully load %d EC2 Instance Types %s", len(keys), keys)
+	}
+
+	manager, err := CreateAwsManager(config, do, instanceTypes)
 	if err != nil {
 		klog.Fatalf("Failed to create AWS Manager: %v", err)
 	}

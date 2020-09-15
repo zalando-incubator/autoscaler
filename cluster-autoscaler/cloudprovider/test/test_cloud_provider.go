@@ -51,6 +51,7 @@ type TestCloudProvider struct {
 	onNodeGroupDelete func(string) error
 	machineTypes      []string
 	machineTemplates  map[string]*schedulernodeinfo.NodeInfo
+	priceModel        cloudprovider.PricingModel
 	resourceLimiter   *cloudprovider.ResourceLimiter
 }
 
@@ -85,6 +86,20 @@ func NewTestAutoprovisioningCloudProvider(onScaleUp OnScaleUpFunc, onScaleDown O
 // Name returns name of the cloud provider.
 func (tcp *TestCloudProvider) Name() string {
 	return "TestCloudProvider"
+}
+
+// GPULabel returns the label added to nodes with GPU resource.
+func (tcp *TestCloudProvider) GPULabel() string {
+	return "TestGPULabel/accelerator"
+}
+
+// GetAvailableGPUTypes return all available GPU types cloud provider supports
+func (tcp *TestCloudProvider) GetAvailableGPUTypes() map[string]struct{} {
+	return map[string]struct{}{
+		"nvidia-tesla-k80":  {},
+		"nvidia-tesla-p100": {},
+		"nvidia-tesla-v100": {},
+	}
 }
 
 // NodeGroups returns all node groups configured for this cloud provider.
@@ -126,7 +141,16 @@ func (tcp *TestCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovider.
 
 // Pricing returns pricing model for this cloud provider or error if not available.
 func (tcp *TestCloudProvider) Pricing() (cloudprovider.PricingModel, errors.AutoscalerError) {
-	return nil, cloudprovider.ErrNotImplemented
+	if tcp.priceModel == nil {
+		return nil, cloudprovider.ErrNotImplemented
+	}
+
+	return tcp.priceModel, nil
+}
+
+// SetPricingModel set given priceModel to test cloud provider
+func (tcp *TestCloudProvider) SetPricingModel(priceModel cloudprovider.PricingModel) {
+	tcp.priceModel = priceModel
 }
 
 // GetAvailableMachineTypes get all machine types that can be requested from the cloud provider.
@@ -141,6 +165,23 @@ func (tcp *TestCloudProvider) NewNodeGroup(machineType string, labels map[string
 	return &TestNodeGroup{
 		cloudProvider:   tcp,
 		id:              "autoprovisioned-" + machineType,
+		minSize:         0,
+		maxSize:         1000,
+		targetSize:      0,
+		exist:           false,
+		autoprovisioned: true,
+		machineType:     machineType,
+		labels:          labels,
+		taints:          taints,
+	}, nil
+}
+
+// NewNodeGroupWithId creates a new node group with custom ID suffix.
+func (tcp *TestCloudProvider) NewNodeGroupWithId(machineType string, labels map[string]string, systemLabels map[string]string,
+	taints []apiv1.Taint, extraResources map[string]resource.Quantity, id string) (cloudprovider.NodeGroup, error) {
+	return &TestNodeGroup{
+		cloudProvider:   tcp,
+		id:              "autoprovisioned-" + machineType + "-" + id,
 		minSize:         0,
 		maxSize:         1000,
 		targetSize:      0,
@@ -248,6 +289,23 @@ type TestNodeGroup struct {
 	machineType     string
 	labels          map[string]string
 	taints          []apiv1.Taint
+}
+
+// NewTestNodeGroup creates a TestNodeGroup without setting up the realted TestCloudProvider.
+// Useful for testing only.
+func NewTestNodeGroup(id string, maxSize, minSize, targetSize int, exist, autoprovisioned bool,
+	machineType string, labels map[string]string, taints []apiv1.Taint) *TestNodeGroup {
+	return &TestNodeGroup{
+		id:              id,
+		maxSize:         maxSize,
+		minSize:         minSize,
+		targetSize:      targetSize,
+		exist:           exist,
+		autoprovisioned: autoprovisioned,
+		machineType:     machineType,
+		labels:          labels,
+		taints:          taints,
+	}
 }
 
 // MaxSize returns maximum size of the node group.
@@ -412,4 +470,9 @@ func (tng *TestNodeGroup) Labels() map[string]string {
 // Taints returns taintspassed to the test node group when it was created.
 func (tng *TestNodeGroup) Taints() []apiv1.Taint {
 	return tng.taints
+}
+
+// MachineType returns machine type passed to the test node group when it was created.
+func (tng *TestNodeGroup) MachineType() string {
+	return tng.machineType
 }

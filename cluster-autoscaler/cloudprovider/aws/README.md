@@ -1,12 +1,13 @@
 # Cluster Autoscaler on AWS
-The cluster autoscaler on AWS scales worker nodes within any specified autoscaling group. It will run as a `Deployment` in your cluster. This README will go over some of the necessary steps required to get the cluster autoscaler up and running.
+The cluster autoscaler on AWS scales worker nodes within any specified autoscaling group. It will run as a `Deployment` in your cluster. This README covers the steps required to configure and run the cluster autoscaler.
 
 ## Kubernetes Version
 Cluster autoscaler must run on v1.3.0 or greater.
 
 ## Permissions
-The worker running the cluster autoscaler will need access to certain resources and actions.
+The worker running the cluster autoscaler will need access to certain resources and actions. We always recommend you to attach IAM policy to nodegroup and avoid using AWS credentials directly unless you have special requirements.
 
+### Attach IAM policy to NodeGroup
 A minimum IAM policy would look like:
 ```json
 {
@@ -17,6 +18,7 @@ A minimum IAM policy would look like:
             "Action": [
                 "autoscaling:DescribeAutoScalingGroups",
                 "autoscaling:DescribeAutoScalingInstances",
+                "autoscaling:DescribeLaunchConfigurations",
                 "autoscaling:SetDesiredCapacity",
                 "autoscaling:TerminateInstanceInAutoScalingGroup"
             ],
@@ -25,29 +27,49 @@ A minimum IAM policy would look like:
     ]
 }
 ```
+If you'd like to scale node groups from 0, an
+`autoscaling:DescribeLaunchConfigurations` or
+`ec2:DescribeLaunchTemplateVersions` permission is required depending on if you
+made your ASG with Launch Configuration or Launch Template.
 
-If you'd like to auto-discover node groups by specifying the `--node-group-auto-discovery` flag, a `DescribeTags` permission is also required:
+If you'd like the cluster autoscaler to [automatically
+discover](#auto-discovery-setup) EC2 AutoScalingGroups, the
+`autoscaling:DescribeTags` permission is also required.
 
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "autoscaling:DescribeAutoScalingGroups",
-                "autoscaling:DescribeAutoScalingInstances",
-                "autoscaling:DescribeTags",
-                "autoscaling:SetDesiredCapacity",
-                "autoscaling:TerminateInstanceInAutoScalingGroup"
-            ],
-            "Resource": "*"
-        }
-    ]
-}
+**NOTE**: You can restrict the target resources for the autoscaling actions by
+specifying autoscaling group ARNS. More information can be found
+[here](https://docs.aws.amazon.com/autoscaling/latest/userguide/control-access-using-iam.html#policy-auto-scaling-resources).
+
+### Using AWS Credentials
+For on premise users wishing to scale out to AWS, the above approach of attaching policy to a nodegroup role won't work. Instead, you can create an aws secret manually and add following environment variables to cluster-autoscaler deployment manifest. Cluster autoscaler will use credential to authenticate and authorize itself. Please make sure your role has above permissions.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-secret
+type: Opaque
+data:
+  aws_access_key_id: BASE64_OF_YOUR_AWS_ACCESS_KEY_ID
+  aws_secret_access_key: BASE64_OF_YOUR_AWS_SECRET_ACCESS_KEY
 ```
+Please check [guidance](https://kubernetes.io/docs/concepts/configuration/secret/#creating-a-secret-manually) for creating a secret manually.
 
-AWS supports ARNs for autoscaling groups. More information [here](https://docs.aws.amazon.com/autoscaling/latest/userguide/control-access-using-iam.html#policy-auto-scaling-resources).
+```yaml
+env:
+- name: AWS_ACCESS_KEY_ID
+  valueFrom:
+    secretKeyRef:
+      name: aws-secret
+      key: aws_access_key_id
+- name: AWS_SECRET_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: aws-secret
+      key: aws_secret_access_key
+- name: AWS_REGION
+  value: YOUR_AWS_REGION
+```
 
 ## Deployment Specification
 Auto-Discovery Setup is always preferred option to avoid multiple, potentially different configuration for min/max values. If you want to adjust minimum and maximum size of the group, please adjust size on ASG directly, CA will fetch latest change when talking to ASG.
@@ -72,7 +94,6 @@ Please replace `{{ node_asg_min }}`, `{{ node_asg_max }}` and `{{ name }}` with 
 kubectl apply -f examples/cluster-autoscaler-run-on-master.yaml
 ```
 
-
 ### Auto-Discovery Setup
 
 To run a cluster-autoscaler which auto-discovers ASGs with nodes use the `--node-group-auto-discovery` flag. For example, `--node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled,k8s.io/cluster-autoscaler/<YOUR CLUSTER NAME>` will find the ASGs where those tag keys
@@ -93,6 +114,7 @@ kubectl apply -f examples/cluster-autoscaler-autodiscover.yaml
 From CA 0.6.1 - it is possible to scale a node group to 0 (and obviously from 0), assuming that all scale-down conditions are met.
 
 If you are using `nodeSelector` you need to tag the ASG with a node-template key `"k8s.io/cluster-autoscaler/node-template/label/"` and `"k8s.io/cluster-autoscaler/node-template/taint/"` if you are using taints.
+If your pods request resources other than `cpu` and `memory`, you need to tag ASG with key `k8s.io/cluster-autoscaler/node-template/resources/`.
 
 For example for a node label of `foo=bar` you would tag the ASG with:
 
@@ -117,6 +139,18 @@ And for a taint of `"dedicated": "foo:NoSchedule"` you would tag the ASG with:
     "Key": "k8s.io/cluster-autoscaler/node-template/taint/dedicated"
 }
 ```
+If you request other resources on the node, like `vpc.amazonaws.com/PrivateIPv4Address` for Windows nodes, `ephemeral-storage`, etc, you would tag ASG with
+
+```json
+{
+    "ResourceType": "auto-scaling-group",
+    "ResourceId": "foo.example.com",
+    "PropagateAtLaunch": true,
+    "Value": "2",
+    "Key": "k8s.io/cluster-autoscaler/node-template/resources/vpc.amazonaws.com/PrivateIPv4Address"
+}
+```
+> Note: This is only supported in CA 1.14.x and above
 
 If you'd like to scale node groups from 0, an `autoscaling:DescribeLaunchConfigurations` or `ec2:DescribeLaunchTemplateVersions` permission is required depending on if you made your ASG with Launch Configuration or Launch Template:
 
@@ -174,10 +208,16 @@ spec:
 * Create an ASG with a MixedInstancesPolicy that refers to the newly-created LT.
 * Set LaunchTemplateOverrides to include the 'base' instance type r5.2xlarge and suitable alternatives, e.g. r5d.2xlarge, i3.2xlarge, r5a.2xlarge and r5ad.2xlarge. Differing processor types and speeds should be evaluated depending on your use-case(s).
 * Set [InstancesDistribution](https://docs.aws.amazon.com/autoscaling/ec2/APIReference/API_InstancesDistribution.html) according to your needs.
-* See [Allocation Strategies](https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-purchase-options.htlm#asg-allocation-strategies) for information about the ASG fulfils capacity from the specified instance types.
+* See [Allocation Strategies](https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-purchase-options.html#asg-allocation-strategies) for information about the ASG fulfils capacity from the specified instance types.
 * Repeat by creating other LTs and ASGs, for example c5.18xlarge and c5n.18xlarge or a bunch of similar burstable instances.
 
 See CloudFormation example [here](MixedInstancePolicy.md).
+
+## Use Static Instance List
+The set of the latest supported EC2 instance types will be fetched by the CA at run time. You can find all the available instance types in the CA logs.
+If your network access is restricted such that fetching this set is infeasible, you can specify the command-line flag `--aws-use-static-instance-list=true` to switch the CA back to its original use of a statically defined set.
+
+To refresh static list, please run `go run ec2_instance_types/gen.go` under `cluster-autoscaler/cloudprovider/aws/` and update `staticListLastUpdateTime` in `aws_util.go`
 
 ## Common Notes and Gotchas:
 - The `/etc/ssl/certs/ca-bundle.crt` should exist by default on ec2 instance in your EKS cluster. If you use other cluster privision tools like [kops](https://github.com/kubernetes/kops) with different operating systems other than Amazon Linux 2, please use `/etc/ssl/certs/ca-certificates.crt` or correct path on your host instead for the volume hostPath in your cluster autoscaler manifest.
@@ -186,3 +226,4 @@ See CloudFormation example [here](MixedInstancePolicy.md).
 - By default, cluster autoscaler will not terminate nodes running pods in the kube-system namespace. You can override this default behaviour by passing in the `--skip-nodes-with-system-pods=false` flag.
 - By default, cluster autoscaler will wait 10 minutes between scale down operations, you can adjust this using the `--scale-down-delay-after-add`, `--scale-down-delay-after-delete`, and `--scale-down-delay-after-failure` flag. E.g. `--scale-down-delay-after-add=5m` to decrease the scale down delay to 5 minutes after a node has been added.
 - If you're running multiple ASGs, the `--expander` flag supports three options: `random`, `most-pods` and `least-waste`. `random` will expand a random ASG on scale up. `most-pods` will scale up the ASG that will schedule the most amount of pods. `least-waste` will expand the ASG that will waste the least amount of CPU/MEM resources. In the event of a tie, cluster autoscaler will fall back to `random`.
+- If you're managing your own kubelets, they need to be started with the `--provider-id` flag. The provider id has the format `aws:///<availability-zone>/<instance-id>`, e.g. `aws:///us-east-1a/i-01234abcdef`.

@@ -19,6 +19,7 @@ limitations under the License.
 package aws
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -38,10 +39,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/core/utils"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 	"k8s.io/klog"
-	provider_aws "k8s.io/kubernetes/pkg/cloudprovider/providers/aws"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
+	provider_aws "k8s.io/legacy-cloud-providers/aws"
 )
 
 const (
@@ -50,7 +52,8 @@ const (
 	maxRecordsReturnedByAPI = 100
 	maxAsgNamesPerDescribe  = 50
 	refreshInterval         = 1 * time.Minute
-	megabyte                = 1024 * 1024
+	autoDiscovererTypeASG   = "asg"
+	asgAutoDiscovererKeyTag = "tag"
 )
 
 // AwsManager is handles aws communication and data caching.
@@ -59,6 +62,7 @@ type AwsManager struct {
 	ec2Service         ec2Wrapper
 	asgCache           *asgCache
 	lastRefresh        time.Time
+	instanceTypes      map[string]*InstanceType
 
 	// Node capacity/allocatable by instance type. Currently doesn't expire because it won't grow uncontrollably,
 	// it's updated when there are nodes with this size, and the fallback case depends on the data that doesn't change
@@ -187,6 +191,7 @@ func createAWSManagerInternal(
 	discoveryOpts cloudprovider.NodeGroupDiscoveryOptions,
 	autoScalingService *autoScalingWrapper,
 	ec2Service *ec2Wrapper,
+	instanceTypes map[string]*InstanceType,
 ) (*AwsManager, error) {
 
 	cfg, err := readAWSCloudConfig(configReader)
@@ -209,7 +214,8 @@ func createAWSManagerInternal(
 		}
 
 		if autoScalingService == nil {
-			autoScalingService = &autoScalingWrapper{autoscaling.New(sess), map[string]string{}}
+			c := newLaunchConfigurationInstanceTypeCache()
+			autoScalingService = &autoScalingWrapper{autoscaling.New(sess), c}
 		}
 
 		if ec2Service == nil {
@@ -217,7 +223,7 @@ func createAWSManagerInternal(
 		}
 	}
 
-	specs, err := discoveryOpts.ParseASGAutoDiscoverySpecs()
+	specs, err := parseASGAutoDiscoverySpecs(discoveryOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -231,6 +237,7 @@ func createAWSManagerInternal(
 		autoScalingService:    *autoScalingService,
 		ec2Service:            *ec2Service,
 		asgCache:              cache,
+		instanceTypes:         instanceTypes,
 		instanceResourceCache: make(map[string]*instanceResourceInfo),
 		reservedResources:     make(apiv1.ResourceList),
 	}
@@ -258,8 +265,8 @@ func readAWSCloudConfig(config io.Reader) (*provider_aws.CloudConfig, error) {
 }
 
 // CreateAwsManager constructs awsManager object.
-func CreateAwsManager(configReader io.Reader, discoveryOpts cloudprovider.NodeGroupDiscoveryOptions) (*AwsManager, error) {
-	return createAWSManagerInternal(configReader, discoveryOpts, nil, nil)
+func CreateAwsManager(configReader io.Reader, discoveryOpts cloudprovider.NodeGroupDiscoveryOptions, instanceTypes map[string]*InstanceType) (*AwsManager, error) {
+	return createAWSManagerInternal(configReader, discoveryOpts, nil, nil, instanceTypes)
 }
 
 // Refresh is called before every main loop and can be used to dynamically update cloud provider state.
@@ -369,7 +376,7 @@ func (m *AwsManager) buildInstanceTypes(asg *asg) ([]string, error) {
 		return []string{mainType}, err
 	}
 
-	return nil, fmt.Errorf("Unable to get instance type from launch config or launch template")
+	return nil, errors.New("Unable to get instance type from launch config or launch template")
 }
 
 func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*apiv1.Node, error) {
@@ -397,6 +404,10 @@ func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*ap
 	}
 
 	resourcesFromTags := extractAllocatableResourcesFromAsg(template.Tags)
+	for resourceName, val := range resourcesFromTags {
+		node.Status.Capacity[apiv1.ResourceName(resourceName)] = *val
+	}
+
 	if val, ok := resourcesFromTags["ephemeral-storage"]; ok {
 		node.Status.Capacity[apiv1.ResourceEphemeralStorage] = *val
 		node.Status.Allocatable[apiv1.ResourceEphemeralStorage] = *val
@@ -421,7 +432,7 @@ func (m *AwsManager) availableResources(instanceType string) (*instanceResourceI
 	}
 
 	cpuCapacity := *resource.NewQuantity(awsTemplate.VCPU, resource.DecimalSI)
-	memCapacity := *resource.NewQuantity(awsTemplate.MemoryMb*megabyte, resource.DecimalSI)
+	memCapacity := *resource.NewQuantity(awsTemplate.MemoryMb*utils.MiB, resource.DecimalSI)
 	gpuCapacity := *resource.NewQuantity(awsTemplate.GPU, resource.DecimalSI)
 	// TODO: get a real value.
 	podCapacity := *resource.NewQuantity(110, resource.DecimalSI)
@@ -537,6 +548,12 @@ func buildGenericLabels(template *asgTemplate, nodeName string) map[string]strin
 	result[apiv1.LabelZoneRegion] = template.Region
 	result[apiv1.LabelZoneFailureDomain] = template.Zone
 	result[apiv1.LabelHostname] = nodeName
+
+	// TODO remove when we update to a recent version
+	result[apiv1.LabelInstanceTypeStable] = result[apiv1.LabelInstanceType]
+	result[apiv1.LabelZoneRegionStable] = template.Region
+	result[apiv1.LabelZoneFailureDomainStable] = template.Zone
+
 	return result
 }
 
@@ -603,4 +620,64 @@ func extractTaintsFromAsg(tags []*autoscaling.TagDescription) []apiv1.Taint {
 		}
 	}
 	return taints
+}
+
+// An asgAutoDiscoveryConfig specifies how to autodiscover AWS ASGs.
+type asgAutoDiscoveryConfig struct {
+	// Tags to match on.
+	// Any ASG with all of the provided tag keys will be autoscaled.
+	Tags map[string]string
+}
+
+// ParseASGAutoDiscoverySpecs returns any provided NodeGroupAutoDiscoverySpecs
+// parsed into configuration appropriate for ASG autodiscovery.
+func parseASGAutoDiscoverySpecs(o cloudprovider.NodeGroupDiscoveryOptions) ([]asgAutoDiscoveryConfig, error) {
+	cfgs := make([]asgAutoDiscoveryConfig, len(o.NodeGroupAutoDiscoverySpecs))
+	var err error
+	for i, spec := range o.NodeGroupAutoDiscoverySpecs {
+		cfgs[i], err = parseASGAutoDiscoverySpec(spec)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return cfgs, nil
+}
+
+func parseASGAutoDiscoverySpec(spec string) (asgAutoDiscoveryConfig, error) {
+	cfg := asgAutoDiscoveryConfig{}
+
+	tokens := strings.Split(spec, ":")
+	if len(tokens) != 2 {
+		return cfg, fmt.Errorf("invalid node group auto discovery spec specified via --node-group-auto-discovery: %s", spec)
+	}
+	discoverer := tokens[0]
+	if discoverer != autoDiscovererTypeASG {
+		return cfg, fmt.Errorf("unsupported discoverer specified: %s", discoverer)
+	}
+	param := tokens[1]
+	kv := strings.SplitN(param, "=", 2)
+	if len(kv) != 2 {
+		return cfg, fmt.Errorf("invalid key=value pair %s", kv)
+	}
+	k, v := kv[0], kv[1]
+	if k != asgAutoDiscovererKeyTag {
+		return cfg, fmt.Errorf("unsupported parameter key \"%s\" is specified for discoverer \"%s\". The only supported key is \"%s\"", k, discoverer, asgAutoDiscovererKeyTag)
+	}
+	if v == "" {
+		return cfg, errors.New("tag value not supplied")
+	}
+	p := strings.Split(v, ",")
+	if len(p) == 0 {
+		return cfg, fmt.Errorf("invalid ASG tag for auto discovery specified: ASG tag must not be empty")
+	}
+	cfg.Tags = make(map[string]string, len(p))
+	for _, label := range p {
+		lp := strings.SplitN(label, "=", 2)
+		if len(lp) > 1 {
+			cfg.Tags[lp[0]] = lp[1]
+			continue
+		}
+		cfg.Tags[lp[0]] = ""
+	}
+	return cfg, nil
 }

@@ -346,7 +346,7 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 	}
 
 	upcomingNodes := make([]*schedulernodeinfo.NodeInfo, 0)
-	for nodeGroup, numberOfNodes := range clusterStateRegistry.GetUpcomingNodes() {
+	for nodeGroup, numberOfNodes := range clusterStateRegistry.GetUpcomingNodes(now) {
 		nodeTemplate, found := nodeInfos[nodeGroup]
 		if !found {
 			return &status.ScaleUpStatus{Result: status.ScaleUpError}, errors.NewAutoscalerError(

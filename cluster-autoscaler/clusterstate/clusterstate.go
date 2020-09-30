@@ -951,14 +951,14 @@ func (csr *ClusterStateRegistry) GetIncorrectNodeGroupSize(nodeGroupName string)
 
 // GetUpcomingNodes returns how many new nodes will be added shortly to the node groups or should become ready soon.
 // The function may overestimate the number of nodes.
-func (csr *ClusterStateRegistry) GetUpcomingNodes(time time.Time) map[string]int {
+func (csr *ClusterStateRegistry) GetUpcomingNodes(currentTime time.Time) map[string]int {
 	csr.Lock()
 	defer csr.Unlock()
 
 	result := make(map[string]int)
 	for _, nodeGroup := range csr.cloudProvider.NodeGroups() {
 		// Node groups in BackOff should be ignored, because we're deliberately keeping them scaled up now.
-		if csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], time) {
+		if csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], currentTime) {
 			continue
 		}
 

@@ -1209,14 +1209,10 @@ func (csr *ClusterStateRegistry) fixupPlaceholderNodesForBackOff(instances map[s
 	for _, nodeGroup := range csr.cloudProvider.NodeGroups() {
 		if csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], currentTime) {
 			for _, instance := range instances[nodeGroup.Id()] {
-				if unregisteredNodeEntry, ok := csr.unregisteredNodes[instance.Id]; ok {
-					// Figure out if it's a placeholder instance. Since there's no way to do this correctly, and I don't
-					// want to add another method to cloudprovider.CloudProvider, let's just hardcode the AWS logic.
-					if !strings.Contains(instance.Id, awsCloudProviderPlaceholderTag) {
-						continue
-					}
-
-					// Reset the unregistered node timeout so it's not deleted.
+				// If it's a placeholder instance, reset the unregistered node timeout so it's not deleted. Since
+				// there's no way to do this correctly, and I don't want to add another method
+				// to cloudprovider.CloudProvider, let's just hardcode the AWS logic.
+				if unregisteredNodeEntry, ok := csr.unregisteredNodes[instance.Id]; ok && strings.Contains(instance.Id, awsCloudProviderPlaceholderTag) {
 					unregisteredNodeEntry.UnregisteredSince = currentTime
 					csr.unregisteredNodes[instance.Id] = unregisteredNodeEntry
 				}

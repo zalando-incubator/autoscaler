@@ -55,6 +55,8 @@ const (
 
 	// NodeGroupBackoffResetTimeout is the time after last failed scale-up when the backoff duration is reset.
 	NodeGroupBackoffResetTimeout = 3 * time.Hour
+
+	awsCloudProviderPlaceholderTag = "placeholder"
 )
 
 // ScaleUpRequest contains information about the requested node group scale up.
@@ -319,6 +321,7 @@ func (csr *ClusterStateRegistry) UpdateNodes(nodes []*apiv1.Node, nodeInfosForGr
 	csr.cloudProviderNodeInstances = cloudProviderNodeInstances
 
 	csr.updateUnregisteredNodes(notRegistered)
+	csr.fixupPlaceholderNodesForBackOff(cloudProviderNodeInstances, currentTime)
 	csr.updateReadinessStats(currentTime)
 
 	// update acceptable ranges based on requests from last loop and targetSizes
@@ -1193,4 +1196,31 @@ func (csr *ClusterStateRegistry) GetScaleUpFailures() map[string][]ScaleUpFailur
 		result[nodeGroupId] = failures
 	}
 	return result
+}
+
+func (csr *ClusterStateRegistry) fixupPlaceholderNodesForBackOff(instances map[string][]cloudprovider.Instance, currentTime time.Time) {
+	// Unfortunately the AWS cloud provider returns placeholder instances when an ASG's desired capacity is greater
+	// than the current. This is a problem because these nodes would still be considered by the logic that removes nodes
+	// failing to join the cluster, and this would intern scale down the backed-off ASGs that we want to keep scaled up.
+	// Unfortunately, these instances are also not marked in any way so it's impossible to distinguish them from normal
+	// ones (there's cloudprovider.Instance::Status but that doesn't seem to be used), and we would still like to
+	// terminate actual instances that fail to come up.
+
+	for _, nodeGroup := range csr.cloudProvider.NodeGroups() {
+		if csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], currentTime) {
+			for _, instance := range instances[nodeGroup.Id()] {
+				if unregisteredNodeEntry, ok := csr.unregisteredNodes[instance.Id]; ok {
+					// Figure out if it's a placeholder instance. Since there's no way to do this correctly, and I don't
+					// want to add another method to cloudprovider.CloudProvider, let's just hardcode the AWS logic.
+					if !strings.Contains(instance.Id, awsCloudProviderPlaceholderTag) {
+						continue
+					}
+
+					// Reset the unregistered node timeout so it's not deleted.
+					unregisteredNodeEntry.UnregisteredSince = currentTime
+					csr.unregisteredNodes[instance.Id] = unregisteredNodeEntry
+				}
+			}
+		}
+	}
 }

@@ -422,7 +422,9 @@ func (e *zalandoTestEnv) StepOnce() *zalandoTestEnv {
 	e.currentTime = e.currentTime.Add(e.interval)
 
 	// This is running asynchronously, we have to emulate it instead
-	e.autoscaler.clusterStateRegistry.RefreshCloudProviderNodeInstancesCache()
+	for _, group := range e.cloudProvider.NodeGroups() {
+		e.autoscaler.clusterStateRegistry.InvalidateNodeInstancesCacheEntry(group)
+	}
 
 	err := e.autoscaler.RunOnce(e.currentTime)
 	require.NoError(e.t, err)

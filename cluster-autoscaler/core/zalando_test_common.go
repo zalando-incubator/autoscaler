@@ -1,11 +1,14 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -64,13 +67,15 @@ type zalandoCloudProviderCommand struct {
 }
 
 type zalandoTestCloudProvider struct {
-	limiter    *cloudprovider.ResourceLimiter
-	nodeGroups []*zalandoTestCloudProviderNodeGroup
+	limiter     *cloudprovider.ResourceLimiter
+	expectedGID uint64
+	nodeGroups  []*zalandoTestCloudProviderNodeGroup
 }
 
-func newZalandoTestCloudProvider(limiter *cloudprovider.ResourceLimiter) *zalandoTestCloudProvider {
+func newZalandoTestCloudProvider(limiter *cloudprovider.ResourceLimiter, expectedGID uint64) *zalandoTestCloudProvider {
 	return &zalandoTestCloudProvider{
-		limiter: limiter,
+		limiter:     limiter,
+		expectedGID: expectedGID,
 	}
 }
 
@@ -79,6 +84,8 @@ func (p *zalandoTestCloudProvider) Name() string {
 }
 
 func (p *zalandoTestCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
+	ensureSameGoroutine(p.expectedGID)
+
 	var result []cloudprovider.NodeGroup
 	for _, group := range p.nodeGroups {
 		result = append(result, group)
@@ -87,6 +94,8 @@ func (p *zalandoTestCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
 }
 
 func (p *zalandoTestCloudProvider) nodeGroup(id string) (*zalandoTestCloudProviderNodeGroup, error) {
+	ensureSameGoroutine(p.expectedGID)
+
 	for _, group := range p.nodeGroups {
 		if group.id == id {
 			return group, nil
@@ -96,6 +105,7 @@ func (p *zalandoTestCloudProvider) nodeGroup(id string) (*zalandoTestCloudProvid
 }
 
 func (p *zalandoTestCloudProvider) NodeGroupForNode(node *corev1.Node) (cloudprovider.NodeGroup, error) {
+	ensureSameGoroutine(p.expectedGID)
 	providerId := node.Spec.ProviderID
 	groupId := strings.Split(strings.TrimPrefix(providerId, "zalando-test:///"), "/")[0]
 
@@ -145,8 +155,9 @@ func (p *zalandoTestCloudProvider) Refresh(existingNodes []*corev1.Node) error {
 }
 
 type zalandoTestCloudProviderNodeGroup struct {
-	lock          sync.Mutex
+	instancesLock sync.Mutex
 	id            string
+	expectedGID   uint64
 	maxSize       int
 	targetSize    int
 	instances     sets.String
@@ -163,9 +174,7 @@ func (g *zalandoTestCloudProviderNodeGroup) MinSize() int {
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) TargetSize() (int, error) {
-	g.lock.Lock()
-	defer g.lock.Unlock()
-
+	ensureSameGoroutine(g.expectedGID)
 	return g.targetSize, nil
 }
 
@@ -210,8 +219,9 @@ func (g *zalandoTestCloudProviderNodeGroup) Debug() string {
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) Nodes() ([]cloudprovider.Instance, error) {
-	g.lock.Lock()
-	defer g.lock.Unlock()
+	// The cache is _always_ running from different goroutines, so we need a lock
+	g.instancesLock.Lock()
+	defer g.instancesLock.Unlock()
 
 	var result []cloudprovider.Instance
 	for instance, _ := range g.instances {
@@ -305,6 +315,7 @@ func defaultZalandoAutoscalingOptions() config.AutoscalingOptions {
 
 type zalandoTestEnv struct {
 	t                            *testing.T
+	expectedGID                  uint64
 	interval                     time.Duration
 	client                       *fake.Clientset
 	initialTime                  time.Time
@@ -362,6 +373,7 @@ func (e *zalandoTestEnv) AddNodeGroup(id string, maxSize int, nodeCPU, nodeMemor
 
 	ng := &zalandoTestCloudProviderNodeGroup{
 		id:            id,
+		expectedGID:   e.expectedGID,
 		maxSize:       maxSize,
 		instances:     sets.NewString(),
 		templateNode:  templateNode,
@@ -439,6 +451,7 @@ func (e *zalandoTestEnv) ExpectCommands(commands ...zalandoCloudProviderCommand)
 }
 
 func (e *zalandoTestEnv) handleCommand(command zalandoCloudProviderCommand) {
+	ensureSameGoroutine(e.expectedGID)
 	switch command.commandType {
 	case zalandoCloudProviderCommandIncreaseSize:
 		ng, err := e.cloudProvider.nodeGroup(command.nodeGroup)
@@ -452,6 +465,9 @@ func (e *zalandoTestEnv) handleCommand(command zalandoCloudProviderCommand) {
 	case zalandoCloudProviderCommandDeleteNodes:
 		ng, err := e.cloudProvider.nodeGroup(command.nodeGroup)
 		require.NoError(e.t, err)
+
+		ng.instancesLock.Lock()
+		defer ng.instancesLock.Unlock()
 
 		for _, name := range command.nodeNames {
 			require.True(e.t, ng.instances.Has(name), "instance not found in %s: %s", command.nodeGroup, name)
@@ -471,8 +487,8 @@ func (e *zalandoTestEnv) AddInstance(nodeGroup string, instanceId string) *zalan
 	ng, err := e.cloudProvider.nodeGroup(nodeGroup)
 	require.NoError(e.t, err)
 
-	ng.lock.Lock()
-	defer ng.lock.Unlock()
+	ng.instancesLock.Lock()
+	defer ng.instancesLock.Unlock()
 
 	ng.instances.Insert(instanceId)
 	if ng.targetSize < len(ng.instances) {
@@ -554,8 +570,8 @@ func (e *zalandoTestEnv) RemoveNode(name string) {
 		}
 	}
 
-	zalandoNodeGroup.lock.Lock()
-	defer zalandoNodeGroup.lock.Unlock()
+	zalandoNodeGroup.instancesLock.Lock()
+	defer zalandoNodeGroup.instancesLock.Unlock()
 
 	// Delete the instance and decrease the target size
 	zalandoNodeGroup.instances.Delete(name)
@@ -632,7 +648,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 	processorCallbacks := newStaticAutoscalerProcessorCallbacks()
 	clientset := fake.NewSimpleClientset()
 
-	provider := newZalandoTestCloudProvider(scalercontext.NewResourceLimiterFromAutoscalingOptions(options))
+	provider := newZalandoTestCloudProvider(scalercontext.NewResourceLimiterFromAutoscalingOptions(options), getGID())
 
 	recorder := kube_record.NewFakeRecorder(1000)
 	statusRecorder, err := utils.NewStatusMapRecorder(clientset, "kube-system", recorder, false)
@@ -707,6 +723,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 
 	env := &zalandoTestEnv{
 		t:                            t,
+		expectedGID:                  getGID(),
 		interval:                     interval,
 		client:                       clientset,
 		initialTime:                  initialTime,
@@ -801,5 +818,21 @@ func NewTestPod(name string, cpu, memory resource.Quantity) *corev1.Pod {
 				},
 			},
 		},
+	}
+}
+
+func getGID() uint64 {
+	b := make([]byte, 64)
+	b = b[:runtime.Stack(b, false)]
+	b = bytes.TrimPrefix(b, []byte("goroutine "))
+	b = b[:bytes.IndexByte(b, ' ')]
+	n, _ := strconv.ParseUint(string(b), 10, 64)
+	return n
+}
+
+func ensureSameGoroutine(expected uint64) {
+	currentGID := getGID()
+	if currentGID != expected {
+		panic(fmt.Sprintf("called from a different goroutine %d, expected %d", currentGID, expected))
 	}
 }

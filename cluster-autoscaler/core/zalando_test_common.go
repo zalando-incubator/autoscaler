@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/highestpriority"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/deletetaint"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/units"
@@ -143,6 +145,7 @@ func (p *zalandoTestCloudProvider) Refresh(existingNodes []*corev1.Node) error {
 }
 
 type zalandoTestCloudProviderNodeGroup struct {
+	lock          sync.Mutex
 	id            string
 	maxSize       int
 	targetSize    int
@@ -160,6 +163,9 @@ func (g *zalandoTestCloudProviderNodeGroup) MinSize() int {
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) TargetSize() (int, error) {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+
 	return g.targetSize, nil
 }
 
@@ -204,6 +210,9 @@ func (g *zalandoTestCloudProviderNodeGroup) Debug() string {
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) Nodes() ([]cloudprovider.Instance, error) {
+	g.lock.Lock()
+	defer g.lock.Unlock()
+
 	var result []cloudprovider.Instance
 	for instance, _ := range g.instances {
 		result = append(result, cloudprovider.Instance{
@@ -385,8 +394,24 @@ func (e *zalandoTestEnv) AddPod(pod *corev1.Pod) *zalandoTestEnv {
 	return e
 }
 
+func (e *zalandoTestEnv) nodesPendingDeletion() sets.String {
+	result := sets.NewString()
+	nodes, err := e.client.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	require.NoError(e.t, err)
+	for _, node := range nodes.Items {
+		if deletetaint.HasToBeDeletedTaint(&node) {
+			result.Insert(node.Name)
+		}
+	}
+	return result
+}
+
 func (e *zalandoTestEnv) StepOnce() *zalandoTestEnv {
 	e.currentTime = e.currentTime.Add(e.interval)
+
+	// This is running asynchronously, we have to emulate it instead
+	e.autoscaler.clusterStateRegistry.RefreshCloudProviderNodeInstancesCache()
+
 	err := e.autoscaler.RunOnce(e.currentTime)
 	require.NoError(e.t, err)
 	return e
@@ -423,11 +448,16 @@ func (e *zalandoTestEnv) handleCommand(command zalandoCloudProviderCommand) {
 
 		ng.targetSize += command.delta
 	case zalandoCloudProviderCommandDecreaseTargetSize:
-		require.Fail(e.t, "decrease target size unsupported for now")
+		require.FailNow(e.t, "decrease target size unsupported for now")
 	case zalandoCloudProviderCommandDeleteNodes:
-		require.Fail(e.t, "delete nodes unsupported for now")
+		ng, err := e.cloudProvider.nodeGroup(command.nodeGroup)
+		require.NoError(e.t, err)
+
+		for _, name := range command.nodeNames {
+			require.True(e.t, ng.instances.Has(name), "instance not found in %s: %s", command.nodeGroup, name)
+		}
 	default:
-		require.Fail(e.t, "invalid command", "received invalid command: %s", command.commandType)
+		require.FailNowf(e.t, "invalid command", "received invalid command: %s", command.commandType)
 	}
 
 	e.pendingCommands = append(e.pendingCommands, command)
@@ -441,6 +471,9 @@ func (e *zalandoTestEnv) AddInstance(nodeGroup string, instanceId string) *zalan
 	ng, err := e.cloudProvider.nodeGroup(nodeGroup)
 	require.NoError(e.t, err)
 
+	ng.lock.Lock()
+	defer ng.lock.Unlock()
+
 	ng.instances.Insert(instanceId)
 	if ng.targetSize < len(ng.instances) {
 		ng.targetSize = len(ng.instances)
@@ -448,24 +481,35 @@ func (e *zalandoTestEnv) AddInstance(nodeGroup string, instanceId string) *zalan
 	return e
 }
 
-func (e *zalandoTestEnv) AddNode(instanceId string) *zalandoTestEnv {
+func (e *zalandoTestEnv) AddNode(instanceId string, ready bool) *zalandoTestEnv {
 	for _, group := range e.cloudProvider.nodeGroups {
 		if group.instances.Has(instanceId) {
 			node := group.templateNode.Node().DeepCopy()
 			node.CreationTimestamp = metav1.Time{Time: e.currentTime}
 			node.Name = instanceId
 			node.Spec.ProviderID = fmt.Sprintf("zalando-test:///%s/%s", group.id, instanceId)
+
+			readyStatus := corev1.ConditionTrue
+			if !ready {
+				readyStatus = corev1.ConditionFalse
+			}
+			node.Status.Conditions = []corev1.NodeCondition{
+				{
+					Type:   corev1.NodeReady,
+					Status: readyStatus,
+				},
+			}
 			_, err := e.client.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{})
 			require.NoError(e.t, err)
 			return e
 		}
 	}
 
-	require.Failf(e.t, "invalid instance", "instance %s doesn't belong to any node groups", instanceId)
+	require.FailNowf(e.t, "invalid instance", "instance %s doesn't belong to any node groups", instanceId)
 	return e
 }
 
-func (e *zalandoTestEnv) SchedulePod(podName string, nodeName string) {
+func (e *zalandoTestEnv) SchedulePod(podName string, nodeName string) *zalandoTestEnv {
 	_, err := e.client.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
 	require.NoError(e.t, err, "unknown node: %s", nodeName)
 
@@ -476,6 +520,46 @@ func (e *zalandoTestEnv) SchedulePod(podName string, nodeName string) {
 	pod.Spec.NodeName = nodeName
 	_, err = e.client.CoreV1().Pods(testNamespace).Update(context.Background(), pod, metav1.UpdateOptions{})
 	require.NoError(e.t, err)
+	return e
+}
+
+func (e *zalandoTestEnv) RemovePod(podName string) *zalandoTestEnv {
+	err := e.client.CoreV1().Pods(testNamespace).Delete(context.Background(), podName, metav1.DeleteOptions{})
+	require.NoError(e.t, err)
+
+	return e
+}
+
+func (e *zalandoTestEnv) RemoveNode(name string) {
+	node, err := e.client.CoreV1().Nodes().Get(context.Background(), name, metav1.GetOptions{})
+	require.NoError(e.t, err)
+
+	ng, err := e.cloudProvider.NodeGroupForNode(node)
+	require.NoError(e.t, err)
+
+	zalandoNodeGroup := ng.(*zalandoTestCloudProviderNodeGroup)
+	require.True(e.t, zalandoNodeGroup.instances.Has(name), "instance not found in node group: %s", name)
+
+	// Delete the node
+	err = e.client.CoreV1().Nodes().Delete(context.Background(), name, metav1.DeleteOptions{})
+	require.NoError(e.t, err)
+
+	// Delete pods scheduled on it
+	pods, err := e.client.CoreV1().Pods(corev1.NamespaceAll).List(context.Background(), metav1.ListOptions{})
+	require.NoError(e.t, err)
+	for _, item := range pods.Items {
+		if item.Spec.NodeName == name {
+			err = e.client.CoreV1().Pods(item.Namespace).Delete(context.Background(), item.Name, metav1.DeleteOptions{})
+			require.NoError(e.t, err)
+		}
+	}
+
+	zalandoNodeGroup.lock.Lock()
+	defer zalandoNodeGroup.lock.Unlock()
+
+	// Delete the instance and decrease the target size
+	zalandoNodeGroup.instances.Delete(name)
+	zalandoNodeGroup.targetSize--
 }
 
 type fakeClientNodeLister struct {
@@ -607,6 +691,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 	}
 	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterStateConfig, autoscalingContext.LogRecorder, newBackoff())
 	sd := NewScaleDown(autoscalingContext, clusterState)
+	sd.runSync = true
 	initialTime := time.Date(2020, 01, 01, 00, 00, 00, 0, time.UTC)
 
 	autoscaler := &StaticAutoscaler{
@@ -651,6 +736,12 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 	klog.SetOutput(&simulationLogWriter{testEnv: env})
 	defer func() {
 		klog.SetOutput(nil)
+	}()
+
+	// Override the scaledown time provider
+	now = func() time.Time { return env.currentTime }
+	defer func() {
+		now = time.Now
 	}()
 
 	testFn(env)

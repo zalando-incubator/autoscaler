@@ -19,7 +19,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestBasicScaleUpTest(t *testing.T) {
+func TestExampleSimulationTest(t *testing.T) {
 	RunSimulation(t, defaultZalandoAutoscalingOptions(), 10*time.Second, func(env *zalandoTestEnv) {
 		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
 		env.StepOnce().ExpectNoCommands()
@@ -42,12 +42,31 @@ func TestBasicScaleUpTest(t *testing.T) {
 		klog.Info("added instance")
 		env.StepFor(1 * time.Minute).ExpectNoCommands()
 
-		env.AddNode("i-1")
+		env.AddNode("i-1", true)
 		klog.Info("added node")
 		env.StepFor(1 * time.Minute).ExpectNoCommands()
 
 		env.SchedulePod(pod.Name, "i-1")
 		klog.Info("scheduled pod")
-		env.StepFor(25 * time.Minute).ExpectNoCommands()
+		env.StepFor(15 * time.Minute).ExpectNoCommands()
+
+		env.RemovePod(pod.Name)
+		klog.Info("removed pod")
+
+		env.StepFor(15 * time.Minute).ExpectCommands(zalandoCloudProviderCommand{
+			commandType: zalandoCloudProviderCommandDeleteNodes,
+			nodeGroup:   "ng-1",
+			nodeNames:   []string{"i-1"},
+		})
+
+		env.RemoveNode("i-1")
+
+		for _, group := range env.cloudProvider.nodeGroups {
+			klog.Infof("%s: instances: %s", group.id, group.instances)
+			klog.Infof("%s: ts: %d", group.id,group.targetSize)
+		}
+
+		klog.Info("removed node")
+		env.StepFor(15 * time.Minute).ExpectNoCommands()
 	})
 }

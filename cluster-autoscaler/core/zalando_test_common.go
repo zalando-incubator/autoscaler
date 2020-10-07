@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -38,6 +40,7 @@ import (
 	"k8s.io/client-go/listers/policy/v1beta1"
 	"k8s.io/client-go/tools/cache"
 	kube_record "k8s.io/client-go/tools/record"
+	"k8s.io/klog"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
@@ -295,6 +298,7 @@ type zalandoTestEnv struct {
 	t                            *testing.T
 	interval                     time.Duration
 	client                       *fake.Clientset
+	initialTime                  time.Time
 	currentTime                  time.Time
 	pdbIndexer                   cache.Indexer
 	daemonsetIndexer             cache.Indexer
@@ -305,6 +309,19 @@ type zalandoTestEnv struct {
 	cloudProvider                *zalandoTestCloudProvider
 	autoscaler                   *StaticAutoscaler
 	pendingCommands              []zalandoCloudProviderCommand
+}
+
+type simulationLogWriter struct {
+	testEnv *zalandoTestEnv
+}
+
+func (w *simulationLogWriter) Write(p []byte) (int, error) {
+	s := fmt.Sprintf("[%8s] %s", w.testEnv.currentTime.Sub(w.testEnv.initialTime), string(p))
+	_, err := os.Stderr.Write([]byte(s))
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 func (e *zalandoTestEnv) AddNodeGroup(id string, maxSize int, nodeCPU, nodeMemory resource.Quantity, nodeLabels map[string]string) *zalandoTestEnv {
@@ -527,7 +544,7 @@ func makeIndexer() cache.Indexer {
 		map[string]cache.IndexFunc{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 }
 
-func newZalandoTestEnv(t *testing.T, options config.AutoscalingOptions, interval time.Duration) *zalandoTestEnv {
+func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval time.Duration, testFn func(env *zalandoTestEnv)) {
 	processorCallbacks := newStaticAutoscalerProcessorCallbacks()
 	clientset := fake.NewSimpleClientset()
 
@@ -603,10 +620,11 @@ func newZalandoTestEnv(t *testing.T, options config.AutoscalingOptions, interval
 		initialized:           true,
 	}
 
-	return &zalandoTestEnv{
+	env := &zalandoTestEnv{
 		t:                            t,
 		interval:                     interval,
 		client:                       clientset,
+		initialTime:                  initialTime,
 		currentTime:                  initialTime,
 		cloudProvider:                provider,
 		pdbIndexer:                   pdbIndexer,
@@ -617,6 +635,25 @@ func newZalandoTestEnv(t *testing.T, options config.AutoscalingOptions, interval
 		statefulsetIndexer:           statefulsetIndexer,
 		autoscaler:                   autoscaler,
 	}
+
+	// Steal the logging
+	err = flag.Set("logtostderr", "false")
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		err := flag.Set("logtostderr", "true")
+		if err != nil {
+			panic(err)
+		}
+	}()
+
+	klog.SetOutput(&simulationLogWriter{testEnv: env})
+	defer func() {
+		klog.SetOutput(nil)
+	}()
+
+	testFn(env)
 }
 
 func NewTestReplicaSet(name string, replicas int32) *appsv1.ReplicaSet {

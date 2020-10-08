@@ -65,6 +65,19 @@ type zalandoCloudProviderCommand struct {
 	nodeNames   []string // for deleteNodes
 }
 
+func (cmd zalandoCloudProviderCommand) String() string {
+	switch cmd.commandType {
+	case zalandoCloudProviderCommandIncreaseSize:
+		return fmt.Sprintf("increaseSize(%s, %+d)", cmd.nodeGroup, cmd.delta)
+	case zalandoCloudProviderCommandDeleteNodes:
+		return fmt.Sprintf("deleteNodes(%s, %s)", cmd.nodeGroup, strings.Join(cmd.nodeNames, ", "))
+	case zalandoCloudProviderCommandDecreaseTargetSize:
+		return fmt.Sprintf("decreaseTargetSize(%s, %+d)", cmd.nodeGroup, cmd.delta)
+	default:
+		return fmt.Sprintf("<invalid: %s>", cmd.commandType)
+	}
+}
+
 type zalandoTestCloudProvider struct {
 	limiter     *cloudprovider.ResourceLimiter
 	expectedGID uint64
@@ -379,6 +392,7 @@ func (e *zalandoTestEnv) AddNodeGroup(id string, maxSize int, nodeCPU, nodeMemor
 		handleCommand: e.handleCommand,
 	}
 	e.cloudProvider.nodeGroups = append(e.cloudProvider.nodeGroups, ng)
+	klog.Infof("Added node group %s with max size %d, %s cpu, %s memory and labels %s", id, maxSize, &nodeCPU, &nodeMemory, nodeLabels)
 	return e
 }
 
@@ -396,12 +410,14 @@ func (e *zalandoTestEnv) AddReplicaSet(replicaset *appsv1.ReplicaSet) *zalandoTe
 	_, err := e.client.AppsV1().ReplicaSets(replicaset.Namespace).Create(context.Background(), replicaset, metav1.CreateOptions{})
 	require.NoError(e.t, err)
 	e.replicaSetsUpdated()
+	klog.Infof("Added ReplicaSet %s/%s", replicaset.Namespace, replicaset.Name)
 	return e
 }
 
 func (e *zalandoTestEnv) AddPod(pod *corev1.Pod) *zalandoTestEnv {
 	_, err := e.client.CoreV1().Pods(pod.Namespace).Create(context.Background(), pod, metav1.CreateOptions{})
 	require.NoError(e.t, err)
+	klog.Infof("Added Pod %s/%s", pod.Namespace, pod.Name)
 	return e
 }
 
@@ -418,8 +434,6 @@ func (e *zalandoTestEnv) nodesPendingDeletion() sets.String {
 }
 
 func (e *zalandoTestEnv) StepOnce() *zalandoTestEnv {
-	e.currentTime = e.currentTime.Add(e.interval)
-
 	// This is usually running asynchronously, we have to emulate it instead
 	for _, group := range e.cloudProvider.NodeGroups() {
 		e.autoscaler.clusterStateRegistry.InvalidateNodeInstancesCacheEntry(group)
@@ -427,6 +441,8 @@ func (e *zalandoTestEnv) StepOnce() *zalandoTestEnv {
 
 	err := e.autoscaler.RunOnce(e.currentTime)
 	require.NoError(e.t, err)
+
+	e.currentTime = e.currentTime.Add(e.interval)
 	return e
 }
 
@@ -453,6 +469,9 @@ func (e *zalandoTestEnv) ExpectCommands(commands ...zalandoCloudProviderCommand)
 
 func (e *zalandoTestEnv) handleCommand(command zalandoCloudProviderCommand) {
 	ensureSameGoroutine(e.expectedGID)
+
+	klog.Infof("Received a node group command: %s", command)
+
 	switch command.commandType {
 	case zalandoCloudProviderCommandIncreaseSize:
 		ng, err := e.cloudProvider.nodeGroup(command.nodeGroup)
@@ -486,11 +505,13 @@ func (e *zalandoTestEnv) AddInstance(nodeGroup string, instanceId string, increm
 	ng, err := e.cloudProvider.nodeGroup(nodeGroup)
 	require.NoError(e.t, err)
 
+	currentTargetSize := ng.targetSize
+
 	ng.instances.Insert(instanceId)
 	if incrementTargetSize {
 		ng.targetSize++
-
 	}
+	klog.Infof("Added instance %s for node group %s (target size %d -> %d)", instanceId, nodeGroup, currentTargetSize, ng.targetSize)
 	return e
 }
 
@@ -514,6 +535,13 @@ func (e *zalandoTestEnv) AddNode(instanceId string, ready bool) *zalandoTestEnv 
 			}
 			_, err := e.client.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{})
 			require.NoError(e.t, err)
+
+			readiness := "a ready"
+			if !ready {
+				readiness = "an unready"
+			}
+
+			klog.Infof("Added %s node for instance %s in node group %s", readiness, instanceId, group.id)
 			return e
 		}
 	}
@@ -522,24 +550,34 @@ func (e *zalandoTestEnv) AddNode(instanceId string, ready bool) *zalandoTestEnv 
 	return e
 }
 
-func (e *zalandoTestEnv) SchedulePod(podName string, nodeName string) *zalandoTestEnv {
+func (e *zalandoTestEnv) SchedulePod(pod *corev1.Pod, nodeName string) *zalandoTestEnv {
 	_, err := e.client.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
 	require.NoError(e.t, err, "unknown node: %s", nodeName)
 
-	pod, err := e.client.CoreV1().Pods(testNamespace).Get(context.Background(), podName, metav1.GetOptions{})
+	pod, err = e.client.CoreV1().Pods(pod.Namespace).Get(context.Background(), pod.Name, metav1.GetOptions{})
 	require.NoError(e.t, err)
 
 	require.Empty(e.t, pod.Spec.NodeName, "pod already scheduled on %s", pod.Spec.NodeName)
 	pod.Spec.NodeName = nodeName
-	_, err = e.client.CoreV1().Pods(testNamespace).Update(context.Background(), pod, metav1.UpdateOptions{})
+	_, err = e.client.CoreV1().Pods(pod.Namespace).Update(context.Background(), pod, metav1.UpdateOptions{})
 	require.NoError(e.t, err)
+
+	klog.Infof("Scheduled pod %s/%s on node %s", pod.Namespace, pod.Name, nodeName)
 	return e
 }
 
-func (e *zalandoTestEnv) RemovePod(podName string) *zalandoTestEnv {
-	err := e.client.CoreV1().Pods(testNamespace).Delete(context.Background(), podName, metav1.DeleteOptions{})
+func (e *zalandoTestEnv) RemovePod(pod *corev1.Pod) *zalandoTestEnv {
+	current, err := e.client.CoreV1().Pods(pod.Namespace).Get(context.Background(), pod.Name, metav1.GetOptions{})
 	require.NoError(e.t, err)
 
+	err = e.client.CoreV1().Pods(pod.Namespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{})
+	require.NoError(e.t, err)
+
+	if current.Spec.NodeName == "" {
+		klog.Infof("Removed pod %s/%s (unscheduled)", current.Namespace, current.Name)
+	} else {
+		klog.Infof("Removed pod %s/%s (running on %s)", current.Namespace, current.Name, current.Spec.NodeName)
+	}
 	return e
 }
 
@@ -562,16 +600,19 @@ func (e *zalandoTestEnv) RemoveNode(name string, decrementTargetSize bool) {
 	require.NoError(e.t, err)
 	for _, item := range pods.Items {
 		if item.Spec.NodeName == name {
-			err = e.client.CoreV1().Pods(item.Namespace).Delete(context.Background(), item.Name, metav1.DeleteOptions{})
-			require.NoError(e.t, err)
+			e.RemovePod(&item)
 		}
 	}
+
+	currentTargetSize := zalandoNodeGroup.targetSize
 
 	// Delete the instance and decrease the target size
 	zalandoNodeGroup.instances.Delete(name)
 	if decrementTargetSize {
 		zalandoNodeGroup.targetSize--
 	}
+
+	klog.Infof("Removed instance %s for node group %s (target size %d -> %d)", name, zalandoNodeGroup.id, currentTargetSize, zalandoNodeGroup.targetSize)
 }
 
 type fakeClientNodeLister struct {

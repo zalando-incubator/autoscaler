@@ -12,7 +12,7 @@ import (
 
 func TestMain(m *testing.M) {
 	klog.InitFlags(flag.CommandLine)
-	err := flag.Set("v", "3")
+	err := flag.Set("v", "0")
 	if err != nil {
 		panic(err)
 	}
@@ -39,34 +39,24 @@ func TestExampleSimulationTest(t *testing.T) {
 		env.StepFor(1 * time.Minute).ExpectNoCommands()
 
 		env.AddInstance("ng-1", "i-1", false)
-		klog.Info("added instance")
 		env.StepFor(1 * time.Minute).ExpectNoCommands()
 
 		env.AddNode("i-1", true)
-		klog.Info("added node")
 		env.StepFor(1 * time.Minute).ExpectNoCommands()
 
-		env.SchedulePod(pod.Name, "i-1")
-		klog.Info("scheduled pod")
-		env.StepFor(15 * time.Minute).ExpectNoCommands()
+		env.SchedulePod(pod, "i-1")
+		env.StepFor(14 * time.Minute).ExpectNoCommands()
 
-		env.RemovePod(pod.Name)
-		klog.Info("removed pod")
+		env.RemovePod(pod)
 
-		env.StepFor(15 * time.Minute).ExpectCommands(zalandoCloudProviderCommand{
+		env.StepFor(10 * time.Minute).StepOnce().ExpectNoCommands()
+		env.StepOnce().ExpectCommands(zalandoCloudProviderCommand{
 			commandType: zalandoCloudProviderCommandDeleteNodes,
 			nodeGroup:   "ng-1",
 			nodeNames:   []string{"i-1"},
 		})
 
 		env.RemoveNode("i-1", false)
-
-		for _, group := range env.cloudProvider.nodeGroups {
-			klog.Infof("%s: instances: %s", group.id, group.instances)
-			klog.Infof("%s: ts: %d", group.id,group.targetSize)
-		}
-
-		klog.Info("removed node")
 		env.StepFor(15 * time.Minute).ExpectNoCommands()
 	})
 }

@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -155,7 +154,6 @@ func (p *zalandoTestCloudProvider) Refresh(existingNodes []*corev1.Node) error {
 }
 
 type zalandoTestCloudProviderNodeGroup struct {
-	instancesLock sync.Mutex
 	id            string
 	expectedGID   uint64
 	maxSize       int
@@ -175,6 +173,7 @@ func (g *zalandoTestCloudProviderNodeGroup) MinSize() int {
 
 func (g *zalandoTestCloudProviderNodeGroup) TargetSize() (int, error) {
 	ensureSameGoroutine(g.expectedGID)
+
 	return g.targetSize, nil
 }
 
@@ -219,9 +218,7 @@ func (g *zalandoTestCloudProviderNodeGroup) Debug() string {
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) Nodes() ([]cloudprovider.Instance, error) {
-	// The cache is _always_ running from different goroutines, so we need a lock
-	g.instancesLock.Lock()
-	defer g.instancesLock.Unlock()
+	ensureSameGoroutine(g.expectedGID)
 
 	var result []cloudprovider.Instance
 	for instance, _ := range g.instances {
@@ -238,6 +235,8 @@ func (g *zalandoTestCloudProviderNodeGroup) Nodes() ([]cloudprovider.Instance, e
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+	ensureSameGoroutine(g.expectedGID)
+
 	return g.templateNode.Clone(), nil
 }
 
@@ -421,7 +420,7 @@ func (e *zalandoTestEnv) nodesPendingDeletion() sets.String {
 func (e *zalandoTestEnv) StepOnce() *zalandoTestEnv {
 	e.currentTime = e.currentTime.Add(e.interval)
 
-	// This is running asynchronously, we have to emulate it instead
+	// This is usually running asynchronously, we have to emulate it instead
 	for _, group := range e.cloudProvider.NodeGroups() {
 		e.autoscaler.clusterStateRegistry.InvalidateNodeInstancesCacheEntry(group)
 	}
@@ -468,9 +467,6 @@ func (e *zalandoTestEnv) handleCommand(command zalandoCloudProviderCommand) {
 		ng, err := e.cloudProvider.nodeGroup(command.nodeGroup)
 		require.NoError(e.t, err)
 
-		ng.instancesLock.Lock()
-		defer ng.instancesLock.Unlock()
-
 		for _, name := range command.nodeNames {
 			require.True(e.t, ng.instances.Has(name), "instance not found in %s: %s", command.nodeGroup, name)
 		}
@@ -488,9 +484,6 @@ func (e *zalandoTestEnv) AddInstance(nodeGroup string, instanceId string) *zalan
 
 	ng, err := e.cloudProvider.nodeGroup(nodeGroup)
 	require.NoError(e.t, err)
-
-	ng.instancesLock.Lock()
-	defer ng.instancesLock.Unlock()
 
 	ng.instances.Insert(instanceId)
 	if ng.targetSize < len(ng.instances) {
@@ -571,9 +564,6 @@ func (e *zalandoTestEnv) RemoveNode(name string) {
 			require.NoError(e.t, err)
 		}
 	}
-
-	zalandoNodeGroup.instancesLock.Lock()
-	defer zalandoNodeGroup.instancesLock.Unlock()
 
 	// Delete the instance and decrease the target size
 	zalandoNodeGroup.instances.Delete(name)
@@ -706,6 +696,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 		MaxTotalUnreadyPercentage: options.MaxTotalUnreadyPercentage,
 		OkTotalUnreadyCount:       options.OkTotalUnreadyCount,
 		MaxNodeProvisionTime:      options.MaxNodeProvisionTime,
+		RunSynchronously:          true,
 	}
 	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterStateConfig, autoscalingContext.LogRecorder, newBackoff())
 	sd := NewScaleDown(autoscalingContext, clusterState)

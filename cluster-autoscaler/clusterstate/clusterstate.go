@@ -92,6 +92,9 @@ type ClusterStateRegistryConfig struct {
 	OkTotalUnreadyCount int
 	//  Maximum time CA waits for node to be provisioned
 	MaxNodeProvisionTime time.Duration
+
+	// Don't start additional goroutines (used in tests
+	RunSynchronously bool
 }
 
 // IncorrectNodeGroupSize contains information about how much the current size of the node group
@@ -158,6 +161,11 @@ func NewClusterStateRegistry(cloudProvider cloudprovider.CloudProvider, config C
 		NodeGroupStatuses:     make([]api.NodeGroupStatus, 0),
 	}
 
+	cache := utils.NewCloudProviderNodeInstancesCache(cloudProvider)
+	if config.RunSynchronously {
+		cache.RunSynchronously()
+	}
+
 	return &ClusterStateRegistry{
 		scaleUpRequests:                 make(map[string]*ScaleUpRequest),
 		scaleDownRequests:               make([]*ScaleDownRequest, 0),
@@ -172,7 +180,7 @@ func NewClusterStateRegistry(cloudProvider cloudprovider.CloudProvider, config C
 		backoff:                         backoff,
 		lastStatus:                      emptyStatus,
 		logRecorder:                     logRecorder,
-		cloudProviderNodeInstancesCache: utils.NewCloudProviderNodeInstancesCache(cloudProvider),
+		cloudProviderNodeInstancesCache: cache,
 		interrupt:                       make(chan struct{}),
 		scaleUpFailures:                 make(map[string][]ScaleUpFailure),
 	}

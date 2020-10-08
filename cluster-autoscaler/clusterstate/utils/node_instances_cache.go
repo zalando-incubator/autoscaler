@@ -47,6 +47,8 @@ type CloudProviderNodeInstancesCache struct {
 	sync.Mutex
 	cloudProviderNodeInstances map[string]*cloudProviderNodeInstancesCacheEntry
 	cloudProvider              cloudprovider.CloudProvider
+
+	runSync bool
 }
 
 // NewCloudProviderNodeInstancesCache creates new cache instance.
@@ -100,12 +102,19 @@ func (cache *CloudProviderNodeInstancesCache) GetCloudProviderNodeInstances() (m
 		nodeGroup := nodeGroup
 		if _, found := cache.getCacheEntryLocked(nodeGroup); !found {
 			wg.Add(1)
-			go func() {
+
+			refresh := func() {
 				defer wg.Done()
 				if _, err := cache.fetchCloudProviderNodeInstancesForNodeGroup(nodeGroup); err != nil {
 					klog.Errorf("Failed to fetch cloud provider node instances for %v, error %v", nodeGroup.Id(), err)
 				}
-			}()
+			}
+
+			if cache.runSync {
+				refresh()
+			} else {
+				go refresh()
+			}
 		}
 	}
 	wg.Wait()
@@ -173,4 +182,8 @@ func (cache *CloudProviderNodeInstancesCache) Start(interrupt chan struct{}) {
 	go wait.Until(func() {
 		cache.Refresh()
 	}, CloudProviderNodeInstancesCacheRefreshInterval, interrupt)
+}
+
+func (cache *CloudProviderNodeInstancesCache) RunSynchronously() {
+	cache.runSync = true
 }

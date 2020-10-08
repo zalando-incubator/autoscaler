@@ -38,7 +38,7 @@ func TestExampleSimulationTest(t *testing.T) {
 		klog.Info("scaled up")
 		env.StepFor(1 * time.Minute).ExpectNoCommands()
 
-		env.AddInstance("ng-1", "i-1")
+		env.AddInstance("ng-1", "i-1", false)
 		klog.Info("added instance")
 		env.StepFor(1 * time.Minute).ExpectNoCommands()
 
@@ -59,7 +59,7 @@ func TestExampleSimulationTest(t *testing.T) {
 			nodeNames:   []string{"i-1"},
 		})
 
-		env.RemoveNode("i-1")
+		env.RemoveNode("i-1", false)
 
 		for _, group := range env.cloudProvider.nodeGroups {
 			klog.Infof("%s: instances: %s", group.id, group.instances)

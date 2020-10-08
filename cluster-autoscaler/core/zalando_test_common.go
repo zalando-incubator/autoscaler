@@ -470,6 +470,7 @@ func (e *zalandoTestEnv) handleCommand(command zalandoCloudProviderCommand) {
 		for _, name := range command.nodeNames {
 			require.True(e.t, ng.instances.Has(name), "instance not found in %s: %s", command.nodeGroup, name)
 		}
+		ng.targetSize -= len(command.nodeNames)
 	default:
 		require.FailNowf(e.t, "invalid command", "received invalid command: %s", command.commandType)
 	}
@@ -477,7 +478,7 @@ func (e *zalandoTestEnv) handleCommand(command zalandoCloudProviderCommand) {
 	e.pendingCommands = append(e.pendingCommands, command)
 }
 
-func (e *zalandoTestEnv) AddInstance(nodeGroup string, instanceId string) *zalandoTestEnv {
+func (e *zalandoTestEnv) AddInstance(nodeGroup string, instanceId string, incrementTargetSize bool) *zalandoTestEnv {
 	for _, group := range e.cloudProvider.nodeGroups {
 		require.False(e.t, group.instances.Has(instanceId), "instance already exists: %s", instanceId)
 	}
@@ -486,8 +487,9 @@ func (e *zalandoTestEnv) AddInstance(nodeGroup string, instanceId string) *zalan
 	require.NoError(e.t, err)
 
 	ng.instances.Insert(instanceId)
-	if ng.targetSize < len(ng.instances) {
-		ng.targetSize = len(ng.instances)
+	if incrementTargetSize {
+		ng.targetSize++
+
 	}
 	return e
 }
@@ -541,7 +543,7 @@ func (e *zalandoTestEnv) RemovePod(podName string) *zalandoTestEnv {
 	return e
 }
 
-func (e *zalandoTestEnv) RemoveNode(name string) {
+func (e *zalandoTestEnv) RemoveNode(name string, decrementTargetSize bool) {
 	node, err := e.client.CoreV1().Nodes().Get(context.Background(), name, metav1.GetOptions{})
 	require.NoError(e.t, err)
 
@@ -567,7 +569,9 @@ func (e *zalandoTestEnv) RemoveNode(name string) {
 
 	// Delete the instance and decrease the target size
 	zalandoNodeGroup.instances.Delete(name)
-	zalandoNodeGroup.targetSize--
+	if decrementTargetSize {
+		zalandoNodeGroup.targetSize--
+	}
 }
 
 type fakeClientNodeLister struct {

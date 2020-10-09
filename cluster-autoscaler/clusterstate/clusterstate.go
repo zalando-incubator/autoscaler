@@ -93,8 +93,10 @@ type ClusterStateRegistryConfig struct {
 	//  Maximum time CA waits for node to be provisioned
 	MaxNodeProvisionTime time.Duration
 
-	// Don't start additional goroutines (used in tests
+	// Don't start additional goroutines (used in tests)
 	RunSynchronously bool
+	// Keep the node group scaled up while in back off
+	BackoffNoFullScaleDown bool
 }
 
 // IncorrectNodeGroupSize contains information about how much the current size of the node group
@@ -659,7 +661,7 @@ func (csr *ClusterStateRegistry) updateIncorrectNodeGroupSizes(currentTime time.
 
 			// Ensure that node groups in BackOff state are kept scaled up by one node
 			// to let us know when it becomes healthy again.
-			if csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], currentTime) {
+			if csr.config.BackoffNoFullScaleDown && csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], currentTime) {
 				incorrect.CurrentSize++
 			}
 
@@ -966,7 +968,7 @@ func (csr *ClusterStateRegistry) GetUpcomingNodes(currentTime time.Time) map[str
 	result := make(map[string]int)
 	for _, nodeGroup := range csr.cloudProvider.NodeGroups() {
 		// Node groups in BackOff should be ignored, because we're deliberately keeping them scaled up now.
-		if csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], currentTime) {
+		if csr.config.BackoffNoFullScaleDown && csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], currentTime) {
 			continue
 		}
 
@@ -1207,6 +1209,10 @@ func (csr *ClusterStateRegistry) GetScaleUpFailures() map[string][]ScaleUpFailur
 }
 
 func (csr *ClusterStateRegistry) fixupPlaceholderNodesForBackOff(instances map[string][]cloudprovider.Instance, currentTime time.Time) {
+	if !csr.config.BackoffNoFullScaleDown {
+		return
+	}
+
 	// Unfortunately the AWS cloud provider returns placeholder instances when an ASG's desired capacity is greater
 	// than the current. This is a problem because these nodes would still be considered by the logic that removes nodes
 	// failing to join the cluster, and this would intern scale down the backed-off ASGs that we want to keep scaled up.

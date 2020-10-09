@@ -10,6 +10,10 @@ import (
 	"k8s.io/klog"
 )
 
+const (
+	labelScalePriority = "zalando.org/scaling-priority"
+)
+
 func TestMain(m *testing.M) {
 	klog.InitFlags(flag.CommandLine)
 	err := flag.Set("v", "0")
@@ -19,44 +23,22 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestExampleSimulationTest(t *testing.T) {
-	RunSimulation(t, defaultZalandoAutoscalingOptions(), 10*time.Second, func(env *zalandoTestEnv) {
-		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
-		env.StepOnce().ExpectNoCommands()
+func TestBrokenScalingTest(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+	opts.BackoffNoFullScaleDown = true
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-fallback", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
+		env.AddNodeGroup("ng-2", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
+		env.AddNodeGroup("ng-3", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
 
-		rs := NewTestReplicaSet("foo", 1)
-		env.AddReplicaSet(rs)
-
-		pod := NewReplicaSetPod(rs, resource.MustParse("1"), resource.MustParse("8Gi"))
+		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("8Gi"))
 		env.AddPod(pod)
-		env.StepOnce().ExpectCommands(zalandoCloudProviderCommand{
+
+		env.StepUntilCommand(24*time.Hour, zalandoCloudProviderCommand{
 			commandType: zalandoCloudProviderCommandIncreaseSize,
-			nodeGroup:   "ng-1",
+			nodeGroup:   "ng-fallback",
 			delta:       1,
 		})
-
-		klog.Info("scaled up")
-		env.StepFor(1 * time.Minute).ExpectNoCommands()
-
-		env.AddInstance("ng-1", "i-1", false)
-		env.StepFor(1 * time.Minute).ExpectNoCommands()
-
-		env.AddNode("i-1", true)
-		env.StepFor(1 * time.Minute).ExpectNoCommands()
-
-		env.SchedulePod(pod, "i-1")
-		env.StepFor(14 * time.Minute).ExpectNoCommands()
-
-		env.RemovePod(pod)
-
-		env.StepFor(10 * time.Minute).StepOnce().ExpectNoCommands()
-		env.StepOnce().ExpectCommands(zalandoCloudProviderCommand{
-			commandType: zalandoCloudProviderCommandDeleteNodes,
-			nodeGroup:   "ng-1",
-			nodeNames:   []string{"i-1"},
-		})
-
-		env.RemoveNode("i-1", false)
-		env.StepFor(15 * time.Minute).ExpectNoCommands()
 	})
 }

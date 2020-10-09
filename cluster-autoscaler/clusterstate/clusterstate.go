@@ -95,7 +95,7 @@ type ClusterStateRegistryConfig struct {
 
 	// Don't start additional goroutines (used in tests)
 	RunSynchronously bool
-	// Keep the node group scaled up while in back off
+	// TODO
 	BackoffNoFullScaleDown bool
 }
 

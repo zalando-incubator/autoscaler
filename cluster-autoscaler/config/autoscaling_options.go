@@ -142,4 +142,6 @@ type AutoscalingOptions struct {
 	// ScaleUpTemplateFromCloudProvider tells if template node should be built from the up-to-date provider configuration (e.g. ASG launch configuration)
 	// instead of a random existing node.
 	ScaleUpTemplateFromCloudProvider bool
+	// TODO
+	BackoffNoFullScaleDown bool
 }

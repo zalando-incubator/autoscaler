@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
+	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/api"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/utils"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	scalercontext "k8s.io/autoscaler/cluster-autoscaler/context"
@@ -456,6 +458,45 @@ func (e *zalandoTestEnv) StepFor(duration time.Duration) *zalandoTestEnv {
 	}
 }
 
+func (e *zalandoTestEnv) StepUntilNextCommand(timeout time.Duration) *zalandoTestEnv {
+	deadline := e.currentTime.Add(timeout)
+	for {
+		if len(e.pendingCommands) > 0 {
+			return e
+		}
+		if !e.currentTime.Before(deadline) {
+			require.FailNow(e.t, "StepUntilNextCommand timeout")
+			return e
+		}
+		e.StepOnce()
+	}
+}
+
+func (e *zalandoTestEnv) StepUntilCommand(maxTime time.Duration, command zalandoCloudProviderCommand) *zalandoTestEnv {
+	deadline := e.currentTime.Add(maxTime)
+	for {
+		for len(e.pendingCommands) > 0 {
+			if assert.ObjectsAreEqualValues(command, e.pendingCommands[0]) {
+				return e
+			}
+
+			klog.Infof("StepUntilCommand: ignoring %s", e.pendingCommands[0])
+			e.pendingCommands = e.pendingCommands[1:]
+		}
+		if !e.currentTime.Before(deadline) {
+			require.FailNow(e.t, "StepUntilCommand timeout")
+			return e
+		}
+		e.StepOnce()
+	}
+}
+
+func (e *zalandoTestEnv) ConsumeCommands() []zalandoCloudProviderCommand {
+	result := e.pendingCommands
+	e.pendingCommands = nil
+	return result
+}
+
 func (e *zalandoTestEnv) ExpectNoCommands() *zalandoTestEnv {
 	require.Empty(e.t, e.pendingCommands)
 	return e
@@ -487,7 +528,9 @@ func (e *zalandoTestEnv) handleCommand(command zalandoCloudProviderCommand) {
 		require.NoError(e.t, err)
 
 		for _, name := range command.nodeNames {
-			require.True(e.t, ng.instances.Has(name), "instance not found in %s: %s", command.nodeGroup, name)
+			if !strings.Contains(name, "-placeholder-") {
+				require.True(e.t, ng.instances.Has(name), "instance not found in %s: %s", command.nodeGroup, name)
+			}
 		}
 		ng.targetSize -= len(command.nodeNames)
 	default:
@@ -613,6 +656,38 @@ func (e *zalandoTestEnv) RemoveNode(name string, decrementTargetSize bool) {
 	}
 
 	klog.Infof("Removed instance %s for node group %s (target size %d -> %d)", name, zalandoNodeGroup.id, currentTargetSize, zalandoNodeGroup.targetSize)
+}
+
+func (e *zalandoTestEnv) CurrentTime() time.Duration {
+	return e.currentTime.Sub(e.initialTime)
+}
+
+func (e *zalandoTestEnv) GetClusterStatus() *api.ClusterAutoscalerStatus {
+	return e.autoscaler.clusterStateRegistry.GetStatus(e.currentTime)
+}
+
+func (e *zalandoTestEnv) GetScaleUpFailures() map[string][]clusterstate.ScaleUpFailure {
+	return e.autoscaler.clusterStateRegistry.GetScaleUpFailures()
+}
+
+func formatCondition(condition api.ClusterAutoscalerCondition) string {
+	return fmt.Sprintf("type=%s status=%s reason=%s lastTransition=%s message=%s", condition.Type, condition.Status, condition.Reason, condition.LastTransitionTime, condition.Message)
+}
+
+func (e *zalandoTestEnv) LogStatus() *zalandoTestEnv {
+	status := e.autoscaler.clusterStateRegistry.GetStatus(e.currentTime)
+	for _, groupStatus := range status.NodeGroupStatuses {
+		klog.Infof("Node group %s:", groupStatus.ProviderID)
+		for _, condition := range groupStatus.Conditions {
+			klog.Infof("  - %s", formatCondition(condition))
+		}
+	}
+
+	klog.Info("Clusterwide:")
+	for _, condition := range status.ClusterwideConditions {
+		klog.Infof("  - %s", formatCondition(condition))
+	}
+	return e
 }
 
 type fakeClientNodeLister struct {
@@ -742,6 +817,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 		OkTotalUnreadyCount:       options.OkTotalUnreadyCount,
 		MaxNodeProvisionTime:      options.MaxNodeProvisionTime,
 		RunSynchronously:          true,
+		BackoffNoFullScaleDown:    options.BackoffNoFullScaleDown,
 	}
 	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterStateConfig, autoscalingContext.LogRecorder, newBackoff())
 	sd := NewScaleDown(autoscalingContext, clusterState)

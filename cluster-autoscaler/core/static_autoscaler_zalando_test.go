@@ -17,7 +17,7 @@ const (
 
 func TestMain(m *testing.M) {
 	klog.InitFlags(flag.CommandLine)
-	err := flag.Set("v", "0")
+	err := flag.Set("v", "3")
 	if err != nil {
 		panic(err)
 	}
@@ -78,10 +78,14 @@ func TestZalandoScalingTest(t *testing.T) {
 			SchedulePod(p2, "i-2").
 			StepFor(15 * time.Minute).
 			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDecreaseTargetSize, nodeGroup: "ng-1", delta: -1}).
-			ExpectTargetSize("ng-1", 1).
-			ExpectTargetSize("ng-2", 1).
-			ExpectTargetSize("ng-3", 1).
-			ExpectTargetSize("ng-fallback", 2)
+			ExpectBackedOff("ng-1").ExpectTargetSize("ng-1", 1).
+			ExpectBackedOff("ng-2").ExpectTargetSize("ng-2", 1).
+			ExpectBackedOff("ng-3").ExpectTargetSize("ng-3", 1).
+			ExpectNotBackedOff("ng-fallback").ExpectTargetSize("ng-fallback", 2)
+
+		env.AddInstance("ng-1", "i-3", false).AddNode("i-3", true).
+			StepOnce().
+			ExpectNotBackedOff("ng-1")
 
 		env.LogStatus()
 	})

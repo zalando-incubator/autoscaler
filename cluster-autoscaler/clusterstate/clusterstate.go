@@ -331,8 +331,8 @@ func (csr *ClusterStateRegistry) UpdateNodes(nodes []*apiv1.Node, nodeInfosForGr
 	csr.cloudProviderNodeInstances = cloudProviderNodeInstances
 
 	csr.updateUnregisteredNodes(notRegistered)
-	csr.fixupPlaceholderNodesForBackOff(cloudProviderNodeInstances, currentTime)
 	csr.updateReadinessStats(currentTime)
+	csr.updateGroupsInBackoff(cloudProviderNodeInstances, currentTime)
 
 	// update acceptable ranges based on requests from last loop and targetSizes
 	// updateScaleRequests relies on acceptableRanges being up to date
@@ -1208,7 +1208,7 @@ func (csr *ClusterStateRegistry) GetScaleUpFailures() map[string][]ScaleUpFailur
 	return result
 }
 
-func (csr *ClusterStateRegistry) fixupPlaceholderNodesForBackOff(instances map[string][]cloudprovider.Instance, currentTime time.Time) {
+func (csr *ClusterStateRegistry) updateGroupsInBackoff(instances map[string][]cloudprovider.Instance, currentTime time.Time) {
 	if !csr.config.BackoffNoFullScaleDown {
 		return
 	}
@@ -1219,9 +1219,16 @@ func (csr *ClusterStateRegistry) fixupPlaceholderNodesForBackOff(instances map[s
 	// Unfortunately, these instances are also not marked in any way so it's impossible to distinguish them from normal
 	// ones (there's cloudprovider.Instance::Status but that doesn't seem to be used), and we would still like to
 	// terminate actual instances that fail to come up.
+	// Additionally, now that we're using infinite backoff, we need to reset it once the node groups scale back up.
 
 	for _, nodeGroup := range csr.cloudProvider.NodeGroups() {
 		if csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], currentTime) {
+			if !csr.areThereUpcomingNodesInNodeGroup(nodeGroup.Id()) {
+				csr.backoff.RemoveBackoff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()])
+				klog.Infof("Restoring scale-up for node group %v", nodeGroup.Id())
+				continue
+			}
+
 			for _, instance := range instances[nodeGroup.Id()] {
 				// If it's a placeholder instance, reset the unregistered node timeout so it's not deleted. Since
 				// there's no way to do this correctly, and I don't want to add another method

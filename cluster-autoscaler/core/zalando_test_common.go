@@ -725,6 +725,34 @@ func (e *zalandoTestEnv) ExpectTargetSize(nodeGroup string, size int) *zalandoTe
 	return e
 }
 
+func (e *zalandoTestEnv) nodeGroupConditionStatus(nodeGroup string, conditionType api.ClusterAutoscalerConditionType) (*api.ClusterAutoscalerCondition, error) {
+	for _, status := range e.autoscaler.clusterStateRegistry.GetStatus(e.currentTime).NodeGroupStatuses {
+		if status.ProviderID == nodeGroup {
+			for _, condition := range status.Conditions {
+				if condition.Type == conditionType {
+					return &condition, nil
+				}
+			}
+			return nil, fmt.Errorf("no %s condition found for node group %s", conditionType, nodeGroup)
+		}
+	}
+	return nil, fmt.Errorf("no status for node group %s", nodeGroup)
+}
+
+func (e *zalandoTestEnv) ExpectBackedOff(nodeGroup string) *zalandoTestEnv {
+	cond, err := e.nodeGroupConditionStatus(nodeGroup, api.ClusterAutoscalerScaleUp)
+	require.NoError(e.t, err)
+	require.Equal(e.t, api.ClusterAutoscalerBackoff, cond.Status)
+	return e
+}
+
+func (e *zalandoTestEnv) ExpectNotBackedOff(nodeGroup string) *zalandoTestEnv {
+	cond, err := e.nodeGroupConditionStatus(nodeGroup, api.ClusterAutoscalerScaleUp)
+	require.NoError(e.t, err)
+	require.NotEqual(e.t, api.ClusterAutoscalerBackoff, cond.Status)
+	return e
+}
+
 type fakeClientNodeLister struct {
 	client *fake.Clientset
 	filter func(node *corev1.Node) bool

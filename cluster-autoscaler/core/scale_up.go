@@ -315,7 +315,7 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 		return &status.ScaleUpStatus{Result: status.ScaleUpNotNeeded}, nil
 	}
 
-	now := time.Now()
+	currentTime := now()
 
 	loggingQuota := glogx.PodsLoggingQuota()
 
@@ -346,7 +346,7 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 	}
 
 	upcomingNodes := make([]*schedulernodeinfo.NodeInfo, 0)
-	for nodeGroup, numberOfNodes := range clusterStateRegistry.GetUpcomingNodes(now) {
+	for nodeGroup, numberOfNodes := range clusterStateRegistry.GetUpcomingNodes(currentTime) {
 		nodeTemplate, found := nodeInfos[nodeGroup]
 		if !found {
 			return &status.ScaleUpStatus{Result: status.ScaleUpError}, errors.NewAutoscalerError(
@@ -375,7 +375,7 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 	skippedNodeGroups := map[string]status.Reasons{}
 	for _, nodeGroup := range nodeGroups {
 		// Autoprovisioned node groups without nodes are created later so skip check for them.
-		if nodeGroup.Exist() && !clusterStateRegistry.IsNodeGroupSafeToScaleUp(nodeGroup, now) {
+		if nodeGroup.Exist() && !clusterStateRegistry.IsNodeGroupSafeToScaleUp(nodeGroup, currentTime) {
 			// Hack that depends on internals of IsNodeGroupSafeToScaleUp.
 			if !clusterStateRegistry.IsNodeGroupHealthy(nodeGroup.Id()) {
 				klog.Warningf("Node group %s is not ready for scaleup - unhealthy", nodeGroup.Id())
@@ -542,7 +542,7 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 			}
 			similarNodeGroups = filterNodeGroupsByPods(similarNodeGroups, bestOption.Pods, expansionOptions)
 			for _, ng := range similarNodeGroups {
-				if clusterStateRegistry.IsNodeGroupSafeToScaleUp(ng, now) {
+				if clusterStateRegistry.IsNodeGroupSafeToScaleUp(ng, currentTime) {
 					targetNodeGroups = append(targetNodeGroups, ng)
 				} else {
 					// This should never happen, as we will filter out the node group earlier on
@@ -569,7 +569,7 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 		}
 		klog.V(1).Infof("Final scale-up plan: %v", scaleUpInfos)
 		for _, info := range scaleUpInfos {
-			typedErr := executeScaleUp(context, clusterStateRegistry, info, gpu.GetGpuTypeForMetrics(gpuLabel, availableGPUTypes, nodeInfo.Node(), nil), now)
+			typedErr := executeScaleUp(context, clusterStateRegistry, info, gpu.GetGpuTypeForMetrics(gpuLabel, availableGPUTypes, nodeInfo.Node(), nil), currentTime)
 			if typedErr != nil {
 				return &status.ScaleUpStatus{Result: status.ScaleUpError, CreateNodeGroupResults: createNodeGroupResults}, typedErr
 			}
@@ -677,7 +677,7 @@ func executeScaleUp(context *context.AutoscalingContext, clusterStateRegistry *c
 	clusterStateRegistry.RegisterOrUpdateScaleUp(
 		info.Group,
 		increase,
-		time.Now())
+		now)
 	metrics.RegisterScaleUp(increase, gpuType)
 	context.LogRecorder.Eventf(apiv1.EventTypeNormal, "ScaledUpGroup",
 		"Scale-up: group %s size set to %d", info.Group.Id(), info.NewSize)

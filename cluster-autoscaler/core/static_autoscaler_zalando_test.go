@@ -34,13 +34,13 @@ func TestBrokenScalingTest(t *testing.T) {
 
 		env.StepFor(30 * time.Second).ExpectNoCommands()
 
-		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("8Gi"))
-		env.AddPod(pod)
+		env.AddPod(NewTestPod("foo", resource.MustParse("1"), resource.MustParse("24Gi")))
+		env.AddPod(NewTestPod("bar", resource.MustParse("1"), resource.MustParse("24Gi")))
 
-		env.StepUntilCommand(24*time.Hour, zalandoCloudProviderCommand{
+		env.StepUntilCommand(2*time.Hour, zalandoCloudProviderCommand{
 			commandType: zalandoCloudProviderCommandIncreaseSize,
 			nodeGroup:   "ng-fallback",
-			delta:       1,
+			delta:       2,
 		})
 		require.True(t, env.CurrentTime() > 60 * time.Minute, "upstream autoscaler should take a lot of time to fallback")
 		env.LogStatus()
@@ -58,14 +58,23 @@ func TestZalandoScalingTest(t *testing.T) {
 
 		env.StepFor(30 * time.Second).ExpectNoCommands()
 
-		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("8Gi"))
-		env.AddPod(pod)
+		p1 := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("24Gi"))
+		p2 := NewTestPod("bar", resource.MustParse("1"), resource.MustParse("24Gi"))
+
+		env.AddPod(p1)
+		env.AddPod(p2)
 
 		env.StepUntilCommand(30 * time.Minute, zalandoCloudProviderCommand{
 			commandType: zalandoCloudProviderCommandIncreaseSize,
 			nodeGroup:   "ng-fallback",
-			delta:       1,
+			delta:       2,
 		})
+		env.AddInstance("ng-fallback", "i-1", false).AddNode("i-1", true).
+			AddInstance("ng-fallback", "i-2", false).AddNode("i-2", true).
+			SchedulePod(p1, "i-1").
+			SchedulePod(p2, "i-2").
+			StepFor(15 * time.Minute).
+			ConsumeCommands()
 		env.LogStatus()
 	})
 }

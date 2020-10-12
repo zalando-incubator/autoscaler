@@ -502,12 +502,15 @@ func (e *zalandoTestEnv) StepUntilCommand(maxTime time.Duration, command zalando
 	deadline := e.currentTime.Add(maxTime)
 	for {
 		for len(e.pendingCommands) > 0 {
-			if assert.ObjectsAreEqualValues(command, e.pendingCommands[0]) {
+			cmd := e.pendingCommands[0]
+			e.pendingCommands = e.pendingCommands[1:]
+
+			if assert.ObjectsAreEqualValues(command, cmd) {
+				klog.Infof("StepUntilCommand: reached expected command")
 				return e
 			}
 
-			klog.Infof("StepUntilCommand: ignoring %s", e.pendingCommands[0])
-			e.pendingCommands = e.pendingCommands[1:]
+			klog.Infof("StepUntilCommand: ignoring %s", cmd)
 		}
 		if !e.currentTime.Before(deadline) {
 			require.FailNow(e.t, "StepUntilCommand timeout")
@@ -544,11 +547,16 @@ func (e *zalandoTestEnv) handleCommand(command zalandoCloudProviderCommand) {
 		ng, err := e.cloudProvider.nodeGroup(command.nodeGroup)
 		require.NoError(e.t, err)
 		require.True(e.t, command.delta >= 0, "attempted to increase size of %s with invalid delta: %d", command.nodeGroup, command.delta)
-		require.True(e.t, command.delta >= 0, "attempted to increase size of %s beyond max: current %d, delta %d", command.nodeGroup, ng.targetSize, command.delta)
+		require.True(e.t, ng.targetSize + command.delta <= ng.maxSize, "attempted to increase size of %s beyond max: current %d, delta %d", command.nodeGroup, ng.targetSize, command.delta)
 
 		ng.targetSize += command.delta
 	case zalandoCloudProviderCommandDecreaseTargetSize:
-		require.FailNow(e.t, "decrease target size unsupported for now")
+		ng, err := e.cloudProvider.nodeGroup(command.nodeGroup)
+		require.NoError(e.t, err)
+		require.True(e.t, command.delta <= 0, "attempted to decrease size of %s with invalid delta: %d", command.nodeGroup, command.delta)
+		require.True(e.t, ng.targetSize + command.delta >= len(ng.instances), "attempted to decrease size of %s beyond the number of instances: current %d, delta %d, instances %d", command.nodeGroup, ng.targetSize, command.delta, len(ng.instances))
+
+		ng.targetSize += command.delta
 	case zalandoCloudProviderCommandDeleteNodes:
 		ng, err := e.cloudProvider.nodeGroup(command.nodeGroup)
 		require.NoError(e.t, err)

@@ -501,16 +501,10 @@ func (e *zalandoTestEnv) StepUntilNextCommand(timeout time.Duration) *zalandoTes
 func (e *zalandoTestEnv) StepUntilCommand(maxTime time.Duration, command zalandoCloudProviderCommand) *zalandoTestEnv {
 	deadline := e.currentTime.Add(maxTime)
 	for {
-		for len(e.pendingCommands) > 0 {
-			cmd := e.pendingCommands[0]
-			e.pendingCommands = e.pendingCommands[1:]
-
+		for _, cmd := range e.pendingCommands {
 			if assert.ObjectsAreEqualValues(command, cmd) {
-				klog.Infof("StepUntilCommand: reached expected command")
 				return e
 			}
-
-			klog.Infof("StepUntilCommand: ignoring %s", cmd)
 		}
 		if !e.currentTime.Before(deadline) {
 			require.FailNow(e.t, "StepUntilCommand timeout")
@@ -721,6 +715,13 @@ func (e *zalandoTestEnv) LogStatus() *zalandoTestEnv {
 	for _, condition := range status.ClusterwideConditions {
 		klog.Infof("  - %s", formatCondition(condition))
 	}
+	return e
+}
+
+func (e *zalandoTestEnv) ExpectTargetSize(nodeGroup string, size int) *zalandoTestEnv {
+	ng, err := e.cloudProvider.nodeGroup(nodeGroup)
+	require.NoError(e.t, err)
+	require.Equal(e.t, size, ng.targetSize)
 	return e
 }
 

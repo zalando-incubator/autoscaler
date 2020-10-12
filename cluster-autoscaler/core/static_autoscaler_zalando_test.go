@@ -17,7 +17,7 @@ const (
 
 func TestMain(m *testing.M) {
 	klog.InitFlags(flag.CommandLine)
-	err := flag.Set("v", "3")
+	err := flag.Set("v", "0")
 	if err != nil {
 		panic(err)
 	}
@@ -32,17 +32,17 @@ func TestBrokenScalingTest(t *testing.T) {
 		env.AddNodeGroup("ng-2", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "110"})
 		env.AddNodeGroup("ng-3", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "120"})
 
-		env.StepFor(30 * time.Second).ExpectNoCommands()
+		env.StepFor(10 * time.Second).ExpectNoCommands()
 
 		env.AddPod(NewTestPod("foo", resource.MustParse("1"), resource.MustParse("24Gi")))
 		env.AddPod(NewTestPod("bar", resource.MustParse("1"), resource.MustParse("24Gi")))
 
-		env.StepUntilCommand(2*time.Hour, zalandoCloudProviderCommand{
+		env.StepUntilCommand(20*time.Hour, zalandoCloudProviderCommand{
 			commandType: zalandoCloudProviderCommandIncreaseSize,
 			nodeGroup:   "ng-fallback",
 			delta:       2,
 		})
-		require.True(t, env.CurrentTime() > 60 * time.Minute, "upstream autoscaler should take a lot of time to fallback")
+		require.True(t, env.CurrentTime() > 60*time.Minute, "upstream autoscaler should take a lot of time to fallback")
 		env.LogStatus()
 	})
 }
@@ -56,7 +56,7 @@ func TestZalandoScalingTest(t *testing.T) {
 		env.AddNodeGroup("ng-2", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "110"})
 		env.AddNodeGroup("ng-3", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "120"})
 
-		env.StepFor(30 * time.Second).ExpectNoCommands()
+		env.StepFor(10 * time.Second).ExpectNoCommands()
 
 		p1 := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("24Gi"))
 		p2 := NewTestPod("bar", resource.MustParse("1"), resource.MustParse("24Gi"))
@@ -64,17 +64,25 @@ func TestZalandoScalingTest(t *testing.T) {
 		env.AddPod(p1)
 		env.AddPod(p2)
 
-		env.StepUntilCommand(30 * time.Minute, zalandoCloudProviderCommand{
-			commandType: zalandoCloudProviderCommandIncreaseSize,
-			nodeGroup:   "ng-fallback",
-			delta:       2,
-		})
+		env.StepFor(22*time.Minute).ExpectCommands(
+			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-3", delta: 2},
+			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-2", delta: 2},
+			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDecreaseTargetSize, nodeGroup: "ng-3", delta: -1},
+			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 2},
+			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDecreaseTargetSize, nodeGroup: "ng-2", delta: -1},
+			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-fallback", delta: 2},
+		)
 		env.AddInstance("ng-fallback", "i-1", false).AddNode("i-1", true).
 			AddInstance("ng-fallback", "i-2", false).AddNode("i-2", true).
 			SchedulePod(p1, "i-1").
 			SchedulePod(p2, "i-2").
 			StepFor(15 * time.Minute).
-			ConsumeCommands()
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDecreaseTargetSize, nodeGroup: "ng-1", delta: -1}).
+			ExpectTargetSize("ng-1", 1).
+			ExpectTargetSize("ng-2", 1).
+			ExpectTargetSize("ng-3", 1).
+			ExpectTargetSize("ng-fallback", 2)
+
 		env.LogStatus()
 	})
 }

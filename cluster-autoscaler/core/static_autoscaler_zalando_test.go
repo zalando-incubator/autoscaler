@@ -16,7 +16,7 @@ const (
 
 func TestMain(m *testing.M) {
 	klog.InitFlags(flag.CommandLine)
-	err := flag.Set("v", "0")
+	err := flag.Set("v", "3")
 	if err != nil {
 		panic(err)
 	}
@@ -25,12 +25,13 @@ func TestMain(m *testing.M) {
 
 func TestBrokenScalingTest(t *testing.T) {
 	opts := defaultZalandoAutoscalingOptions()
-	opts.BackoffNoFullScaleDown = true
 	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
 		env.AddNodeGroup("ng-fallback", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
 		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
 		env.AddNodeGroup("ng-2", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
 		env.AddNodeGroup("ng-3", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
+
+		env.StepFor(30 * time.Second).ExpectNoCommands()
 
 		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("8Gi"))
 		env.AddPod(pod)

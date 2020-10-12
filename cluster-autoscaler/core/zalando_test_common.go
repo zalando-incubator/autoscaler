@@ -81,9 +81,10 @@ func (cmd zalandoCloudProviderCommand) String() string {
 }
 
 type zalandoTestCloudProvider struct {
-	limiter     *cloudprovider.ResourceLimiter
-	expectedGID uint64
-	nodeGroups  []*zalandoTestCloudProviderNodeGroup
+	limiter            *cloudprovider.ResourceLimiter
+	expectedGID        uint64
+	nodeGroups         []*zalandoTestCloudProviderNodeGroup
+	instanceCacheValid bool
 }
 
 func newZalandoTestCloudProvider(limiter *cloudprovider.ResourceLimiter, expectedGID uint64) *zalandoTestCloudProvider {
@@ -165,6 +166,14 @@ func (p *zalandoTestCloudProvider) Cleanup() error {
 }
 
 func (p *zalandoTestCloudProvider) Refresh(existingNodes []*corev1.Node) error {
+	if !p.instanceCacheValid {
+		klog.V(3).Infof("Regenerating cached instances...")
+		for _, group := range p.nodeGroups {
+			group.regenerateCachedInstances()
+		}
+		p.instanceCacheValid = true
+	}
+
 	return nil
 }
 
@@ -176,6 +185,8 @@ type zalandoTestCloudProviderNodeGroup struct {
 	instances     sets.String
 	templateNode  *schedulernodeinfo.NodeInfo
 	handleCommand func(command zalandoCloudProviderCommand)
+
+	cachedInstances []cloudprovider.Instance
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) MaxSize() int {
@@ -212,6 +223,7 @@ func (g *zalandoTestCloudProviderNodeGroup) DeleteNodes(nodes []*corev1.Node) er
 		nodeGroup:   g.id,
 		nodeNames:   nodeNames,
 	})
+	g.regenerateCachedInstances()
 	return nil
 }
 
@@ -235,6 +247,10 @@ func (g *zalandoTestCloudProviderNodeGroup) Debug() string {
 func (g *zalandoTestCloudProviderNodeGroup) Nodes() ([]cloudprovider.Instance, error) {
 	ensureSameGoroutine(g.expectedGID)
 
+	return g.cachedInstances, nil
+}
+
+func (g *zalandoTestCloudProviderNodeGroup) regenerateCachedInstances() {
 	var result []cloudprovider.Instance
 	for instance, _ := range g.instances {
 		result = append(result, cloudprovider.Instance{
@@ -246,7 +262,7 @@ func (g *zalandoTestCloudProviderNodeGroup) Nodes() ([]cloudprovider.Instance, e
 			Id: fmt.Sprintf("zalando-test:///%s/i-placeholder-%d", g.id, i),
 		})
 	}
-	return result, nil
+	g.cachedInstances = result
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
@@ -334,6 +350,8 @@ type zalandoTestEnv struct {
 	client                       *fake.Clientset
 	initialTime                  time.Time
 	currentTime                  time.Time
+	instanceCacheResetTime       time.Time
+	cloudProviderCacheTime       time.Time
 	pdbIndexer                   cache.Indexer
 	daemonsetIndexer             cache.Indexer
 	replicationControllerIndexer cache.Indexer
@@ -436,9 +454,16 @@ func (e *zalandoTestEnv) nodesPendingDeletion() sets.String {
 }
 
 func (e *zalandoTestEnv) StepOnce() *zalandoTestEnv {
+	// Emulate the AWS cloud provider behaviour
+	if e.instanceCacheResetTime.Add(time.Minute).Before(e.currentTime) {
+		e.cloudProvider.instanceCacheValid = false
+		e.instanceCacheResetTime = e.currentTime
+	}
+
 	// This is usually running asynchronously, we have to emulate it instead
-	for _, group := range e.cloudProvider.NodeGroups() {
-		e.autoscaler.clusterStateRegistry.InvalidateNodeInstancesCacheEntry(group)
+	if e.cloudProviderCacheTime.Add(utils.CloudProviderNodeInstancesCacheRefreshInterval).Before(e.currentTime) {
+		e.autoscaler.clusterStateRegistry.RefreshCloudProviderNodeInstancesCache()
+		e.cloudProviderCacheTime = e.currentTime
 	}
 
 	err := e.autoscaler.RunOnce(e.currentTime)

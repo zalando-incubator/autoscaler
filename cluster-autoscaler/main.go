@@ -250,7 +250,11 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 	}
 }
 
-func createBackoff() backoff.Backoff {
+func createBackoff(options config.AutoscalingOptions) backoff.Backoff {
+	if options.BackoffNoFullScaleDown {
+		return backoff.NewInfiniteBackoff()
+	}
+
 	return backoff.NewIdBasedExponentialBackoff(*nodePoolBackoffInitial, *nodePoolBackoffMax, *nodePoolBackoffReset)
 }
 
@@ -317,7 +321,7 @@ func buildAutoscaler() (core.Autoscaler, error) {
 		KubeClient:         kubeClient,
 		EventsKubeClient:   eventsKubeClient,
 		Processors:         processors,
-		Backoff:            createBackoff(),
+		Backoff:            createBackoff(autoscalingOptions),
 	}
 
 	// This metric should be published only once.

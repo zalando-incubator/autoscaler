@@ -35,6 +35,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/highestpriority"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/backoff"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/deletetaint"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
@@ -844,7 +845,13 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 		RunSynchronously:          true,
 		BackoffNoFullScaleDown:    options.BackoffNoFullScaleDown,
 	}
-	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterStateConfig, autoscalingContext.LogRecorder, newBackoff())
+
+	ngBackoff := newBackoff()
+	if options.BackoffNoFullScaleDown {
+		ngBackoff = backoff.NewInfiniteBackoff()
+	}
+
+	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterStateConfig, autoscalingContext.LogRecorder, ngBackoff)
 	sd := NewScaleDown(autoscalingContext, clusterState)
 	sd.runSync = true
 	initialTime := time.Date(2020, 01, 01, 00, 00, 00, 0, time.UTC)

@@ -95,7 +95,8 @@ type ClusterStateRegistryConfig struct {
 
 	// Don't start additional goroutines (used in tests)
 	RunSynchronously bool
-	// TODO
+	// Keep the ASGs in Backoff scaled up to 1 additional instance, to be able to detect when the quota/availability go away.
+	// Should be combined with infinite backoff.
 	BackoffNoFullScaleDown bool
 }
 

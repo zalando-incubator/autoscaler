@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -361,12 +362,15 @@ func defaultZalandoAutoscalingOptions() config.AutoscalingOptions {
 }
 
 type zalandoTestEnv struct {
+	// Only used when reading from other threads and writing
+	currentTimeLock sync.Mutex
+	currentTime     time.Time
+
 	t                            *testing.T
 	expectedGID                  uint64
 	interval                     time.Duration
 	client                       *fake.Clientset
 	initialTime                  time.Time
-	currentTime                  time.Time
 	instanceCacheResetTime       time.Time
 	cloudProviderCacheTime       time.Time
 	pdbIndexer                   cache.Indexer
@@ -385,6 +389,9 @@ type simulationLogWriter struct {
 }
 
 func (w *simulationLogWriter) Write(p []byte) (int, error) {
+	w.testEnv.currentTimeLock.Lock()
+	defer w.testEnv.currentTimeLock.Unlock()
+
 	s := fmt.Sprintf("[%8s] %s", w.testEnv.currentTime.Sub(w.testEnv.initialTime), string(p))
 	_, err := os.Stderr.Write([]byte(s))
 	if err != nil {
@@ -486,6 +493,8 @@ func (e *zalandoTestEnv) StepOnce() *zalandoTestEnv {
 	err := e.autoscaler.RunOnce(e.currentTime)
 	require.NoError(e.t, err)
 
+	e.currentTimeLock.Lock()
+	defer e.currentTimeLock.Unlock()
 	e.currentTime = e.currentTime.Add(e.interval)
 	return e
 }
@@ -862,7 +871,9 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 	estimatorBuilder, err := estimator.NewEstimatorBuilder(options.EstimatorName)
 	require.NoError(t, err)
 
-	predicateChecker, err := simulator.NewSchedulerBasedPredicateChecker(clientset, make(chan struct{}))
+	closeChannel := make(chan struct{})
+	defer close(closeChannel)
+	predicateChecker, err := simulator.NewSchedulerBasedPredicateChecker(clientset, closeChannel)
 	require.NoError(t, err)
 
 	pdbIndexer := makeIndexer()

@@ -76,7 +76,7 @@ func TestZalandoScalingTest(t *testing.T) {
 			AddInstance("ng-fallback", "i-2", false).AddNode("i-2", true).
 			SchedulePod(p1, "i-1").
 			SchedulePod(p2, "i-2").
-			StepFor(15 * time.Minute).
+			StepFor(15*time.Minute).
 			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDecreaseTargetSize, nodeGroup: "ng-1", delta: -1}).
 			ExpectBackedOff("ng-1").ExpectTargetSize("ng-1", 1).
 			ExpectBackedOff("ng-2").ExpectTargetSize("ng-2", 1).
@@ -90,9 +90,23 @@ func TestZalandoScalingTest(t *testing.T) {
 
 		// ASG was reset to 0 externally
 		env.SetTargetSize("ng-2", 0).
-			StepFor(2*time.Minute).
+			StepFor(2 * time.Minute).
 			ExpectNotBackedOff("ng-2")
 
 		env.LogStatus()
+	})
+}
+
+func TestZalandoScalingTestRestartBackoff(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+	opts.BackoffNoFullScaleDown = true
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-fallback", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
+
+		env.SetTargetSize("ng-1", 1)
+
+		env.AddPod(NewTestPod("foo", resource.MustParse("1"), resource.MustParse("24Gi"))).
+			StepUntilCommand(20*time.Minute, zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-fallback", delta: 1})
 	})
 }

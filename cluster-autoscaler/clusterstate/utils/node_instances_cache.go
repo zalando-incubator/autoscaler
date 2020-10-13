@@ -184,6 +184,7 @@ func (cache *CloudProviderNodeInstancesCache) Start(interrupt chan struct{}) {
 	}, CloudProviderNodeInstancesCacheRefreshInterval, interrupt)
 }
 
+// RunSynchronously forces cache to not start additional goroutines when refreshing
 func (cache *CloudProviderNodeInstancesCache) RunSynchronously() {
 	cache.runSync = true
 }

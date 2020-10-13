@@ -1,3 +1,19 @@
+/*
+Copyright 2018 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package core
 
 import (
@@ -253,7 +269,7 @@ func (g *zalandoTestCloudProviderNodeGroup) Nodes() ([]cloudprovider.Instance, e
 
 func (g *zalandoTestCloudProviderNodeGroup) regenerateCachedInstances() {
 	var result []cloudprovider.Instance
-	for instance, _ := range g.instances {
+	for instance := range g.instances {
 		result = append(result, cloudprovider.Instance{
 			Id: fmt.Sprintf("zalando-test:///%s/%s", g.id, instance),
 		})
@@ -541,14 +557,14 @@ func (e *zalandoTestEnv) handleCommand(command zalandoCloudProviderCommand) {
 		ng, err := e.cloudProvider.nodeGroup(command.nodeGroup)
 		require.NoError(e.t, err)
 		require.True(e.t, command.delta >= 0, "attempted to increase size of %s with invalid delta: %d", command.nodeGroup, command.delta)
-		require.True(e.t, ng.targetSize + command.delta <= ng.maxSize, "attempted to increase size of %s beyond max: current %d, delta %d", command.nodeGroup, ng.targetSize, command.delta)
+		require.True(e.t, ng.targetSize+command.delta <= ng.maxSize, "attempted to increase size of %s beyond max: current %d, delta %d", command.nodeGroup, ng.targetSize, command.delta)
 
 		ng.targetSize += command.delta
 	case zalandoCloudProviderCommandDecreaseTargetSize:
 		ng, err := e.cloudProvider.nodeGroup(command.nodeGroup)
 		require.NoError(e.t, err)
 		require.True(e.t, command.delta <= 0, "attempted to decrease size of %s with invalid delta: %d", command.nodeGroup, command.delta)
-		require.True(e.t, ng.targetSize + command.delta >= len(ng.instances), "attempted to decrease size of %s beyond the number of instances: current %d, delta %d, instances %d", command.nodeGroup, ng.targetSize, command.delta, len(ng.instances))
+		require.True(e.t, ng.targetSize+command.delta >= len(ng.instances), "attempted to decrease size of %s beyond the number of instances: current %d, delta %d, instances %d", command.nodeGroup, ng.targetSize, command.delta, len(ng.instances))
 
 		ng.targetSize += command.delta
 	case zalandoCloudProviderCommandDeleteNodes:
@@ -832,6 +848,7 @@ func makeIndexer() cache.Indexer {
 		map[string]cache.IndexFunc{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 }
 
+// RunSimulation runs testFn with a freshly created simulation environment
 func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval time.Duration, testFn func(env *zalandoTestEnv)) {
 	processorCallbacks := newStaticAutoscalerProcessorCallbacks()
 	clientset := fake.NewSimpleClientset()
@@ -960,6 +977,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 	testFn(env)
 }
 
+// NewTestReplicaSet creates an example ReplicaSet object
 func NewTestReplicaSet(name string, replicas int32) *appsv1.ReplicaSet {
 	return &appsv1.ReplicaSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -973,6 +991,7 @@ func NewTestReplicaSet(name string, replicas int32) *appsv1.ReplicaSet {
 	}
 }
 
+// NewReplicaSetPod creates an example Pod object owned by the provided ReplicaSet
 func NewReplicaSetPod(owner *appsv1.ReplicaSet, cpu, memory resource.Quantity) *corev1.Pod {
 	name := fmt.Sprintf("%s-%s", owner.Name, uuid.New().String())
 	result := NewTestPod(name, cpu, memory)
@@ -989,6 +1008,7 @@ func NewReplicaSetPod(owner *appsv1.ReplicaSet, cpu, memory resource.Quantity) *
 	return result
 }
 
+// NewTestPod creates an example Pod object
 func NewTestPod(name string, cpu, memory resource.Quantity) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

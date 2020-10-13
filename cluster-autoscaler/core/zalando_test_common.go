@@ -753,6 +753,19 @@ func (e *zalandoTestEnv) ExpectNotBackedOff(nodeGroup string) *zalandoTestEnv {
 	return e
 }
 
+func (e *zalandoTestEnv) SetTargetSize(nodeGroup string, targetSize int) *zalandoTestEnv {
+	ng, err := e.cloudProvider.nodeGroup(nodeGroup)
+	require.NoError(e.t, err)
+
+	require.True(e.t, targetSize >= 0, "target size must be positive: %d", targetSize)
+	require.True(e.t, targetSize <= ng.maxSize, "target size must be within ASG limits (%d): %d", ng.maxSize, targetSize)
+	require.True(e.t, targetSize >= len(ng.instances), "attempted to decrease size of %s beyond the number of instances: target %d, instances %d", nodeGroup, ng.targetSize, len(ng.instances))
+	currentTargetSize := ng.targetSize
+	ng.targetSize = targetSize
+	klog.Infof("Updated target size for node group %s (%d -> %d)", nodeGroup, currentTargetSize, targetSize)
+	return e
+}
+
 type fakeClientNodeLister struct {
 	client *fake.Clientset
 	filter func(node *corev1.Node) bool

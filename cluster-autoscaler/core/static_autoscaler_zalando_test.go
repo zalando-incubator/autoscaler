@@ -83,9 +83,15 @@ func TestZalandoScalingTest(t *testing.T) {
 			ExpectBackedOff("ng-3").ExpectTargetSize("ng-3", 1).
 			ExpectNotBackedOff("ng-fallback").ExpectTargetSize("ng-fallback", 2)
 
+		// ASG finishes scaling up
 		env.AddInstance("ng-1", "i-3", false).AddNode("i-3", true).
 			StepOnce().
 			ExpectNotBackedOff("ng-1")
+
+		// ASG was reset to 0 externally
+		env.SetTargetSize("ng-2", 0).
+			StepFor(2*time.Minute).
+			ExpectNotBackedOff("ng-2")
 
 		env.LogStatus()
 	})

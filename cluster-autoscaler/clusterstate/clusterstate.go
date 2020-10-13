@@ -332,7 +332,6 @@ func (csr *ClusterStateRegistry) UpdateNodes(nodes []*apiv1.Node, nodeInfosForGr
 
 	csr.updateUnregisteredNodes(notRegistered)
 	csr.updateReadinessStats(currentTime)
-	csr.updateGroupsInBackoff(cloudProviderNodeInstances, currentTime)
 
 	// update acceptable ranges based on requests from last loop and targetSizes
 	// updateScaleRequests relies on acceptableRanges being up to date
@@ -342,6 +341,7 @@ func (csr *ClusterStateRegistry) UpdateNodes(nodes []*apiv1.Node, nodeInfosForGr
 	//  recalculate acceptable ranges after removing timed out requests
 	csr.updateAcceptableRanges(targetSizes)
 	csr.updateIncorrectNodeGroupSizes(currentTime)
+	csr.updateGroupsInBackoff(cloudProviderNodeInstances, currentTime)
 	return nil
 }
 

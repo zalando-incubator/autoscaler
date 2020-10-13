@@ -162,7 +162,7 @@ func (cache *CloudProviderNodeInstancesCache) InvalidateCacheEntry(nodeGroup clo
 
 // Refresh refreshes cache.
 func (cache *CloudProviderNodeInstancesCache) Refresh() {
-	klog.Infof("Start refreshing cloud provider node instances cache")
+	klog.V(3).Infof("Start refreshing cloud provider node instances cache")
 	refreshStart := time.Now()
 
 	nodeGroups := cache.cloudProvider.NodeGroups()
@@ -174,7 +174,7 @@ func (cache *CloudProviderNodeInstancesCache) Refresh() {
 		}
 		cache.updateCacheEntryLocked(nodeGroup, &cloudProviderNodeInstancesCacheEntry{nodeGroupInstances, time.Now()})
 	}
-	klog.Infof("Refresh cloud provider node instances cache finished, refresh took %v", time.Now().Sub(refreshStart))
+	klog.V(3).Infof("Refresh cloud provider node instances cache finished, refresh took %v", time.Now().Sub(refreshStart))
 }
 
 // Start starts components running in background.

@@ -914,7 +914,6 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 		EstimatorBuilder:   estimatorBuilder,
 		ProcessorCallbacks: processorCallbacks,
 	}
-	require.NoError(t, err)
 
 	clusterStateConfig := clusterstate.ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: options.MaxTotalUnreadyPercentage,

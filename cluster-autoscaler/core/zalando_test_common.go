@@ -78,6 +78,53 @@ const (
 	testNamespace = "test"
 )
 
+type customTimeLogWriter struct {
+	lock    sync.Mutex
+	testEnv *zalandoTestEnv
+}
+
+func (w *customTimeLogWriter) Write(p []byte) (int, error) {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+
+	if w.testEnv == nil {
+		return os.Stderr.Write(p)
+	}
+
+	w.testEnv.currentTimeLock.Lock()
+	defer w.testEnv.currentTimeLock.Unlock()
+
+	s := fmt.Sprintf("[%8s] %s", w.testEnv.currentTime.Sub(w.testEnv.initialTime), string(p))
+	_, err := os.Stderr.Write([]byte(s))
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (w *customTimeLogWriter) setTestEnvironment(env *zalandoTestEnv) {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+
+	if w.testEnv != nil && env != nil {
+		panic("test environment already set")
+	}
+
+	w.testEnv = env
+}
+
+var (
+	logWriter = &customTimeLogWriter{}
+)
+
+func redirectLogging() {
+	klog.SetOutput(logWriter)
+	err := flag.Set("logtostderr", "false")
+	if err != nil {
+		panic(err)
+	}
+}
+
 type zalandoCloudProviderCommand struct {
 	commandType zalandoCloudProviderCommandType
 	nodeGroup   string
@@ -382,22 +429,6 @@ type zalandoTestEnv struct {
 	cloudProvider                *zalandoTestCloudProvider
 	autoscaler                   *StaticAutoscaler
 	pendingCommands              []zalandoCloudProviderCommand
-}
-
-type simulationLogWriter struct {
-	testEnv *zalandoTestEnv
-}
-
-func (w *simulationLogWriter) Write(p []byte) (int, error) {
-	w.testEnv.currentTimeLock.Lock()
-	defer w.testEnv.currentTimeLock.Unlock()
-
-	s := fmt.Sprintf("[%8s] %s", w.testEnv.currentTime.Sub(w.testEnv.initialTime), string(p))
-	_, err := os.Stderr.Write([]byte(s))
-	if err != nil {
-		return 0, err
-	}
-	return len(p), nil
 }
 
 func (e *zalandoTestEnv) AddNodeGroup(id string, maxSize int, nodeCPU, nodeMemory resource.Quantity, nodeLabels map[string]string) *zalandoTestEnv {
@@ -961,21 +992,9 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 		autoscaler:                   autoscaler,
 	}
 
-	// Steal the logging
-	err = flag.Set("logtostderr", "false")
-	if err != nil {
-		panic(err)
-	}
+	logWriter.setTestEnvironment(env)
 	defer func() {
-		err := flag.Set("logtostderr", "true")
-		if err != nil {
-			panic(err)
-		}
-	}()
-
-	klog.SetOutput(&simulationLogWriter{testEnv: env})
-	defer func() {
-		klog.SetOutput(nil)
+		logWriter.setTestEnvironment(nil)
 	}()
 
 	// Override the scaledown time provider

@@ -33,6 +33,7 @@ const (
 
 func TestMain(m *testing.M) {
 	klog.InitFlags(flag.CommandLine)
+	redirectLogging()
 	err := flag.Set("v", "3")
 	if err != nil {
 		panic(err)

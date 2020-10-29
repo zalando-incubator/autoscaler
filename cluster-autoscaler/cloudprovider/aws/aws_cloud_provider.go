@@ -242,7 +242,15 @@ func (ng *AwsNodeGroup) DecreaseTargetSize(delta int) error {
 	if err != nil {
 		return err
 	}
-	if int(size)+delta < len(nodes) {
+
+	actualNodes := 0
+	for _, node := range nodes {
+		if !ng.awsManager.asgCache.isPlaceholderInstance(&node) {
+			actualNodes++
+		}
+	}
+
+	if int(size)+delta < actualNodes {
 		return fmt.Errorf("attempt to delete existing nodes targetSize:%d delta:%d existingNodes: %d",
 			size, delta, len(nodes))
 	}

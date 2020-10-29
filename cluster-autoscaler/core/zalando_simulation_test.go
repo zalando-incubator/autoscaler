@@ -82,11 +82,22 @@ func TestZalandoScalingTest(t *testing.T) {
 		env.AddPod(p2)
 
 		env.StepFor(22*time.Minute).ExpectCommands(
+			// scaled up first
 			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-3", delta: 2},
+
+			// scaled up once the timeout expires for the first node group. ng-3 is still not scaled down because the incorrect size fixup code lags behind.
 			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-2", delta: 2},
+
+			// fixNodeGroupSize finally triggers (takes close to another node provisioning timeout to trigger). we still keep a sentinel node, so we expect a scale down by 1 node only.
 			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDecreaseTargetSize, nodeGroup: "ng-3", delta: -1},
+
+			// ng-2 times out as well
 			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 2},
+
+			// ng-2 is scaled down another ~7 minutes later
 			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDecreaseTargetSize, nodeGroup: "ng-2", delta: -1},
+
+			// ng-1 times out, so we expect ng-fallback to be tried next
 			zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-fallback", delta: 2},
 		)
 		env.AddInstance("ng-fallback", "i-1", false).AddNode("i-1", true).

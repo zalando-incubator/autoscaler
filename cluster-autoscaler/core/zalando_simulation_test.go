@@ -138,3 +138,44 @@ func TestZalandoScalingTestRestartBackoff(t *testing.T) {
 			StepUntilCommand(20*time.Minute, zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-fallback", delta: 1})
 	})
 }
+
+func TestZalandoScalingTestScaleDownBackoff(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+	opts.BackoffNoFullScaleDown = true
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-fallback", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
+
+		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("24Gi"))
+
+		env.AddPod(pod).
+			StepUntilNextCommand(1*time.Minute).
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1}).
+			AddInstance("ng-1", "i-1", false).
+			AddNode("i-1", true).
+			SchedulePod(pod, "i-1")
+
+		pod2 := NewTestPod("bar", resource.MustParse("1"), resource.MustParse("24Gi"))
+		env.AddPod(pod2).
+			StepUntilNextCommand(1*time.Minute).
+			StepUntilCommand(20*time.Minute, zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-fallback", delta: 1}).
+			ExpectCommands(
+				zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1},
+				zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-fallback", delta: 1}).
+			AddInstance("ng-fallback", "i-2", false).
+			AddNode("i-2", true).
+			SchedulePod(pod2, "i-2").
+			ExpectTargetSize("ng-1", 2)
+
+		env.RemovePod(pod).
+			StepUntilNextCommand(20*time.Minute).
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDeleteNodes, nodeGroup: "ng-1", nodeNames: []string{"i-1"}}).
+			RemoveNode("i-1", false)
+
+		env.StepFor(1*time.Hour).
+			ExpectNoCommands().
+			ExpectTargetSize("ng-1", 1).
+			ExpectBackedOff("ng-1")
+	})
+
+}

@@ -352,6 +352,33 @@ func (g *zalandoTestCloudProviderNodeGroup) Autoprovisioned() bool {
 	return false
 }
 
+func (g *zalandoTestCloudProviderNodeGroup) setTemplateNode(cpu resource.Quantity, memory resource.Quantity, nodeLabels map[string]string) error {
+	templateNode := schedulernodeinfo.NewNodeInfo()
+	err := templateNode.SetNode(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: nodeLabels,
+		},
+		Status: corev1.NodeStatus{
+			Capacity: corev1.ResourceList{
+				corev1.ResourceCPU:    cpu,
+				corev1.ResourceMemory: memory,
+				corev1.ResourcePods:   resource.MustParse("110"),
+			},
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceCPU:    cpu,
+				corev1.ResourceMemory: memory,
+				corev1.ResourcePods:   resource.MustParse("110"),
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	g.templateNode = templateNode
+	return nil
+}
+
 func defaultZalandoAutoscalingOptions() config.AutoscalingOptions {
 	return config.AutoscalingOptions{
 		// defaults
@@ -405,6 +432,7 @@ func defaultZalandoAutoscalingOptions() config.AutoscalingOptions {
 		MaxNodeProvisionTime:             7 * time.Minute,
 		MaxNodesTotal:                    100,
 		ScaleUpTemplateFromCloudProvider: true,
+		BackoffNoFullScaleDown:           true,
 	}
 }
 
@@ -438,34 +466,15 @@ func (e *zalandoTestEnv) AddNodeGroup(id string, maxSize int, nodeCPU, nodeMemor
 		}
 	}
 
-	templateNode := schedulernodeinfo.NewNodeInfo()
-	err := templateNode.SetNode(&corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels: nodeLabels,
-		},
-		Status: corev1.NodeStatus{
-			Capacity: corev1.ResourceList{
-				corev1.ResourceCPU:    nodeCPU,
-				corev1.ResourceMemory: nodeMemory,
-				corev1.ResourcePods:   resource.MustParse("110"),
-			},
-			Allocatable: corev1.ResourceList{
-				corev1.ResourceCPU:    nodeCPU,
-				corev1.ResourceMemory: nodeMemory,
-				corev1.ResourcePods:   resource.MustParse("110"),
-			},
-		},
-	})
-	require.NoError(e.t, err)
-
 	ng := &zalandoTestCloudProviderNodeGroup{
 		id:            id,
 		expectedGID:   e.expectedGID,
 		maxSize:       maxSize,
 		instances:     sets.NewString(),
-		templateNode:  templateNode,
 		handleCommand: e.handleCommand,
 	}
+	err := ng.setTemplateNode(nodeCPU, nodeMemory, nodeLabels)
+	require.NoError(e.t, err)
 	e.cloudProvider.nodeGroups = append(e.cloudProvider.nodeGroups, ng)
 	klog.Infof("Added node group %s with max size %d, %s cpu, %s memory and labels %s", id, maxSize, &nodeCPU, &nodeMemory, nodeLabels)
 	return e
@@ -819,6 +828,49 @@ func (e *zalandoTestEnv) SetTargetSize(nodeGroup string, targetSize int) *zaland
 	currentTargetSize := ng.targetSize
 	ng.targetSize = targetSize
 	klog.Infof("Updated target size for node group %s (%d -> %d)", nodeGroup, currentTargetSize, targetSize)
+	return e
+}
+
+func (e *zalandoTestEnv) SetMaxSize(nodeGroup string, maxSize int) *zalandoTestEnv {
+	ng, err := e.cloudProvider.nodeGroup(nodeGroup)
+	require.NoError(e.t, err)
+
+	require.True(e.t, maxSize >= 0, "max size must be positive: %d", maxSize)
+	require.True(e.t, maxSize >= len(ng.instances), "max size must not be smaller than the number of instances (%d): %d", len(ng.instances), maxSize)
+	require.True(e.t, maxSize >= ng.targetSize, "max size must not be smaller than the target size (%d): %d", ng.targetSize, maxSize)
+	currentMaxSize := ng.maxSize
+	ng.maxSize = maxSize
+	klog.Infof("Updated max size for node group %s (%d -> %d)", nodeGroup, currentMaxSize, maxSize)
+	return e
+}
+
+func (e *zalandoTestEnv) SetTemplateNode(nodeGroup string, nodeCPU, nodeMemory resource.Quantity, nodeLabels map[string]string) *zalandoTestEnv {
+	ng, err := e.cloudProvider.nodeGroup(nodeGroup)
+	require.NoError(e.t, err)
+
+	err = ng.setTemplateNode(nodeCPU, nodeMemory, nodeLabels)
+	require.NoError(e.t, err)
+
+	klog.Infof("Updated node template for group %s: %s cpu, %s memory and labels %s", nodeGroup, &nodeCPU, &nodeMemory, nodeLabels)
+	return e
+}
+
+func (e *zalandoTestEnv) RemoveNodeGroup(nodeGroup string) *zalandoTestEnv {
+	var updated []*zalandoTestCloudProviderNodeGroup
+	found := false
+
+	for _, group := range e.cloudProvider.nodeGroups {
+		if group.id == nodeGroup {
+			found = true
+			continue
+		}
+		updated = append(updated, group)
+	}
+
+	require.True(e.t, found, "Node group %s not found", nodeGroup)
+
+	e.cloudProvider.nodeGroups = updated
+	klog.Infof("Removed node group %s", nodeGroup)
 	return e
 }
 

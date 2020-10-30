@@ -43,6 +43,7 @@ func TestMain(m *testing.M) {
 
 func TestBrokenScalingTest(t *testing.T) {
 	opts := defaultZalandoAutoscalingOptions()
+	opts.BackoffNoFullScaleDown = false
 	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
 		env.AddNodeGroup("ng-fallback", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
 		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
@@ -66,7 +67,6 @@ func TestBrokenScalingTest(t *testing.T) {
 
 func TestZalandoScalingTest(t *testing.T) {
 	opts := defaultZalandoAutoscalingOptions()
-	opts.BackoffNoFullScaleDown = true
 	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
 		env.AddNodeGroup("ng-fallback", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
 		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
@@ -127,7 +127,6 @@ func TestZalandoScalingTest(t *testing.T) {
 
 func TestZalandoScalingTestRestartBackoff(t *testing.T) {
 	opts := defaultZalandoAutoscalingOptions()
-	opts.BackoffNoFullScaleDown = true
 	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
 		env.AddNodeGroup("ng-fallback", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
 		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
@@ -141,7 +140,6 @@ func TestZalandoScalingTestRestartBackoff(t *testing.T) {
 
 func TestZalandoScalingTestScaleDownBackoff(t *testing.T) {
 	opts := defaultZalandoAutoscalingOptions()
-	opts.BackoffNoFullScaleDown = true
 	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
 		env.AddNodeGroup("ng-fallback", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
 		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "100"})
@@ -177,5 +175,124 @@ func TestZalandoScalingTestScaleDownBackoff(t *testing.T) {
 			ExpectTargetSize("ng-1", 1).
 			ExpectBackedOff("ng-1")
 	})
+}
 
+func TestMaxSizeIncrease(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-1", 1, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
+
+		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("24Gi"))
+
+		env.AddPod(pod).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1}).
+			AddInstance("ng-1", "i-1", false).
+			AddNode("i-1", true).
+			SchedulePod(pod, "i-1")
+
+		pod2 := NewTestPod("bar", resource.MustParse("1"), resource.MustParse("24Gi"))
+		env.AddPod(pod2).
+			StepFor(10 * time.Minute).
+			ExpectNoCommands()
+
+		env.SetMaxSize("ng-1", 2).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1})
+	})
+}
+
+func TestTemplateNodeChange(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
+
+		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("24Gi"))
+
+		env.AddPod(pod).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1}).
+			AddInstance("ng-1", "i-1", false).
+			AddNode("i-1", true).
+			SchedulePod(pod, "i-1")
+
+		pod2 := NewTestPod("bar", resource.MustParse("1"), resource.MustParse("48Gi"))
+		env.AddPod(pod2).
+			StepFor(10 * time.Minute).
+			ExpectNoCommands()
+
+		env.SetTemplateNode("ng-1", resource.MustParse("4"), resource.MustParse("64Gi"), nil).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1})
+	})
+}
+
+func TestMaxSizeDecrease(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
+
+		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("24Gi"))
+
+		env.AddPod(pod).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1}).
+			AddInstance("ng-1", "i-1", false).
+			AddNode("i-1", true).
+			SchedulePod(pod, "i-1")
+
+		pod2 := NewTestPod("bar", resource.MustParse("1"), resource.MustParse("24Gi"))
+		env.SetMaxSize("ng-1", 1).
+			AddPod(pod2).
+			StepFor(10 * time.Minute).
+			ExpectNoCommands()
+	})
+}
+
+func TestAddNodeGroup(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
+
+		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("32Gi"))
+
+		env.AddPod(pod).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1}).
+			AddInstance("ng-1", "i-1", false).
+			AddNode("i-1", true).
+			SchedulePod(pod, "i-1")
+
+		pod2 := NewTestPod("bar", resource.MustParse("1"), resource.MustParse("64Gi"))
+		env.AddPod(pod2).
+			StepFor(10 * time.Minute).
+			ExpectNoCommands()
+
+		env.AddNodeGroup("ng-2", 10, resource.MustParse("4"), resource.MustParse("64Gi"), nil).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-2", delta: 1})
+	})
+}
+
+func TestRemoveNodeGroup(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil).
+			AddNodeGroup("ng-2", 10, resource.MustParse("4"), resource.MustParse("64Gi"), nil)
+
+		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("32Gi"))
+
+		env.AddPod(pod).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1}).
+			AddInstance("ng-1", "i-1", false).
+			AddNode("i-1", true).
+			SchedulePod(pod, "i-1")
+
+		pod2 := NewTestPod("bar", resource.MustParse("1"), resource.MustParse("64Gi"))
+		env.RemoveNodeGroup("ng-2").
+			AddPod(pod2).
+			StepFor(10 * time.Minute).
+			ExpectNoCommands()
+	})
 }

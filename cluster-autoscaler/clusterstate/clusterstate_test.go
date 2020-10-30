@@ -419,7 +419,7 @@ func TestUpcomingNodes(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Empty(t, clusterstate.GetScaleUpFailures())
 
-	upcomingNodes := clusterstate.GetUpcomingNodes()
+	upcomingNodes := clusterstate.GetUpcomingNodes(now)
 	assert.Equal(t, 6, upcomingNodes["ng1"])
 	assert.Equal(t, 1, upcomingNodes["ng2"])
 	assert.Equal(t, 2, upcomingNodes["ng3"])
@@ -480,7 +480,7 @@ func TestUnregisteredNodes(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(clusterstate.GetUnregisteredNodes()))
 	assert.Equal(t, "ng1-2", clusterstate.GetUnregisteredNodes()[0].Node.Name)
-	upcomingNodes := clusterstate.GetUpcomingNodes()
+	upcomingNodes := clusterstate.GetUpcomingNodes(time.Now())
 	assert.Equal(t, 1, upcomingNodes["ng1"])
 
 	// The node didn't come up in MaxNodeProvisionTime, it should no longer be
@@ -489,7 +489,7 @@ func TestUnregisteredNodes(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(clusterstate.GetUnregisteredNodes()))
 	assert.Equal(t, "ng1-2", clusterstate.GetUnregisteredNodes()[0].Node.Name)
-	upcomingNodes = clusterstate.GetUpcomingNodes()
+	upcomingNodes = clusterstate.GetUpcomingNodes(time.Now())
 	assert.Equal(t, 0, len(upcomingNodes))
 
 	err = clusterstate.UpdateNodes([]*apiv1.Node{ng1_1, ng1_2}, nil, time.Now().Add(time.Minute))

@@ -172,6 +172,8 @@ var (
 
 	scaleUpTemplateFromCloudProvider = flag.Bool("scale-up-cloud-provider-template", false,
 		"Should CA build the template nodes using up-to-date cloud provider configuration instead of a random existing node.")
+	backoffNoFullScaleDown = flag.Bool("backoff-no-full-scale-down", false,
+		"Keep the ASGs in Backoff scaled up to 1 additional instance to detect when the issues are resolved. Backoff duration will be infinite.")
 
 	ignoreTaintsFlag         = multiStringFlag("ignore-taint", "Specifies a taint to ignore in node templates when considering to scale a node group")
 	awsUseStaticInstanceList = flag.Bool("aws-use-static-instance-list", false, "Should CA fetch instance types in runtime or use a static list. AWS only")
@@ -247,10 +249,15 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		KubeConfigPath:                   *kubeConfigFile,
 		NodeDeletionDelayTimeout:         *nodeDeletionDelayTimeout,
 		AWSUseStaticInstanceList:         *awsUseStaticInstanceList,
+		BackoffNoFullScaleDown:           *backoffNoFullScaleDown,
 	}
 }
 
-func createBackoff() backoff.Backoff {
+func createBackoff(options config.AutoscalingOptions) backoff.Backoff {
+	if options.BackoffNoFullScaleDown {
+		return backoff.NewInfiniteBackoff()
+	}
+
 	return backoff.NewIdBasedExponentialBackoff(*nodePoolBackoffInitial, *nodePoolBackoffMax, *nodePoolBackoffReset)
 }
 
@@ -317,7 +324,7 @@ func buildAutoscaler() (core.Autoscaler, error) {
 		KubeClient:         kubeClient,
 		EventsKubeClient:   eventsKubeClient,
 		Processors:         processors,
-		Backoff:            createBackoff(),
+		Backoff:            createBackoff(autoscalingOptions),
 	}
 
 	// This metric should be published only once.

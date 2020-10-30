@@ -47,6 +47,8 @@ type CloudProviderNodeInstancesCache struct {
 	sync.Mutex
 	cloudProviderNodeInstances map[string]*cloudProviderNodeInstancesCacheEntry
 	cloudProvider              cloudprovider.CloudProvider
+
+	runSync bool
 }
 
 // NewCloudProviderNodeInstancesCache creates new cache instance.
@@ -100,12 +102,19 @@ func (cache *CloudProviderNodeInstancesCache) GetCloudProviderNodeInstances() (m
 		nodeGroup := nodeGroup
 		if _, found := cache.getCacheEntryLocked(nodeGroup); !found {
 			wg.Add(1)
-			go func() {
+
+			refresh := func() {
 				defer wg.Done()
 				if _, err := cache.fetchCloudProviderNodeInstancesForNodeGroup(nodeGroup); err != nil {
 					klog.Errorf("Failed to fetch cloud provider node instances for %v, error %v", nodeGroup.Id(), err)
 				}
-			}()
+			}
+
+			if cache.runSync {
+				refresh()
+			} else {
+				go refresh()
+			}
 		}
 	}
 	wg.Wait()
@@ -153,7 +162,7 @@ func (cache *CloudProviderNodeInstancesCache) InvalidateCacheEntry(nodeGroup clo
 
 // Refresh refreshes cache.
 func (cache *CloudProviderNodeInstancesCache) Refresh() {
-	klog.Infof("Start refreshing cloud provider node instances cache")
+	klog.V(3).Infof("Start refreshing cloud provider node instances cache")
 	refreshStart := time.Now()
 
 	nodeGroups := cache.cloudProvider.NodeGroups()
@@ -165,7 +174,7 @@ func (cache *CloudProviderNodeInstancesCache) Refresh() {
 		}
 		cache.updateCacheEntryLocked(nodeGroup, &cloudProviderNodeInstancesCacheEntry{nodeGroupInstances, time.Now()})
 	}
-	klog.Infof("Refresh cloud provider node instances cache finished, refresh took %v", time.Now().Sub(refreshStart))
+	klog.V(3).Infof("Refresh cloud provider node instances cache finished, refresh took %v", time.Now().Sub(refreshStart))
 }
 
 // Start starts components running in background.
@@ -173,4 +182,9 @@ func (cache *CloudProviderNodeInstancesCache) Start(interrupt chan struct{}) {
 	go wait.Until(func() {
 		cache.Refresh()
 	}, CloudProviderNodeInstancesCacheRefreshInterval, interrupt)
+}
+
+// RunSynchronously forces cache to not start additional goroutines when refreshing
+func (cache *CloudProviderNodeInstancesCache) RunSynchronously() {
+	cache.runSync = true
 }

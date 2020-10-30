@@ -134,6 +134,7 @@ func NewStaticAutoscaler(
 		MaxTotalUnreadyPercentage: opts.MaxTotalUnreadyPercentage,
 		OkTotalUnreadyCount:       opts.OkTotalUnreadyCount,
 		MaxNodeProvisionTime:      opts.MaxNodeProvisionTime,
+		BackoffNoFullScaleDown:    opts.BackoffNoFullScaleDown,
 	}
 
 	ignoredTaints := make(taints.TaintKeySet)
@@ -376,7 +377,7 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) errors.AutoscalerError
 	}
 
 	// add upcoming nodes to ClusterSnapshot
-	upcomingNodes := getUpcomingNodeInfos(a.clusterStateRegistry, nodeInfosForGroups)
+	upcomingNodes := getUpcomingNodeInfos(a.clusterStateRegistry, nodeInfosForGroups, currentTime)
 	for _, upcomingNode := range upcomingNodes {
 		err = a.ClusterSnapshot.AddNodeWithPods(upcomingNode.Node(), upcomingNode.Pods())
 		if err != nil {
@@ -783,9 +784,9 @@ func deepCopyNodeInfo(nodeTemplate *schedulernodeinfo.NodeInfo, index int) *sche
 	return nodeInfo
 }
 
-func getUpcomingNodeInfos(registry *clusterstate.ClusterStateRegistry, nodeInfos map[string]*schedulernodeinfo.NodeInfo) []*schedulernodeinfo.NodeInfo {
+func getUpcomingNodeInfos(registry *clusterstate.ClusterStateRegistry, nodeInfos map[string]*schedulernodeinfo.NodeInfo, currentTime time.Time) []*schedulernodeinfo.NodeInfo {
 	upcomingNodes := make([]*schedulernodeinfo.NodeInfo, 0)
-	for nodeGroup, numberOfNodes := range registry.GetUpcomingNodes() {
+	for nodeGroup, numberOfNodes := range registry.GetUpcomingNodes(currentTime) {
 		nodeTemplate, found := nodeInfos[nodeGroup]
 		if !found {
 			klog.Warningf("Couldn't find template for node group %s", nodeGroup)

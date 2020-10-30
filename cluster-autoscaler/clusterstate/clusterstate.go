@@ -55,6 +55,8 @@ const (
 
 	// NodeGroupBackoffResetTimeout is the time after last failed scale-up when the backoff duration is reset.
 	NodeGroupBackoffResetTimeout = 3 * time.Hour
+
+	awsCloudProviderPlaceholderTag = "placeholder"
 )
 
 // ScaleUpRequest contains information about the requested node group scale up.
@@ -90,6 +92,12 @@ type ClusterStateRegistryConfig struct {
 	OkTotalUnreadyCount int
 	//  Maximum time CA waits for node to be provisioned
 	MaxNodeProvisionTime time.Duration
+
+	// Don't start additional goroutines (used in tests)
+	RunSynchronously bool
+	// Keep the ASGs in Backoff scaled up to 1 additional instance, to be able to detect when the quota/availability go away.
+	// Should be combined with infinite backoff.
+	BackoffNoFullScaleDown bool
 }
 
 // IncorrectNodeGroupSize contains information about how much the current size of the node group
@@ -156,6 +164,11 @@ func NewClusterStateRegistry(cloudProvider cloudprovider.CloudProvider, config C
 		NodeGroupStatuses:     make([]api.NodeGroupStatus, 0),
 	}
 
+	cache := utils.NewCloudProviderNodeInstancesCache(cloudProvider)
+	if config.RunSynchronously {
+		cache.RunSynchronously()
+	}
+
 	return &ClusterStateRegistry{
 		scaleUpRequests:                 make(map[string]*ScaleUpRequest),
 		scaleDownRequests:               make([]*ScaleDownRequest, 0),
@@ -170,7 +183,7 @@ func NewClusterStateRegistry(cloudProvider cloudprovider.CloudProvider, config C
 		backoff:                         backoff,
 		lastStatus:                      emptyStatus,
 		logRecorder:                     logRecorder,
-		cloudProviderNodeInstancesCache: utils.NewCloudProviderNodeInstancesCache(cloudProvider),
+		cloudProviderNodeInstancesCache: cache,
 		interrupt:                       make(chan struct{}),
 		scaleUpFailures:                 make(map[string][]ScaleUpFailure),
 	}
@@ -329,6 +342,7 @@ func (csr *ClusterStateRegistry) UpdateNodes(nodes []*apiv1.Node, nodeInfosForGr
 	//  recalculate acceptable ranges after removing timed out requests
 	csr.updateAcceptableRanges(targetSizes)
 	csr.updateIncorrectNodeGroupSizes(currentTime)
+	csr.updateGroupsInBackoff(cloudProviderNodeInstances, currentTime)
 	return nil
 }
 
@@ -580,14 +594,6 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 			}
 		} else {
 			perNodeGroup[nodeGroup.Id()] = update(perNodeGroup[nodeGroup.Id()], node, ready)
-
-			if scaleUpRequest, ok := csr.scaleUpRequests[nodeGroup.Id()]; ok {
-				updatedDeadline := node.CreationTimestamp.Add(csr.config.MaxNodeProvisionTime)
-				if updatedDeadline.After(scaleUpRequest.ExpectedAddTime) {
-					klog.Infof("Resetting scale-up timeout for node group %s (new node %s): %s to %s", nodeGroup.Id(), node.Name, scaleUpRequest.ExpectedAddTime, updatedDeadline)
-					scaleUpRequest.ExpectedAddTime = updatedDeadline
-				}
-			}
 		}
 		total = update(total, node, ready)
 	}
@@ -645,6 +651,13 @@ func (csr *ClusterStateRegistry) updateIncorrectNodeGroupSizes(currentTime time.
 				ExpectedSize:  acceptableRange.CurrentTarget,
 				FirstObserved: currentTime,
 			}
+
+			// Ensure that node groups in BackOff state are kept scaled up by one node
+			// to let us know when it becomes healthy again.
+			if csr.config.BackoffNoFullScaleDown && csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], currentTime) {
+				incorrect.CurrentSize++
+			}
+
 			existing, found := csr.incorrectNodeGroupSizes[nodeGroup.Id()]
 			if found {
 				if incorrect.CurrentSize == existing.CurrentSize &&
@@ -941,12 +954,17 @@ func (csr *ClusterStateRegistry) GetIncorrectNodeGroupSize(nodeGroupName string)
 
 // GetUpcomingNodes returns how many new nodes will be added shortly to the node groups or should become ready soon.
 // The function may overestimate the number of nodes.
-func (csr *ClusterStateRegistry) GetUpcomingNodes() map[string]int {
+func (csr *ClusterStateRegistry) GetUpcomingNodes(currentTime time.Time) map[string]int {
 	csr.Lock()
 	defer csr.Unlock()
 
 	result := make(map[string]int)
 	for _, nodeGroup := range csr.cloudProvider.NodeGroups() {
+		// Node groups in BackOff should be ignored, because we're deliberately keeping them scaled up now.
+		if csr.config.BackoffNoFullScaleDown && csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], currentTime) {
+			continue
+		}
+
 		id := nodeGroup.Id()
 		readiness := csr.perNodeGroupReadiness[id]
 		ar := csr.acceptableRanges[id]
@@ -1181,4 +1199,38 @@ func (csr *ClusterStateRegistry) GetScaleUpFailures() map[string][]ScaleUpFailur
 		result[nodeGroupId] = failures
 	}
 	return result
+}
+
+func (csr *ClusterStateRegistry) updateGroupsInBackoff(instances map[string][]cloudprovider.Instance, currentTime time.Time) {
+	if !csr.config.BackoffNoFullScaleDown {
+		return
+	}
+
+	// Unfortunately the AWS cloud provider returns placeholder instances when an ASG's desired capacity is greater
+	// than the current. This is a problem because these nodes would still be considered by the logic that removes nodes
+	// failing to join the cluster, and this would intern scale down the backed-off ASGs that we want to keep scaled up.
+	// Unfortunately, these instances are also not marked in any way so it's impossible to distinguish them from normal
+	// ones (there's cloudprovider.Instance::Status but that doesn't seem to be used), and we would still like to
+	// terminate actual instances that fail to come up.
+	// Additionally, now that we're using infinite backoff, we need to reset it once the node groups scale back up.
+
+	for _, nodeGroup := range csr.cloudProvider.NodeGroups() {
+		if csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], currentTime) {
+			if !csr.areThereUpcomingNodesInNodeGroup(nodeGroup.Id()) {
+				csr.backoff.RemoveBackoff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()])
+				klog.Infof("Restoring scale-up for node group %v", nodeGroup.Id())
+				continue
+			}
+
+			for _, instance := range instances[nodeGroup.Id()] {
+				// If it's a placeholder instance, reset the unregistered node timeout so it's not deleted. Since
+				// there's no way to do this correctly, and I don't want to add another method
+				// to cloudprovider.CloudProvider, let's just hardcode the AWS logic.
+				if unregisteredNodeEntry, ok := csr.unregisteredNodes[instance.Id]; ok && strings.Contains(instance.Id, awsCloudProviderPlaceholderTag) {
+					unregisteredNodeEntry.UnregisteredSince = currentTime
+					csr.unregisteredNodes[instance.Id] = unregisteredNodeEntry
+				}
+			}
+		}
+	}
 }

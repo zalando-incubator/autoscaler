@@ -364,6 +364,9 @@ type ScaleDown struct {
 	usageTracker           *simulator.UsageTracker
 	nodeDeletionTracker    *NodeDeletionTracker
 	unremovableNodeReasons map[string]*simulator.UnremovableNode
+
+	// Allow running node deletions in the same goroutine
+	runSync bool
 }
 
 // NewScaleDown builds new ScaleDown object.
@@ -940,7 +943,7 @@ func (sd *ScaleDown) TryToScaleDown(
 	nodeDeletionDuration = time.Now().Sub(nodeDeletionStart)
 	sd.nodeDeletionTracker.SetNonEmptyNodeDeleteInProgress(true)
 
-	go func() {
+	deleteFunc := func() {
 		// Finishing the delete process once this goroutine is over.
 		var result status.NodeDeleteResult
 		defer func() { sd.nodeDeletionTracker.AddNodeDeleteResult(toRemove.Node.Name, result) }()
@@ -961,7 +964,12 @@ func (sd *ScaleDown) TryToScaleDown(
 		} else {
 			metrics.RegisterScaleDown(1, gpu.GetGpuTypeForMetrics(gpuLabel, availableGPUTypes, toRemove.Node, nodeGroup), metrics.Unready)
 		}
-	}()
+	}
+	if sd.runSync {
+		deleteFunc()
+	} else {
+		go deleteFunc()
+	}
 
 	scaleDownStatus.ScaledDownNodes = sd.mapNodesToStatusScaleDownNodes([]*apiv1.Node{toRemove.Node}, candidateNodeGroups, map[string][]*apiv1.Pod{toRemove.Node.Name: toRemove.PodsToReschedule})
 	scaleDownStatus.Result = status.ScaleDownNodeDeleteStarted
@@ -1064,7 +1072,7 @@ func (sd *ScaleDown) scheduleDeleteEmptyNodes(emptyNodes []*apiv1.Node, client k
 			return deletedNodes, errors.ToAutoscalerError(errors.ApiCallError, taintErr)
 		}
 		deletedNodes = append(deletedNodes, node)
-		go func(nodeToDelete *apiv1.Node, nodeGroupForDeletedNode cloudprovider.NodeGroup) {
+		deleteFunc := func(nodeToDelete *apiv1.Node, nodeGroupForDeletedNode cloudprovider.NodeGroup) {
 			sd.nodeDeletionTracker.StartDeletion(nodeGroupForDeletedNode.Id())
 			defer sd.nodeDeletionTracker.EndDeletion(nodeGroupForDeletedNode.Id())
 			var result status.NodeDeleteResult
@@ -1100,7 +1108,12 @@ func (sd *ScaleDown) scheduleDeleteEmptyNodes(emptyNodes []*apiv1.Node, client k
 				metrics.RegisterScaleDown(1, gpu.GetGpuTypeForMetrics(sd.context.CloudProvider.GPULabel(), sd.context.CloudProvider.GetAvailableGPUTypes(), nodeToDelete, nodeGroupForDeletedNode), metrics.Unready)
 			}
 			result = status.NodeDeleteResult{ResultType: status.NodeDeleteOk}
-		}(node, nodeGroup)
+		}
+		if sd.runSync {
+			deleteFunc(node, nodeGroup)
+		} else {
+			go deleteFunc(node, nodeGroup)
+		}
 	}
 	return deletedNodes, nil
 }

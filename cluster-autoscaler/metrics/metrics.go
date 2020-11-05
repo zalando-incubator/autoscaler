@@ -253,6 +253,8 @@ var (
 
 // RegisterAll registers all metrics.
 func RegisterAll() {
+	registerZalandoMetrics()
+
 	legacyregistry.MustRegister(clusterSafeToAutoscale)
 	legacyregistry.MustRegister(nodesCount)
 	legacyregistry.MustRegister(nodeGroupsCount)

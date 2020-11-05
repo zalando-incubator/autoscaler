@@ -277,8 +277,8 @@ func TestAddNodeGroup(t *testing.T) {
 func TestRemoveNodeGroup(t *testing.T) {
 	opts := defaultZalandoAutoscalingOptions()
 	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
-		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil).
-			AddNodeGroup("ng-2", 10, resource.MustParse("4"), resource.MustParse("64Gi"), nil)
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{labelScalePriority: "110"}).
+			AddNodeGroup("ng-2", 10, resource.MustParse("4"), resource.MustParse("64Gi"), map[string]string{labelScalePriority: "100"})
 
 		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("32Gi"))
 

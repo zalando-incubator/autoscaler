@@ -21,6 +21,7 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/scheduler"
 	schedulerlisters "k8s.io/kubernetes/pkg/scheduler/listers"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
@@ -228,7 +229,7 @@ func (data *internalDeltaSnapshotData) nodeInfoToModify(nodeName string) (*sched
 		if !found {
 			return nil, false
 		}
-		dni = bni.Clone()
+		dni = scheduler.CloneNodeInfo(bni)
 		data.modifiedNodeInfoMap[nodeName] = dni
 		data.clearCaches()
 	}

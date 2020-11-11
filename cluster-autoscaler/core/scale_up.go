@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"k8s.io/autoscaler/cluster-autoscaler/core/utils"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/scheduler"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/taints"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -595,7 +596,7 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 }
 
 func buildNodeInfoForNodeTemplate(nodeTemplate *schedulernodeinfo.NodeInfo, index int) *schedulernodeinfo.NodeInfo {
-	nodeInfo := nodeTemplate.Clone()
+	nodeInfo := scheduler.CloneNodeInfo(nodeTemplate)
 	node := nodeInfo.Node()
 	node.Name = fmt.Sprintf("%s-%d", node.Name, index)
 	node.UID = uuid.NewUUID()

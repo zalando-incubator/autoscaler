@@ -65,7 +65,10 @@ func CloneNodeInfo(nodeInfo *schedulernodeinfo.NodeInfo) *schedulernodeinfo.Node
 	result := schedulernodeinfo.NewNodeInfo(nodeInfo.Pods()...)
 	// I have no idea why this can return an error (it doesn't even do this in the code). Multiple other places just
 	// ignore it, and I'm not sure if I want to modify the function signatures to propagate the error correctly. Let's
-	// just ignore it as well.
-	_ = result.SetNode(nodeInfo.Node().DeepCopy())
+	// just panic for now, because I'm not comfortable with ignoring it.
+	err := result.SetNode(nodeInfo.Node().DeepCopy())
+	if err != nil {
+		panic(err)
+	}
 	return result
 }

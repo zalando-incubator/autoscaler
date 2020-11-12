@@ -39,10 +39,18 @@ var (
 			Name:      "node_group_in_backoff",
 			Help:      "Whether or not a node group is in BackOff. 1 if it is, 0 otherwise.",
 		}, []string{nodeGroupNameLabel})
+
+	unexpandablePodsCount = k8smetrics.NewGauge(
+		&k8smetrics.GaugeOpts{
+			Namespace: caNamespace,
+			Name:      "unexpandable_pods_count",
+			Help:      "Number of unschedulable pods in the cluster that can't be made schedulable with a scale-up.",
+		},
+	)
 )
 
 func registerZalandoMetrics() {
-	legacyregistry.MustRegister(nodeGroupInBackoff)
+	legacyregistry.MustRegister(nodeGroupInBackoff, unexpandablePodsCount)
 }
 
 func isBackedOff(nodeGroupStatus api.NodeGroupStatus) bool {
@@ -78,4 +86,9 @@ func UpdateNodeGroupMetrics(status *api.ClusterAutoscalerStatus) {
 		}
 	}
 	poolNames = newNames
+}
+
+// UpdateUnexpandablePodsCount records the number of unschedulable pods that can't be made schedulable after a scale-up.
+func UpdateUnexpandablePodsCount(count int) {
+	unexpandablePodsCount.Set(float64(count))
 }

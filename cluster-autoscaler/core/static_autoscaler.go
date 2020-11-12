@@ -296,6 +296,16 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) errors.AutoscalerError
 				status.GetReadableString(), a.AutoscalingContext.LogRecorder)
 		}
 
+		switch scaleUpStatus.Result {
+		case status.ScaleUpNoOptionsAvailable:
+			// This is sometimes returned without any data in scaleUpStatus.PodsRemainUnschedulable :shrug:
+			if len(scaleUpStatus.PodsRemainUnschedulable) > 0 {
+				metrics.UpdateUnexpandablePodsCount(len(scaleUpStatus.PodsRemainUnschedulable))
+			}
+		case status.ScaleUpNotNeeded, status.ScaleUpSuccessful:
+			metrics.UpdateUnexpandablePodsCount(len(scaleUpStatus.PodsRemainUnschedulable))
+		}
+
 		// This deferred processor execution allows the processors to handle a situation when a scale-(up|down)
 		// wasn't even attempted because e.g. the iteration exited earlier.
 		if !scaleUpStatusProcessorAlreadyCalled && a.processors != nil && a.processors.ScaleUpStatusProcessor != nil {

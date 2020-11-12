@@ -19,6 +19,7 @@ package core
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	apiv1 "k8s.io/api/core/v1"
@@ -296,13 +297,20 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) errors.AutoscalerError
 				status.GetReadableString(), a.AutoscalingContext.LogRecorder)
 		}
 
+		var unschedulable []string
+		for _, info := range scaleUpStatus.PodsRemainUnschedulable {
+			unschedulable = append(unschedulable, fmt.Sprintf("%s/%s", info.Pod.Namespace, info.Pod.Name))
+		}
+
 		switch scaleUpStatus.Result {
 		case status.ScaleUpNoOptionsAvailable:
 			// This is sometimes returned without any data in scaleUpStatus.PodsRemainUnschedulable :shrug:
 			if len(scaleUpStatus.PodsRemainUnschedulable) > 0 {
+				klog.Infof("unexpandable: %d, %s", scaleUpStatus.Result, strings.Join(unschedulable, ", "))
 				metrics.UpdateUnexpandablePodsCount(len(scaleUpStatus.PodsRemainUnschedulable))
 			}
 		case status.ScaleUpNotNeeded, status.ScaleUpSuccessful:
+			klog.Infof("unexpandable: %d, %s", scaleUpStatus.Result, strings.Join(unschedulable, ", "))
 			metrics.UpdateUnexpandablePodsCount(len(scaleUpStatus.PodsRemainUnschedulable))
 		}
 

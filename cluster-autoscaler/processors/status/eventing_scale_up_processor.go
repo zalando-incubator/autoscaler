@@ -36,9 +36,12 @@ type EventingScaleUpStatusProcessor struct{}
 // Process processes the state of the cluster after a scale-up by emitting
 // relevant events for pods depending on their post scale-up status.
 func (p *EventingScaleUpStatusProcessor) Process(context *context.AutoscalingContext, status *ScaleUpStatus) {
+	klog.Infof("processor::process(), %d", status.Result)
 	consideredNodeGroupsMap := nodeGroupListToMapById(status.ConsideredNodeGroups)
 	if status.Result != ScaleUpSuccessful && status.Result != ScaleUpError {
+		klog.Infof("%d unschedulable pods", len(status.PodsRemainUnschedulable))
 		for _, noScaleUpInfo := range status.PodsRemainUnschedulable {
+			klog.Infof("pod: %s/%s", noScaleUpInfo.Pod.Namespace, noScaleUpInfo.Pod.Name)
 			context.Recorder.Event(noScaleUpInfo.Pod, apiv1.EventTypeNormal, "NotTriggerScaleUp",
 				fmt.Sprintf("pod didn't trigger scale-up (it wouldn't fit if a new node is"+
 					" added): %s", ReasonsMessage(noScaleUpInfo, consideredNodeGroupsMap)))

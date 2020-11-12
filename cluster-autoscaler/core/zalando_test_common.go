@@ -21,6 +21,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	rand "math/rand"
 	"os"
 	"runtime"
 	"sort"
@@ -334,7 +335,9 @@ func (g *zalandoTestCloudProviderNodeGroup) regenerateCachedInstances() {
 func (g *zalandoTestCloudProviderNodeGroup) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
 	ensureSameGoroutine(g.expectedGID)
 
-	return scheduler.CloneNodeInfo(g.templateNode), nil
+	result := scheduler.CloneNodeInfo(g.templateNode)
+	result.Node().Name = fmt.Sprintf("%s-asg-%d", g.id, rand.Int63())
+	return result, nil
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) Exist() bool {
@@ -660,16 +663,13 @@ func (e *zalandoTestEnv) AddNode(instanceId string, ready bool) *zalandoTestEnv 
 			node.Name = instanceId
 			node.Spec.ProviderID = fmt.Sprintf("zalando-test:///%s/%s", group.id, instanceId)
 
-			readyStatus := corev1.ConditionTrue
-			if !ready {
-				readyStatus = corev1.ConditionFalse
+			if ready {
+				node.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
+			} else {
+				node.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}
+				node.Spec.Taints = []corev1.Taint{{Key: "node.kubernetes.io/not-ready", Effect: corev1.TaintEffectNoSchedule}}
 			}
-			node.Status.Conditions = []corev1.NodeCondition{
-				{
-					Type:   corev1.NodeReady,
-					Status: readyStatus,
-				},
-			}
+
 			_, err := e.client.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{})
 			require.NoError(e.t, err)
 

@@ -21,6 +21,7 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/scheduler"
 	schedulerlisters "k8s.io/kubernetes/pkg/scheduler/listers"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
@@ -88,7 +89,7 @@ func newInternalBasicSnapshotData() *internalBasicSnapshotData {
 func (data *internalBasicSnapshotData) clone() *internalBasicSnapshotData {
 	clonedNodeInfoMap := make(map[string]*schedulernodeinfo.NodeInfo)
 	for k, v := range data.nodeInfoMap {
-		clonedNodeInfoMap[k] = v.Clone()
+		clonedNodeInfoMap[k] = scheduler.CloneNodeInfo(v)
 	}
 	return &internalBasicSnapshotData{
 		nodeInfoMap: clonedNodeInfoMap,

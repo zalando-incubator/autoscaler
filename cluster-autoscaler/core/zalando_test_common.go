@@ -56,6 +56,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/utils/deletetaint"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/scheduler"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/units"
 	"k8s.io/client-go/kubernetes/fake"
 	v1appslister "k8s.io/client-go/listers/apps/v1"
@@ -333,7 +334,7 @@ func (g *zalandoTestCloudProviderNodeGroup) regenerateCachedInstances() {
 func (g *zalandoTestCloudProviderNodeGroup) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
 	ensureSameGoroutine(g.expectedGID)
 
-	return g.templateNode.Clone(), nil
+	return scheduler.CloneNodeInfo(g.templateNode), nil
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) Exist() bool {

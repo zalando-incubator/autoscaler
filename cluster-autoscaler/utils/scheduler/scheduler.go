@@ -57,3 +57,15 @@ func CreateNodeNameToInfoMap(pods []*apiv1.Pod, nodes []*apiv1.Node) map[string]
 
 	return nodeNameToNodeInfo
 }
+
+// CloneNodeInfo copies the provided schedulernodeinfo.NodeInfo __correctly__. The upstream version doesn't deep-copy
+// the underlying Node object, leading to potential corruption if someone modifies the Node directly. Note that it still
+// doesn't deep-copy the pods, but this should hopefully not create any issues.
+func CloneNodeInfo(nodeInfo *schedulernodeinfo.NodeInfo) *schedulernodeinfo.NodeInfo {
+	result := schedulernodeinfo.NewNodeInfo(nodeInfo.Pods()...)
+	// I have no idea why this can return an error (it doesn't even do this in the code). Multiple other places just
+	// ignore it, and I'm not sure if I want to modify the function signatures to propagate the error correctly. Let's
+	// just ignore it as well.
+	_ = result.SetNode(nodeInfo.Node().DeepCopy())
+	return result
+}

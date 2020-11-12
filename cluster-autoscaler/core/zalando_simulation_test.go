@@ -18,6 +18,7 @@ package core
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -294,5 +295,34 @@ func TestRemoveNodeGroup(t *testing.T) {
 			AddPod(pod2).
 			StepFor(10 * time.Minute).
 			ExpectNoCommands()
+	})
+}
+
+func TestSnapshotBug(t *testing.T) {
+	// This fails in the upstream version because NodeInfo.Clone() is bugged and doesn't clone the underlying Node object,
+	// leading to things like scale_up.go:buildNodeInfoForNodeTemplate() corrupting existing state (and possibly more).
+
+	opts := defaultZalandoAutoscalingOptions()
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil).
+			AddNodeGroup("ng-2", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil).
+			AddNodeGroup("ng-3", 10, resource.MustParse("4"), resource.MustParse("32Gi"), nil)
+
+		for i := 0; i < 5; i++ {
+			env.AddPod(NewTestPod(fmt.Sprintf("foo-%d", i), resource.MustParse("1"), resource.MustParse("20Gi")))
+		}
+
+		env.StepFor(30*time.Second).
+			AddInstance("ng-1", "i-1", false).
+			AddInstance("ng-1", "i-2", false).
+			AddInstance("ng-2", "i-3", false).
+			AddInstance("ng-2", "i-4", false).
+			AddInstance("ng-3", "i-5", false)
+
+		for i := 5; i < 10; i++ {
+			env.AddPod(NewTestPod(fmt.Sprintf("foo-%d", i), resource.MustParse("1"), resource.MustParse("20Gi")))
+		}
+
+		env.StepFor(2 * time.Minute)
 	})
 }

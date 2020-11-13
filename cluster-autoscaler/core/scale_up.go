@@ -568,6 +568,9 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 		if typedErr != nil {
 			return &status.ScaleUpStatus{Result: status.ScaleUpError, CreateNodeGroupResults: createNodeGroupResults}, typedErr
 		}
+
+		scaleUpInfos = fixupScaleUpForTopologySpreadConstraints(context, bestOption, scaleUpInfos)
+
 		klog.V(1).Infof("Final scale-up plan: %v", scaleUpInfos)
 		for _, info := range scaleUpInfos {
 			typedErr := executeScaleUp(context, clusterStateRegistry, info, gpu.GetGpuTypeForMetrics(gpuLabel, availableGPUTypes, nodeInfo.Node(), nil), currentTime)
@@ -593,6 +596,45 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 		PodsRemainUnschedulable: getRemainingPods(podEquivalenceGroups, skippedNodeGroups),
 		ConsideredNodeGroups:    nodeGroups,
 	}, nil
+}
+
+func fixupScaleUpForTopologySpreadConstraints(autoscalingContext *context.AutoscalingContext, option *expander.Option, infos []nodegroupset.ScaleUpInfo) []nodegroupset.ScaleUpInfo {
+	if !topologySpreadConstraintsPresent(option.Pods) {
+		return infos
+	}
+
+	if autoscalingContext.TopologySpreadConstraintSplitFactor <= 0 || len(infos) >= autoscalingContext.TopologySpreadConstraintSplitFactor {
+		return infos
+	}
+
+	scaleFactor := float64(len(infos)) / float64(autoscalingContext.TopologySpreadConstraintSplitFactor)
+
+	klog.V(1).Infof("Pods with TopologySpreadConstraints present, capping scale up at %d/%d", len(infos), autoscalingContext.TopologySpreadConstraintSplitFactor)
+
+	var result []nodegroupset.ScaleUpInfo
+	for _, info := range infos {
+		if info.NewSize <= info.CurrentSize {
+			result = append(result, info)
+		}
+
+		scaledDelta := int(math.Ceil(float64(info.NewSize-info.CurrentSize) * scaleFactor))
+		result = append(result, nodegroupset.ScaleUpInfo{
+			Group:       info.Group,
+			CurrentSize: info.CurrentSize,
+			NewSize:     info.CurrentSize + scaledDelta,
+			MaxSize:     info.MaxSize,
+		})
+	}
+	return result
+}
+
+func topologySpreadConstraintsPresent(pods []*apiv1.Pod) bool {
+	for _, pod := range pods {
+		if len(pod.Spec.TopologySpreadConstraints) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func buildNodeInfoForNodeTemplate(nodeTemplate *schedulernodeinfo.NodeInfo, index int) *schedulernodeinfo.NodeInfo {

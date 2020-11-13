@@ -145,4 +145,6 @@ type AutoscalingOptions struct {
 	// Keep the ASGs in Backoff scaled up to 1 additional instance, to be able to detect when the quota/availability go away.
 	// Should be combined with infinite backoff.
 	BackoffNoFullScaleDown bool
+	// MaxPodEvictionTime is the maximum time CA tries to evict a pod before giving up.
+	MaxPodEvictionTime time.Duration
 }

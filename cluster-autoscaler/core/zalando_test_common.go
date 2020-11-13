@@ -424,6 +424,7 @@ func defaultZalandoAutoscalingOptions() config.AutoscalingOptions {
 		KubeConfigPath:                   "",
 		NodeDeletionDelayTimeout:         2 * time.Minute,
 		AWSUseStaticInstanceList:         false,
+		MaxPodEvictionTime:               2 * time.Minute,
 
 		// customized
 		ExpanderName:                     expander.HighestPriorityExpanderName,

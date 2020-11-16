@@ -439,6 +439,7 @@ func defaultZalandoAutoscalingOptions() config.AutoscalingOptions {
 		ScaleUpTemplateFromCloudProvider:    true,
 		BackoffNoFullScaleDown:              true,
 		TopologySpreadConstraintSplitFactor: 3,
+		DisableNodeInstancesCache:           true,
 	}
 }
 
@@ -453,7 +454,6 @@ type zalandoTestEnv struct {
 	client                       *fake.Clientset
 	initialTime                  time.Time
 	instanceCacheResetTime       time.Time
-	cloudProviderCacheTime       time.Time
 	pdbIndexer                   cache.Indexer
 	daemonsetIndexer             cache.Indexer
 	replicationControllerIndexer cache.Indexer
@@ -528,12 +528,6 @@ func (e *zalandoTestEnv) StepOnce() *zalandoTestEnv {
 	if e.instanceCacheResetTime.Add(time.Minute).Before(e.currentTime) {
 		e.cloudProvider.instanceCacheValid = false
 		e.instanceCacheResetTime = e.currentTime
-	}
-
-	// This is usually running asynchronously, we have to emulate it instead
-	if e.cloudProviderCacheTime.Add(utils.CloudProviderNodeInstancesCacheRefreshInterval).Before(e.currentTime) {
-		e.autoscaler.clusterStateRegistry.RefreshCloudProviderNodeInstancesCache()
-		e.cloudProviderCacheTime = e.currentTime
 	}
 
 	err := e.autoscaler.RunOnce(e.currentTime)
@@ -1009,7 +1003,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 		MaxTotalUnreadyPercentage: options.MaxTotalUnreadyPercentage,
 		OkTotalUnreadyCount:       options.OkTotalUnreadyCount,
 		MaxNodeProvisionTime:      options.MaxNodeProvisionTime,
-		RunSynchronously:          true,
+		DisableNodeInstancesCache: options.DisableNodeInstancesCache,
 		BackoffNoFullScaleDown:    options.BackoffNoFullScaleDown,
 	}
 

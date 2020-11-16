@@ -135,6 +135,7 @@ func NewStaticAutoscaler(
 		OkTotalUnreadyCount:       opts.OkTotalUnreadyCount,
 		MaxNodeProvisionTime:      opts.MaxNodeProvisionTime,
 		BackoffNoFullScaleDown:    opts.BackoffNoFullScaleDown,
+		DisableNodeInstancesCache: opts.DisableNodeInstancesCache,
 	}
 
 	ignoredTaints := make(taints.TaintKeySet)

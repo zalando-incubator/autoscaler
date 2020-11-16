@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog"
 )
@@ -325,4 +326,131 @@ func TestSnapshotBug(t *testing.T) {
 
 		env.StepFor(2 * time.Minute)
 	})
+}
+
+func TestBrokenAZSplit(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		splitFactor      int
+		initialInstances map[string]int
+		remainingPods    int
+		expectedScaleUp  int
+	}{
+		{
+			name:        "completely skewed, broken upstream behaviour",
+			splitFactor: 0,
+			initialInstances: map[string]int{
+				"ng-1": 3,
+				"ng-2": 3,
+				"ng-3": 1,
+			},
+			remainingPods:   13,
+			expectedScaleUp: 23,
+		},
+		{
+			name:        "completely skewed, split enabled",
+			splitFactor: 3,
+			initialInstances: map[string]int{
+				"ng-1": 3,
+				"ng-2": 3,
+				"ng-3": 1,
+			},
+			remainingPods:   13,
+			expectedScaleUp: 13,
+		},
+		{
+			name:        "partially skewed, broken upstream behaviour",
+			splitFactor: 0,
+			initialInstances: map[string]int{
+				"ng-1": 5,
+				"ng-2": 1,
+				"ng-3": 1,
+			},
+			remainingPods:   13,
+			expectedScaleUp: 16,
+		},
+		{
+			name:        "partially skewed, split enabled",
+			splitFactor: 3,
+			initialInstances: map[string]int{
+				"ng-1": 5,
+				"ng-2": 1,
+				"ng-3": 1,
+			},
+			remainingPods:   13,
+			expectedScaleUp: 13,
+		},
+		{
+			name:        "no skew, upstream behaviour",
+			splitFactor: 0,
+			initialInstances: map[string]int{
+				"ng-1": 2,
+				"ng-2": 2,
+				"ng-3": 2,
+			},
+			remainingPods:   14,
+			expectedScaleUp: 14,
+		},
+		{
+			name:        "no skew, split enabled",
+			splitFactor: 3,
+			initialInstances: map[string]int{
+				"ng-1": 2,
+				"ng-2": 2,
+				"ng-3": 2,
+			},
+			remainingPods:   14,
+			expectedScaleUp: 14,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := defaultZalandoAutoscalingOptions()
+			opts.TopologySpreadConstraintSplitFactor = tc.splitFactor
+
+			RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+				env.AddNodeGroup("ng-1", 100, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{corev1.LabelZoneFailureDomainStable: "A"}).
+					AddNodeGroup("ng-2", 100, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{corev1.LabelZoneFailureDomainStable: "B"}).
+					AddNodeGroup("ng-3", 100, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{corev1.LabelZoneFailureDomainStable: "C"})
+
+				rs := NewTestReplicaSet("foo", 20)
+
+				newPod := func() *corev1.Pod {
+					pod := NewReplicaSetPod(rs, resource.MustParse("3"), resource.MustParse("30Gi"))
+					pod.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+						{
+							MaxSkew:           1,
+							TopologyKey:       corev1.LabelZoneFailureDomainStable,
+							WhenUnsatisfiable: corev1.DoNotSchedule,
+							LabelSelector:     rs.Spec.Selector,
+						},
+					}
+					return pod
+				}
+
+				// Setup the initial state
+				for ng, instances := range tc.initialInstances {
+					for i := 0; i < instances; i++ {
+						instanceId := fmt.Sprintf("i-%s-%d", ng, i)
+						env.AddInstance(ng, instanceId, true).AddNode(instanceId, true).
+							AddScheduledPod(newPod(), instanceId)
+					}
+				}
+
+				env.StepFor(1 * time.Minute).ExpectNoCommands()
+
+				for i := 0; i < tc.remainingPods; i++ {
+					env.AddPod(newPod())
+				}
+
+				env.StepFor(5 * time.Minute)
+
+				totalScaleUp := 0
+				for _, command := range env.ConsumeCommands() {
+					require.Equal(t, zalandoCloudProviderCommandIncreaseSize, command.commandType)
+					totalScaleUp += command.delta
+				}
+				require.Equal(t, tc.expectedScaleUp, totalScaleUp)
+			})
+		})
+	}
 }

@@ -427,17 +427,18 @@ func defaultZalandoAutoscalingOptions() config.AutoscalingOptions {
 		MaxPodEvictionTime:               2 * time.Minute,
 
 		// customized
-		ExpanderName:                     expander.HighestPriorityExpanderName,
-		ExpendablePodsPriorityCutoff:     -1000000,
-		ScaleDownEnabled:                 true,
-		ScaleDownDelayAfterAdd:           -1 * time.Second,
-		ScaleDownUnneededTime:            10 * time.Minute,
-		ScaleDownUtilizationThreshold:    1.0,
-		BalanceSimilarNodeGroups:         true,
-		MaxNodeProvisionTime:             7 * time.Minute,
-		MaxNodesTotal:                    100,
-		ScaleUpTemplateFromCloudProvider: true,
-		BackoffNoFullScaleDown:           true,
+		ExpanderName:                        expander.HighestPriorityExpanderName,
+		ExpendablePodsPriorityCutoff:        -1000000,
+		ScaleDownEnabled:                    true,
+		ScaleDownDelayAfterAdd:              -1 * time.Second,
+		ScaleDownUnneededTime:               10 * time.Minute,
+		ScaleDownUtilizationThreshold:       1.0,
+		BalanceSimilarNodeGroups:            true,
+		MaxNodeProvisionTime:                7 * time.Minute,
+		MaxNodesTotal:                       100,
+		ScaleUpTemplateFromCloudProvider:    true,
+		BackoffNoFullScaleDown:              true,
+		TopologySpreadConstraintSplitFactor: 3,
 	}
 }
 
@@ -686,6 +687,10 @@ func (e *zalandoTestEnv) AddNode(instanceId string, ready bool) *zalandoTestEnv 
 
 	require.FailNowf(e.t, "invalid instance", "instance %s doesn't belong to any node groups", instanceId)
 	return e
+}
+
+func (e *zalandoTestEnv) AddScheduledPod(pod *corev1.Pod, nodeName string) *zalandoTestEnv {
+	return e.AddPod(pod).SchedulePod(pod, nodeName)
 }
 
 func (e *zalandoTestEnv) SchedulePod(pod *corev1.Pod, nodeName string) *zalandoTestEnv {
@@ -1070,6 +1075,9 @@ func NewTestReplicaSet(name string, replicas int32) *appsv1.ReplicaSet {
 		},
 		Spec: appsv1.ReplicaSetSpec{
 			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"replicaset-name": name},
+			},
 		},
 	}
 }
@@ -1087,6 +1095,13 @@ func NewReplicaSetPod(owner *appsv1.ReplicaSet, cpu, memory resource.Quantity) *
 			UID:        owner.UID,
 			Controller: &controller,
 		},
+	}
+
+	if result.Labels == nil {
+		result.Labels = make(map[string]string)
+	}
+	for k, v := range owner.Spec.Selector.MatchLabels {
+		result.Labels[k] = v
 	}
 	return result
 }

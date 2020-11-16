@@ -149,4 +149,6 @@ type AutoscalingOptions struct {
 	MaxPodEvictionTime time.Duration
 	// If pods with topology spread constraints are present, cap the scale-up size at the number of groups divided by the scale factor.
 	TopologySpreadConstraintSplitFactor int
+	// Don't cache instances returned by the cloud provider
+	DisableNodeInstancesCache bool
 }

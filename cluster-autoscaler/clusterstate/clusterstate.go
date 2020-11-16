@@ -93,8 +93,8 @@ type ClusterStateRegistryConfig struct {
 	//  Maximum time CA waits for node to be provisioned
 	MaxNodeProvisionTime time.Duration
 
-	// Don't start additional goroutines (used in tests)
-	RunSynchronously bool
+	// Don't use the node instances cache
+	DisableNodeInstancesCache bool
 	// Keep the ASGs in Backoff scaled up to 1 additional instance, to be able to detect when the quota/availability go away.
 	// Should be combined with infinite backoff.
 	BackoffNoFullScaleDown bool
@@ -164,11 +164,6 @@ func NewClusterStateRegistry(cloudProvider cloudprovider.CloudProvider, config C
 		NodeGroupStatuses:     make([]api.NodeGroupStatus, 0),
 	}
 
-	cache := utils.NewCloudProviderNodeInstancesCache(cloudProvider)
-	if config.RunSynchronously {
-		cache.RunSynchronously()
-	}
-
 	return &ClusterStateRegistry{
 		scaleUpRequests:                 make(map[string]*ScaleUpRequest),
 		scaleDownRequests:               make([]*ScaleDownRequest, 0),
@@ -183,7 +178,7 @@ func NewClusterStateRegistry(cloudProvider cloudprovider.CloudProvider, config C
 		backoff:                         backoff,
 		lastStatus:                      emptyStatus,
 		logRecorder:                     logRecorder,
-		cloudProviderNodeInstancesCache: cache,
+		cloudProviderNodeInstancesCache: utils.NewCloudProviderNodeInstancesCache(cloudProvider),
 		interrupt:                       make(chan struct{}),
 		scaleUpFailures:                 make(map[string][]ScaleUpFailure),
 	}
@@ -191,7 +186,9 @@ func NewClusterStateRegistry(cloudProvider cloudprovider.CloudProvider, config C
 
 // Start starts components running in background.
 func (csr *ClusterStateRegistry) Start() {
-	csr.cloudProviderNodeInstancesCache.Start(csr.interrupt)
+	if !csr.config.DisableNodeInstancesCache {
+		csr.cloudProviderNodeInstancesCache.Start(csr.interrupt)
+	}
 }
 
 // Stop stops components running in background.
@@ -982,6 +979,20 @@ func (csr *ClusterStateRegistry) GetUpcomingNodes(currentTime time.Time) map[str
 // getCloudProviderNodeInstances returns map keyed on node group id where value is list of node instances
 // as returned by NodeGroup.Nodes().
 func (csr *ClusterStateRegistry) getCloudProviderNodeInstances() (map[string][]cloudprovider.Instance, error) {
+	if csr.config.DisableNodeInstancesCache {
+		result := make(map[string][]cloudprovider.Instance)
+
+		for _, group := range csr.cloudProvider.NodeGroups() {
+			instances, err := group.Nodes()
+			if err != nil {
+				return nil, err
+			}
+			result[group.Id()] = instances
+		}
+
+		return result, nil
+	}
+
 	for _, nodeGroup := range csr.cloudProvider.NodeGroups() {
 		if csr.IsNodeGroupScalingUp(nodeGroup.Id()) {
 			csr.cloudProviderNodeInstancesCache.InvalidateCacheEntry(nodeGroup)
@@ -1157,12 +1168,16 @@ func (csr *ClusterStateRegistry) GetCreatedNodesWithErrors() []*apiv1.Node {
 
 // RefreshCloudProviderNodeInstancesCache refreshes cloud provider node instances cache.
 func (csr *ClusterStateRegistry) RefreshCloudProviderNodeInstancesCache() {
-	csr.cloudProviderNodeInstancesCache.Refresh()
+	if !csr.config.DisableNodeInstancesCache {
+		csr.cloudProviderNodeInstancesCache.Refresh()
+	}
 }
 
 // InvalidateNodeInstancesCacheEntry removes a node group from the cloud provider node instances cache.
 func (csr *ClusterStateRegistry) InvalidateNodeInstancesCacheEntry(nodeGroup cloudprovider.NodeGroup) {
-	csr.cloudProviderNodeInstancesCache.InvalidateCacheEntry(nodeGroup)
+	if !csr.config.DisableNodeInstancesCache {
+		csr.cloudProviderNodeInstancesCache.InvalidateCacheEntry(nodeGroup)
+	}
 }
 
 func fakeNode(instance cloudprovider.Instance) *apiv1.Node {

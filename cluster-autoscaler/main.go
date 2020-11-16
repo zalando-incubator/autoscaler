@@ -177,7 +177,7 @@ var (
 	maxPodEvictionTime                  = flag.Duration("max-pod-eviction-time", core.MaxPodEvictionTime, "Maximum time CA tries to evict a pod before giving up.")
 	topologySpreadConstraintScaleFactor = flag.Int("topology-spread-constraint-scale-factor", 0,
 		"If pods with topology spread constraints are present, cap the scale-up size at the number of groups divided by the scale factor.")
-	nodeInstancesCache = flag.Bool("node-instances-cache-enabled", true, "Enable the cloud provider instance cache")
+	disableNodeInstancesCache = flag.Bool("disable-node-instances-cache", false, "Disable the cloud provider instance cache")
 
 	ignoreTaintsFlag         = multiStringFlag("ignore-taint", "Specifies a taint to ignore in node templates when considering to scale a node group")
 	awsUseStaticInstanceList = flag.Bool("aws-use-static-instance-list", false, "Should CA fetch instance types in runtime or use a static list. AWS only")
@@ -257,7 +257,7 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		BackoffNoFullScaleDown:              *backoffNoFullScaleDown,
 		MaxPodEvictionTime:                  *maxPodEvictionTime,
 		TopologySpreadConstraintSplitFactor: *topologySpreadConstraintScaleFactor,
-		DisableNodeInstancesCache:           !*nodeInstancesCache,
+		DisableNodeInstancesCache:           *disableNodeInstancesCache,
 	}
 }
 

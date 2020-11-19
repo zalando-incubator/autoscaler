@@ -41,6 +41,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	kuberuntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
@@ -65,7 +66,6 @@ import (
 	v1corelister "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/listers/policy/v1beta1"
 	"k8s.io/client-go/tools/cache"
-	kube_record "k8s.io/client-go/tools/record"
 	"k8s.io/klog"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
@@ -435,7 +435,7 @@ func defaultZalandoAutoscalingOptions() config.AutoscalingOptions {
 		ScaleDownUtilizationThreshold:       1.0,
 		BalanceSimilarNodeGroups:            true,
 		MaxNodeProvisionTime:                7 * time.Minute,
-		MaxNodesTotal:                       100,
+		MaxNodesTotal:                       10000,
 		ScaleUpTemplateFromCloudProvider:    true,
 		BackoffNoFullScaleDown:              true,
 		TopologySpreadConstraintSplitFactor: 3,
@@ -941,6 +941,24 @@ func makeIndexer() cache.Indexer {
 		map[string]cache.IndexFunc{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 }
 
+type printRecorder struct{}
+
+func (f *printRecorder) Event(object kuberuntime.Object, eventtype, reason, message string) {
+	meta, ok := object.(metav1.ObjectMetaAccessor)
+	if !ok {
+		return
+	}
+	klog.Infof("Event for %s/%s (%s): %s", meta.GetObjectMeta().GetNamespace(), meta.GetObjectMeta().GetName(), reason, message)
+}
+
+func (f *printRecorder) Eventf(object kuberuntime.Object, eventtype, reason, messageFmt string, args ...interface{}) {
+	f.Event(object, eventtype, reason, fmt.Sprintf(messageFmt, args...))
+}
+
+func (f *printRecorder) AnnotatedEventf(object kuberuntime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...interface{}) {
+	f.Eventf(object, eventtype, reason, messageFmt, args...)
+}
+
 // RunSimulation runs testFn with a freshly created simulation environment
 func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval time.Duration, testFn func(env *zalandoTestEnv)) {
 	processorCallbacks := newStaticAutoscalerProcessorCallbacks()
@@ -948,7 +966,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 
 	provider := newZalandoTestCloudProvider(scalercontext.NewResourceLimiterFromAutoscalingOptions(options), getGID())
 
-	recorder := kube_record.NewFakeRecorder(1000)
+	recorder := &printRecorder{}
 	statusRecorder, err := utils.NewStatusMapRecorder(clientset, "kube-system", recorder, false)
 	require.NoError(t, err)
 
@@ -987,7 +1005,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 		AutoscalingOptions: options,
 		AutoscalingKubeClients: scalercontext.AutoscalingKubeClients{
 			ClientSet:      clientset,
-			Recorder:       kube_record.NewFakeRecorder(1000),
+			Recorder:       recorder,
 			LogRecorder:    statusRecorder,
 			ListerRegistry: listers,
 		},

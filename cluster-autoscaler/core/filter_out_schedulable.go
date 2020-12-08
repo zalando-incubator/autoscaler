@@ -30,15 +30,19 @@ import (
 	"k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
-type filterOutSchedulablePodListProcessor struct{}
+type filterOutSchedulablePodListProcessor struct {
+	schedulablePodsAllowScaleDown bool
+}
 
 // NewFilterOutSchedulablePodListProcessor creates a PodListProcessor filtering out schedulable pods
-func NewFilterOutSchedulablePodListProcessor() pods.PodListProcessor {
-	return &filterOutSchedulablePodListProcessor{}
+func NewFilterOutSchedulablePodListProcessor(schedulablePodsAllowScaleDown bool) pods.PodListProcessor {
+	return &filterOutSchedulablePodListProcessor{
+		schedulablePodsAllowScaleDown: schedulablePodsAllowScaleDown,
+	}
 }
 
 // Process filters out pods which are schedulable from list of unschedulable pods.
-func (filterOutSchedulablePodListProcessor) Process(
+func (processor filterOutSchedulablePodListProcessor) Process(
 	context *context.AutoscalingContext,
 	unschedulablePods []*apiv1.Pod) ([]*apiv1.Pod, error) {
 	// We need to check whether pods marked as unschedulable are actually unschedulable.
@@ -71,15 +75,17 @@ func (filterOutSchedulablePodListProcessor) Process(
 	metrics.UpdateDurationFromStart(metrics.FilterOutSchedulable, filterOutSchedulableStart)
 
 	if len(unschedulablePodsToHelp) != len(unschedulablePods) {
-		klog.V(2).Info("Schedulable pods present")
-		context.ProcessorCallbacks.DisableScaleDownForLoop()
+		if !processor.schedulablePodsAllowScaleDown {
+			klog.V(2).Info("Schedulable pods present")
+			context.ProcessorCallbacks.DisableScaleDownForLoop()
+		}
 	} else {
 		klog.V(4).Info("No schedulable pods")
 	}
 	return unschedulablePodsToHelp, nil
 }
 
-func (filterOutSchedulablePodListProcessor) CleanUp() {
+func (processor filterOutSchedulablePodListProcessor) CleanUp() {
 }
 
 // filterOutSchedulableByPacking checks whether pods from <unschedulableCandidates> marked as

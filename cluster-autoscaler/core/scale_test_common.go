@@ -133,7 +133,7 @@ func simplifyScaleUpStatus(scaleUpStatus *status.ScaleUpStatus) scaleUpStatusInf
 // NewTestProcessors returns a set of simple processors for use in tests.
 func NewTestProcessors() *processors.AutoscalingProcessors {
 	return &processors.AutoscalingProcessors{
-		PodListProcessor:       NewFilterOutSchedulablePodListProcessor(),
+		PodListProcessor:       NewFilterOutSchedulablePodListProcessor(false),
 		NodeGroupListProcessor: &nodegroups.NoOpNodeGroupListProcessor{},
 		NodeGroupSetProcessor:  &nodegroupset.BalancingNodeGroupSetProcessor{},
 		// TODO(bskiba): change scale up test so that this can be a NoOpProcessor

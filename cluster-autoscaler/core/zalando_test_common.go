@@ -53,6 +53,8 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/highestpriority"
+	"k8s.io/autoscaler/cluster-autoscaler/processors"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/backoff"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/deletetaint"
@@ -718,7 +720,7 @@ func (e *zalandoTestEnv) RemovePod(pod *corev1.Pod) *zalandoTestEnv {
 	return e
 }
 
-func (e *zalandoTestEnv) RemoveNode(name string, decrementTargetSize bool) {
+func (e *zalandoTestEnv) RemoveNode(name string, decrementTargetSize bool) *zalandoTestEnv {
 	node, err := e.client.CoreV1().Nodes().Get(context.Background(), name, metav1.GetOptions{})
 	require.NoError(e.t, err)
 
@@ -750,6 +752,7 @@ func (e *zalandoTestEnv) RemoveNode(name string, decrementTargetSize bool) {
 	}
 
 	klog.Infof("Removed instance %s for node group %s (target size %d -> %d)", name, zalandoNodeGroup.id, currentTargetSize, zalandoNodeGroup.targetSize)
+	return e
 }
 
 func (e *zalandoTestEnv) CurrentTime() time.Duration {
@@ -1041,9 +1044,16 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 		lastScaleUpTime:       initialTime,
 		lastScaleDownFailTime: initialTime,
 		scaleDown:             sd,
-		processors:            NewTestProcessors(),
+		processors:            processors.DefaultProcessors(),
 		processorCallbacks:    processorCallbacks,
 		initialized:           true,
+	}
+
+	autoscaler.processors.PodListProcessor = NewFilterOutSchedulablePodListProcessor(true)
+	if options.BalanceSimilarNodeGroups {
+		autoscaler.processors.NodeGroupSetProcessor = &nodegroupset.BalancingNodeGroupSetProcessor{
+			Comparator: nodegroupset.IsAwsNodeInfoSimilar,
+		}
 	}
 
 	env := &zalandoTestEnv{

@@ -89,6 +89,12 @@ const (
 	Poll                       FunctionLabel = "poll"
 	Reconfigure                FunctionLabel = "reconfigure"
 	Autoscaling                FunctionLabel = "autoscaling"
+
+	// Like scaleDown:nodeDeletion, except they actually work correctly with the asynchronous node deletion
+	// that was implemented at some point. Also split between empty and non-empty node deletions, because those
+	// are processed differently.
+	ScaleDownNodeDeletionEmpty    FunctionLabel = "scaleDown:nodeDeletion:empty"
+	ScaleDownNodeDeletionNonEmpty FunctionLabel = "scaleDown:nodeDeletion:nonEmpty"
 )
 
 var (

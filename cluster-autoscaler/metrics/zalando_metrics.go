@@ -25,8 +25,17 @@ import (
 	"k8s.io/component-base/metrics/legacyregistry"
 )
 
+// ScaleDownType is the type of the scale-down operation
+type ScaleDownType string
+
 const (
 	nodeGroupNameLabel = "node_group"
+
+	// ScaleDownNonEmpty is a scale-down that removes a non-empty node
+	ScaleDownNonEmpty ScaleDownType = "nonempty"
+
+	// ScaleDownEmpty is a scale-down that removes an empty node
+	ScaleDownEmpty ScaleDownType = "empty"
 )
 
 var (
@@ -39,10 +48,18 @@ var (
 			Name:      "node_group_in_backoff",
 			Help:      "Whether or not a node group is in BackOff. 1 if it is, 0 otherwise.",
 		}, []string{nodeGroupNameLabel})
+
+	failedScaleDownCount = k8smetrics.NewCounterVec(
+		&k8smetrics.CounterOpts{
+			Namespace: caNamespace,
+			Name:      "failed_scale_down_total",
+			Help:      "Number of times scale-down operation has failed.",
+		}, []string{"kind", "reason"},
+	)
 )
 
 func registerZalandoMetrics() {
-	legacyregistry.MustRegister(nodeGroupInBackoff)
+	legacyregistry.MustRegister(nodeGroupInBackoff, failedScaleDownCount)
 }
 
 func isBackedOff(nodeGroupStatus api.NodeGroupStatus) bool {
@@ -78,4 +95,9 @@ func UpdateNodeGroupMetrics(status *api.ClusterAutoscalerStatus) {
 		}
 	}
 	poolNames = newNames
+}
+
+// RegisterFailedScaleDown records a failed scale-down operation
+func RegisterFailedScaleDown(scaleDownType ScaleDownType, reason string) {
+	failedScaleDownCount.WithLabelValues(string(scaleDownType), reason).Inc()
 }

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -948,6 +949,12 @@ func (sd *ScaleDown) TryToScaleDown(
 		var result status.NodeDeleteResult
 		defer func() { sd.nodeDeletionTracker.AddNodeDeleteResult(toRemove.Node.Name, result) }()
 		defer sd.nodeDeletionTracker.SetNonEmptyNodeDeleteInProgress(false)
+		defer func() {
+			if result.ResultType != status.NodeDeleteOk {
+				metrics.RegisterFailedScaleDown(metrics.ScaleDownNonEmpty, strconv.Itoa(int(result.ResultType)))
+			}
+			metrics.UpdateDuration(metrics.ScaleDownNodeDeletionNonEmpty, time.Now().Sub(nodeDeletionStart))
+		}()
 		nodeGroup, found := candidateNodeGroups[toRemove.Node.Name]
 		if !found {
 			result = status.NodeDeleteResult{ResultType: status.NodeDeleteErrorFailedToDelete, Err: errors.NewAutoscalerError(
@@ -1073,6 +1080,8 @@ func (sd *ScaleDown) scheduleDeleteEmptyNodes(emptyNodes []*apiv1.Node, client k
 		}
 		deletedNodes = append(deletedNodes, node)
 		deleteFunc := func(nodeToDelete *apiv1.Node, nodeGroupForDeletedNode cloudprovider.NodeGroup) {
+			nodeDeletionStart := time.Now()
+
 			sd.nodeDeletionTracker.StartDeletion(nodeGroupForDeletedNode.Id())
 			defer sd.nodeDeletionTracker.EndDeletion(nodeGroupForDeletedNode.Id())
 			var result status.NodeDeleteResult
@@ -1087,6 +1096,13 @@ func (sd *ScaleDown) scheduleDeleteEmptyNodes(emptyNodes []*apiv1.Node, client k
 				} else {
 					sd.context.LogRecorder.Eventf(apiv1.EventTypeNormal, "ScaleDownEmpty", "Scale-down: empty node %s removed", nodeToDelete.Name)
 				}
+			}()
+
+			defer func() {
+				if result.ResultType != status.NodeDeleteOk {
+					metrics.RegisterFailedScaleDown(metrics.ScaleDownEmpty, strconv.Itoa(int(result.ResultType)))
+				}
+				metrics.UpdateDuration(metrics.ScaleDownNodeDeletionEmpty, time.Now().Sub(nodeDeletionStart))
 			}()
 
 			deleteErr = waitForDelayDeletion(nodeToDelete, sd.context.ListerRegistry.AllNodeLister(), sd.context.AutoscalingOptions.NodeDeletionDelayTimeout)

@@ -454,3 +454,43 @@ func TestBrokenAZSplit(t *testing.T) {
 		})
 	}
 }
+
+func TestScaleDownContinuousScaleUp(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+
+	// So we don't need to deal with scale-up timeouts
+	opts.MaxNodeProvisionTime = 30 * time.Minute
+
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("1"), resource.MustParse("8Gi"), map[string]string{"id": "ng-1"}).
+			AddNodeGroup("ng-2", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{"id": "ng-2"}).
+			AddNodeGroup("ng-3", 10, resource.MustParse("4"), resource.MustParse("32Gi"), map[string]string{"id": "ng-3"})
+
+		// Add one instance in both ng-1 and ng-2
+		env.AddInstance("ng-1", "i-1", true).AddNode("i-1", true).
+			AddInstance("ng-2", "i-2", true).AddNode("i-2", true).
+			StepOnce()
+
+		// Fast forward close to the scale-down time for the nodes in ng-1 and ng-2
+		env.StepFor(9 * time.Minute)
+
+		// Add a pod that will trigger a scale-up of ng-3 and a pod that will be schedulable on the node in ng-2
+		ng3Pod := NewTestPod("pod-ng3", resource.MustParse("3"), resource.MustParse("10Gi"))
+		ng3Pod.Spec.NodeSelector = map[string]string{"id": "ng-3"}
+
+		ng2Pod := NewTestPod("pod-ng2", resource.MustParse("3"), resource.MustParse("10Gi"))
+		ng2Pod.Spec.NodeSelector = map[string]string{"id": "ng-2"}
+
+		env.AddPod(ng2Pod).AddPod(ng3Pod)
+
+		env.StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-3", delta: 1})
+
+		// Run for one more minute; the node in ng-1 should be scaled down but the node in ng-2 should be kept
+		env.StepFor(1*time.Minute).
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDeleteNodes, nodeGroup: "ng-1", nodeNames: []string{"i-1"}}).
+			RemoveNode("i-1", false)
+
+		env.StepFor(20 * time.Minute).ExpectNoCommands()
+	})
+}

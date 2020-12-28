@@ -966,7 +966,7 @@ func (csr *ClusterStateRegistry) GetUpcomingNodes(currentTime time.Time) map[str
 		readiness := csr.perNodeGroupReadiness[id]
 		ar := csr.acceptableRanges[id]
 		// newNodes is the number of nodes that
-		newNodes := ar.CurrentTarget - (readiness.Ready + readiness.Unready + readiness.LongNotStarted + readiness.LongUnregistered)
+		newNodes := ar.CurrentTarget - (readiness.Ready + readiness.Unready + readiness.LongNotStarted + readiness.LongUnregistered + readiness.Deleted)
 		if newNodes <= 0 {
 			// Negative value is unlikely but theoretically possible.
 			continue

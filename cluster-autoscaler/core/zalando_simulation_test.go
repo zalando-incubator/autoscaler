@@ -17,6 +17,7 @@ limitations under the License.
 package core
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -26,6 +27,8 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/deletetaint"
 	"k8s.io/klog"
 )
 
@@ -492,5 +495,31 @@ func TestScaleDownContinuousScaleUp(t *testing.T) {
 			RemoveNode("i-1", false)
 
 		env.StepFor(20 * time.Minute).ExpectNoCommands()
+	})
+}
+
+func TestDeleteTaintScaleUp(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("1"), resource.MustParse("8Gi"), nil)
+
+		// Add an existing instance
+		env.AddInstance("ng-1", "i-1", true).AddNode("i-1", true).
+			StepOnce()
+
+		// Manually mark the node with the delete taint (CA won't reset it)
+		node, err := env.client.CoreV1().Nodes().Get(context.Background(), "i-1", metav1.GetOptions{})
+		require.NoError(t, err)
+
+		err = deletetaint.MarkToBeDeleted(node, env.client)
+		require.NoError(t, err)
+
+		env.StepOnce()
+
+		// Add a pod, this should trigger a scale-up. Upstream will erroneously consider this node as upcoming.
+		env.AddPod(NewTestPod("foo", resource.MustParse("1"), resource.MustParse("4Gi"))).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1})
 	})
 }

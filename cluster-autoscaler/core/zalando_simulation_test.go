@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/deletetaint"
+	kube_client "k8s.io/client-go/kubernetes"
 	"k8s.io/klog"
 )
 
@@ -173,7 +174,8 @@ func TestZalandoScalingTestScaleDownBackoff(t *testing.T) {
 		env.RemovePod(pod).
 			StepUntilNextCommand(20*time.Minute).
 			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDeleteNodes, nodeGroup: "ng-1", nodeNames: []string{"i-1"}}).
-			RemoveNode("i-1", false)
+			RemoveInstance("i-1", false).
+			RemoveNode("i-1")
 
 		env.StepFor(1*time.Hour).
 			ExpectNoCommands().
@@ -492,13 +494,14 @@ func TestScaleDownContinuousScaleUp(t *testing.T) {
 		// Run for one more minute; the node in ng-1 should be scaled down but the node in ng-2 should be kept
 		env.StepFor(1*time.Minute).
 			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDeleteNodes, nodeGroup: "ng-1", nodeNames: []string{"i-1"}}).
-			RemoveNode("i-1", false)
+			RemoveInstance("i-1", false).
+			RemoveNode("i-1")
 
 		env.StepFor(20 * time.Minute).ExpectNoCommands()
 	})
 }
 
-func TestDeleteTaintScaleUp(t *testing.T) {
+func TestDeleteTaintScaleUpDraining(t *testing.T) {
 	opts := defaultZalandoAutoscalingOptions()
 
 	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
@@ -514,8 +517,40 @@ func TestDeleteTaintScaleUp(t *testing.T) {
 
 		err = deletetaint.MarkToBeDeleted(node, env.client)
 		require.NoError(t, err)
-
 		env.StepOnce()
+
+		// Add a pod, this should trigger a scale-up. Upstream will erroneously consider this node as upcoming.
+		env.AddPod(NewTestPod("foo", resource.MustParse("1"), resource.MustParse("4Gi"))).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1})
+	})
+}
+
+func TestDeleteTaintScaleUpDeleting(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("1"), resource.MustParse("8Gi"), nil)
+
+		// Add an existing instance
+		env.AddInstance("ng-1", "i-1", true).AddNode("i-1", true).
+			StepOnce()
+
+		// Manually mark the node with the delete taint and the 'being deleted' taint (CA won't reset it)
+		for _, fn := range []func(*corev1.Node, kube_client.Interface) error{
+			deletetaint.MarkToBeDeleted,
+			deletetaint.MarkBeingDeleted,
+		} {
+			node, err := env.client.CoreV1().Nodes().Get(context.Background(), "i-1", metav1.GetOptions{})
+			require.NoError(t, err)
+
+			err = fn(node, env.client)
+			require.NoError(t, err)
+		}
+
+		// Emulate deleting the instance on the cloud provider side (but keep it on Kubernetes side)
+		env.RemoveInstance("i-1", true).
+			StepOnce()
 
 		// Add a pod, this should trigger a scale-up. Upstream will erroneously consider this node as upcoming.
 		env.AddPod(NewTestPod("foo", resource.MustParse("1"), resource.MustParse("4Gi"))).

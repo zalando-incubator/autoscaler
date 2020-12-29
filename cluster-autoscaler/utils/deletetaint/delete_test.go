@@ -48,6 +48,7 @@ func TestMarkNodes(t *testing.T) {
 	updatedNode := getNode(t, fakeClient, "node")
 	assert.True(t, HasToBeDeletedTaint(updatedNode))
 	assert.False(t, HasDeletionCandidateTaint(updatedNode))
+	assert.False(t, HasBeingDeletedTaint(updatedNode))
 }
 
 func TestSoftMarkNodes(t *testing.T) {
@@ -60,6 +61,7 @@ func TestSoftMarkNodes(t *testing.T) {
 	updatedNode := getNode(t, fakeClient, "node")
 	assert.False(t, HasToBeDeletedTaint(updatedNode))
 	assert.True(t, HasDeletionCandidateTaint(updatedNode))
+	assert.False(t, HasBeingDeletedTaint(updatedNode))
 }
 
 func TestCheckNodes(t *testing.T) {
@@ -71,6 +73,7 @@ func TestCheckNodes(t *testing.T) {
 	updatedNode := getNode(t, fakeClient, "node")
 	assert.True(t, HasToBeDeletedTaint(updatedNode))
 	assert.False(t, HasDeletionCandidateTaint(updatedNode))
+	assert.False(t, HasBeingDeletedTaint(updatedNode))
 }
 
 func TestSoftCheckNodes(t *testing.T) {
@@ -82,6 +85,19 @@ func TestSoftCheckNodes(t *testing.T) {
 	updatedNode := getNode(t, fakeClient, "node")
 	assert.False(t, HasToBeDeletedTaint(updatedNode))
 	assert.True(t, HasDeletionCandidateTaint(updatedNode))
+	assert.False(t, HasBeingDeletedTaint(updatedNode))
+}
+
+func TestCheckBeingDeletedNodes(t *testing.T) {
+	defer setConflictRetryInterval(setConflictRetryInterval(time.Millisecond))
+	node := BuildTestNode("node", 1000, 1000)
+	addTaintToSpec(node, BeingDeletedTaint, apiv1.TaintEffectPreferNoSchedule)
+	fakeClient := buildFakeClientWithConflicts(t, node)
+
+	updatedNode := getNode(t, fakeClient, "node")
+	assert.False(t, HasToBeDeletedTaint(updatedNode))
+	assert.False(t, HasDeletionCandidateTaint(updatedNode))
+	assert.True(t, HasBeingDeletedTaint(updatedNode))
 }
 
 func TestQueryNodes(t *testing.T) {
@@ -152,6 +168,24 @@ func TestSoftCleanNodes(t *testing.T) {
 	assert.False(t, HasDeletionCandidateTaint(updatedNode))
 }
 
+func TestCleanBeingDeletedNodes(t *testing.T) {
+	defer setConflictRetryInterval(setConflictRetryInterval(time.Millisecond))
+	node := BuildTestNode("node", 1000, 1000)
+	addTaintToSpec(node, BeingDeletedTaint, apiv1.TaintEffectPreferNoSchedule)
+	fakeClient := buildFakeClientWithConflicts(t, node)
+
+	updatedNode := getNode(t, fakeClient, "node")
+	assert.True(t, HasBeingDeletedTaint(updatedNode))
+
+	cleaned, err := CleanBeingDeleted(node, fakeClient)
+	assert.True(t, cleaned)
+	assert.NoError(t, err)
+
+	updatedNode = getNode(t, fakeClient, "node")
+	assert.NoError(t, err)
+	assert.False(t, HasBeingDeletedTaint(updatedNode))
+}
+
 func TestCleanAllToBeDeleted(t *testing.T) {
 	n1 := BuildTestNode("n1", 1000, 10)
 	n2 := BuildTestNode("n2", 1000, 10)
@@ -179,6 +213,22 @@ func TestCleanAllDeletionCandidates(t *testing.T) {
 	assert.Equal(t, 1, len(getNode(t, fakeClient, "n2").Spec.Taints))
 
 	CleanAllDeletionCandidates([]*apiv1.Node{n1, n2}, fakeClient, fakeRecorder)
+
+	assert.Equal(t, 0, len(getNode(t, fakeClient, "n1").Spec.Taints))
+	assert.Equal(t, 0, len(getNode(t, fakeClient, "n2").Spec.Taints))
+}
+
+func TestCleanAllBeingDeleted(t *testing.T) {
+	n1 := BuildTestNode("n1", 1000, 10)
+	n2 := BuildTestNode("n2", 1000, 10)
+	n2.Spec.Taints = []apiv1.Taint{{Key: BeingDeletedTaint, Value: strconv.FormatInt(time.Now().Unix()-301, 10)}}
+
+	fakeClient := buildFakeClient(t, n1, n2)
+	fakeRecorder := kube_util.CreateEventRecorder(fakeClient)
+
+	assert.Equal(t, 1, len(getNode(t, fakeClient, "n2").Spec.Taints))
+
+	CleanAllBeingDeleted([]*apiv1.Node{n1, n2}, fakeClient, fakeRecorder)
 
 	assert.Equal(t, 0, len(getNode(t, fakeClient, "n1").Spec.Taints))
 	assert.Equal(t, 0, len(getNode(t, fakeClient, "n2").Spec.Taints))

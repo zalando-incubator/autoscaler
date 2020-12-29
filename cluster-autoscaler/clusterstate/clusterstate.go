@@ -563,7 +563,7 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 
 	update := func(current Readiness, node *apiv1.Node, ready bool) Readiness {
 		current.Registered++
-		if deletetaint.HasToBeDeletedTaint(node) {
+		if deletetaint.HasBeingDeletedTaint(node) {
 			current.Deleted++
 		} else if stillStarting := isNodeStillStarting(node); stillStarting && node.CreationTimestamp.Time.Add(MaxNodeStartupTime).Before(currentTime) {
 			current.LongNotStarted++
@@ -966,7 +966,7 @@ func (csr *ClusterStateRegistry) GetUpcomingNodes(currentTime time.Time) map[str
 		readiness := csr.perNodeGroupReadiness[id]
 		ar := csr.acceptableRanges[id]
 		// newNodes is the number of nodes that
-		newNodes := ar.CurrentTarget - (readiness.Ready + readiness.Unready + readiness.LongNotStarted + readiness.LongUnregistered + readiness.Deleted)
+		newNodes := ar.CurrentTarget - (readiness.Ready + readiness.Unready + readiness.LongNotStarted + readiness.LongUnregistered)
 		if newNodes <= 0 {
 			// Negative value is unlikely but theoretically possible.
 			continue

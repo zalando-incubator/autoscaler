@@ -36,6 +36,8 @@ const (
 	ToBeDeletedTaint = "ToBeDeletedByClusterAutoscaler"
 	// DeletionCandidateTaint is a taint used to mark unneeded node as preferably unschedulable.
 	DeletionCandidateTaint = "DeletionCandidateOfClusterAutoscaler"
+	// BeingDeletedTaint is a taint used to mark the node as being deleted from the cloud provider.
+	BeingDeletedTaint = "BeingDeletedByClusterAutoscaler"
 )
 
 // Mutable only in unit tests
@@ -51,6 +53,8 @@ func getKeyShortName(key string) string {
 		return "ToBeDeletedTaint"
 	case DeletionCandidateTaint:
 		return "DeletionCandidateTaint"
+	case BeingDeletedTaint:
+		return "DeletingTaint"
 	default:
 		return key
 	}
@@ -64,6 +68,11 @@ func MarkToBeDeleted(node *apiv1.Node, client kube_client.Interface) error {
 // MarkDeletionCandidate sets a soft taint that makes the node preferably unschedulable.
 func MarkDeletionCandidate(node *apiv1.Node, client kube_client.Interface) error {
 	return addTaint(node, client, DeletionCandidateTaint, apiv1.TaintEffectPreferNoSchedule)
+}
+
+// MarkBeingDeleted sets a taint that makes the node unschedulable and indicates that it's being deleted from the cloud provider.
+func MarkBeingDeleted(node *apiv1.Node, client kube_client.Interface) error {
+	return addTaint(node, client, BeingDeletedTaint, apiv1.TaintEffectNoSchedule)
 }
 
 func addTaint(node *apiv1.Node, client kube_client.Interface, taintKey string, effect apiv1.TaintEffect) error {
@@ -130,6 +139,11 @@ func HasDeletionCandidateTaint(node *apiv1.Node) bool {
 	return hasTaint(node, DeletionCandidateTaint)
 }
 
+// HasBeingDeletedTaint returns true if BeingDeleted taint is applied on the node.
+func HasBeingDeletedTaint(node *apiv1.Node) bool {
+	return hasTaint(node, BeingDeletedTaint)
+}
+
 func hasTaint(node *apiv1.Node, taintKey string) bool {
 	for _, taint := range node.Spec.Taints {
 		if taint.Key == taintKey {
@@ -171,6 +185,11 @@ func CleanToBeDeleted(node *apiv1.Node, client kube_client.Interface) (bool, err
 // CleanDeletionCandidate cleans CA's soft NoSchedule taint from a node.
 func CleanDeletionCandidate(node *apiv1.Node, client kube_client.Interface) (bool, error) {
 	return cleanTaint(node, client, DeletionCandidateTaint)
+}
+
+// CleanBeingDeleted cleans CA's BeingDeleted taint from a node.
+func CleanBeingDeleted(node *apiv1.Node, client kube_client.Interface) (bool, error) {
+	return cleanTaint(node, client, BeingDeletedTaint)
 }
 
 func cleanTaint(node *apiv1.Node, client kube_client.Interface, taintKey string) (bool, error) {
@@ -230,6 +249,11 @@ func CleanAllToBeDeleted(nodes []*apiv1.Node, client kube_client.Interface, reco
 // CleanAllDeletionCandidates cleans DeletionCandidate taints from given nodes.
 func CleanAllDeletionCandidates(nodes []*apiv1.Node, client kube_client.Interface, recorder kube_record.EventRecorder) {
 	cleanAllTaints(nodes, client, recorder, DeletionCandidateTaint)
+}
+
+// CleanAllBeingDeleted cleans BeingDeleted taints from given nodes.
+func CleanAllBeingDeleted(nodes []*apiv1.Node, client kube_client.Interface, recorder kube_record.EventRecorder) {
+	cleanAllTaints(nodes, client, recorder, BeingDeletedTaint)
 }
 
 func cleanAllTaints(nodes []*apiv1.Node, client kube_client.Interface, recorder kube_record.EventRecorder, taintKey string) {

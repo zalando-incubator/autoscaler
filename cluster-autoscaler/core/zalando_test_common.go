@@ -720,7 +720,7 @@ func (e *zalandoTestEnv) RemovePod(pod *corev1.Pod) *zalandoTestEnv {
 	return e
 }
 
-func (e *zalandoTestEnv) RemoveNode(name string, decrementTargetSize bool) *zalandoTestEnv {
+func (e *zalandoTestEnv) RemoveInstance(name string, decrementTargetSize bool) *zalandoTestEnv {
 	node, err := e.client.CoreV1().Nodes().Get(context.Background(), name, metav1.GetOptions{})
 	require.NoError(e.t, err)
 
@@ -730,8 +730,21 @@ func (e *zalandoTestEnv) RemoveNode(name string, decrementTargetSize bool) *zala
 	zalandoNodeGroup := ng.(*zalandoTestCloudProviderNodeGroup)
 	require.True(e.t, zalandoNodeGroup.instances.Has(name), "instance not found in node group: %s", name)
 
+	currentTargetSize := zalandoNodeGroup.targetSize
+
+	// Delete the instance and decrease the target size
+	zalandoNodeGroup.instances.Delete(name)
+	if decrementTargetSize {
+		zalandoNodeGroup.targetSize--
+	}
+
+	klog.Infof("Removed instance %s for node group %s (target size %d -> %d)", name, zalandoNodeGroup.id, currentTargetSize, zalandoNodeGroup.targetSize)
+	return e
+}
+
+func (e *zalandoTestEnv) RemoveNode(name string) *zalandoTestEnv {
 	// Delete the node
-	err = e.client.CoreV1().Nodes().Delete(context.Background(), name, metav1.DeleteOptions{})
+	err := e.client.CoreV1().Nodes().Delete(context.Background(), name, metav1.DeleteOptions{})
 	require.NoError(e.t, err)
 
 	// Delete pods scheduled on it
@@ -743,15 +756,6 @@ func (e *zalandoTestEnv) RemoveNode(name string, decrementTargetSize bool) *zala
 		}
 	}
 
-	currentTargetSize := zalandoNodeGroup.targetSize
-
-	// Delete the instance and decrease the target size
-	zalandoNodeGroup.instances.Delete(name)
-	if decrementTargetSize {
-		zalandoNodeGroup.targetSize--
-	}
-
-	klog.Infof("Removed instance %s for node group %s (target size %d -> %d)", name, zalandoNodeGroup.id, currentTargetSize, zalandoNodeGroup.targetSize)
 	return e
 }
 

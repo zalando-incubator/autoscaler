@@ -188,6 +188,8 @@ func (a *StaticAutoscaler) cleanUpIfRequired() {
 	} else {
 		deletetaint.CleanAllToBeDeleted(readyNodes,
 			a.AutoscalingContext.ClientSet, a.Recorder)
+		deletetaint.CleanAllBeingDeleted(readyNodes,
+			a.AutoscalingContext.ClientSet, a.Recorder)
 		if a.AutoscalingContext.AutoscalingOptions.MaxBulkSoftTaintCount == 0 {
 			// Clean old taints if soft taints handling is disabled
 			deletetaint.CleanAllDeletionCandidates(readyNodes,

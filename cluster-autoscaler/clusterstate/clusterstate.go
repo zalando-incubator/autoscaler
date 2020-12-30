@@ -563,7 +563,7 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 
 	update := func(current Readiness, node *apiv1.Node, ready bool) Readiness {
 		current.Registered++
-		if deletetaint.HasToBeDeletedTaint(node) {
+		if deletetaint.HasBeingDeletedTaint(node) {
 			current.Deleted++
 		} else if stillStarting := isNodeStillStarting(node); stillStarting && node.CreationTimestamp.Time.Add(MaxNodeStartupTime).Before(currentTime) {
 			current.LongNotStarted++

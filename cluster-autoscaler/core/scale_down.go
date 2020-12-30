@@ -1092,6 +1092,7 @@ func (sd *ScaleDown) scheduleDeleteEmptyNodes(emptyNodes []*apiv1.Node, client k
 			defer func() {
 				if deleteErr != nil {
 					deletetaint.CleanToBeDeleted(nodeToDelete, client)
+					deletetaint.CleanBeingDeleted(nodeToDelete, client)
 					recorder.Eventf(nodeToDelete, apiv1.EventTypeWarning, "ScaleDownFailed", "failed to delete empty node: %v", deleteErr)
 				} else {
 					sd.context.LogRecorder.Eventf(apiv1.EventTypeNormal, "ScaleDownEmpty", "Scale-down: empty node %s removed", nodeToDelete.Name)
@@ -1111,6 +1112,15 @@ func (sd *ScaleDown) scheduleDeleteEmptyNodes(emptyNodes []*apiv1.Node, client k
 				result = status.NodeDeleteResult{ResultType: status.NodeDeleteErrorFailedToDelete, Err: deleteErr}
 				return
 			}
+
+			taintErr := deletetaint.MarkBeingDeleted(nodeToDelete, client)
+			if taintErr != nil {
+				klog.Errorf("Problem with empty node deletion: %v", taintErr)
+				deleteErr = errors.ToAutoscalerError(errors.ApiCallError, taintErr)
+				result = status.NodeDeleteResult{ResultType: status.NodeDeleteErrorFailedToDelete, Err: deleteErr}
+				return
+			}
+
 			deleteErr = deleteNodeFromCloudProvider(nodeToDelete, sd.context.CloudProvider,
 				sd.context.Recorder, sd.clusterStateRegistry)
 			if deleteErr != nil {
@@ -1151,6 +1161,7 @@ func (sd *ScaleDown) deleteNode(node *apiv1.Node, pods []*apiv1.Pod,
 	defer func() {
 		if !deleteSuccessful {
 			deletetaint.CleanToBeDeleted(node, sd.context.ClientSet)
+			deletetaint.CleanBeingDeleted(node, sd.context.ClientSet)
 			if !drainSuccessful {
 				sd.context.Recorder.Eventf(node, apiv1.EventTypeWarning, "ScaleDownFailed", "failed to drain the node, aborting ScaleDown")
 			} else {
@@ -1173,6 +1184,11 @@ func (sd *ScaleDown) deleteNode(node *apiv1.Node, pods []*apiv1.Pod,
 	}
 
 	// attempt delete from cloud provider
+
+	if err := deletetaint.MarkBeingDeleted(node, sd.context.ClientSet); err != nil {
+		sd.context.Recorder.Eventf(node, apiv1.EventTypeWarning, "ScaleDownFailed", "failed to mark the node as beingDeleted/unschedulable: %v", err)
+		return status.NodeDeleteResult{ResultType: status.NodeDeleteErrorFailedToMarkToBeDeleted, Err: errors.ToAutoscalerError(errors.ApiCallError, err)}
+	}
 
 	if typedErr := deleteNodeFromCloudProvider(node, sd.context.CloudProvider, sd.context.Recorder, sd.clusterStateRegistry); typedErr != nil {
 		return status.NodeDeleteResult{ResultType: status.NodeDeleteErrorFailedToDelete, Err: typedErr}

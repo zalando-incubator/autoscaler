@@ -23,8 +23,16 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 )
 
+const (
+	nodeNotReadyZalandoTaint = "zalando.org/node-not-ready"
+)
+
 // IsNodeReadyAndSchedulable returns true if the node is ready and schedulable.
 func IsNodeReadyAndSchedulable(node *apiv1.Node) bool {
+	if hasTaint(node, nodeNotReadyZalandoTaint) {
+		return false
+	}
+
 	ready, _, _ := GetReadinessState(node)
 	if !ready {
 		return false
@@ -89,4 +97,14 @@ func GetUnreadyNodeCopy(node *apiv1.Node) *apiv1.Node {
 	}
 	newNode.Status.Conditions = newNodeConditions
 	return newNode
+}
+
+// hasTaint returns true if the node has the taint.
+func hasTaint(node *apiv1.Node, taintName string) bool {
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == taintName {
+			return true
+		}
+	}
+	return false
 }

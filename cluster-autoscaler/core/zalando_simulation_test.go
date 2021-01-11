@@ -558,3 +558,36 @@ func TestDeleteTaintScaleUpDeleting(t *testing.T) {
 			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1})
 	})
 }
+
+func TestNodeNotReadyCustomTaint(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("1"), resource.MustParse("8Gi"), nil)
+
+		// Add an existing instance
+		env.AddInstance("ng-1", "i-1", true).AddNode("i-1", true).
+			StepOnce()
+
+		// Mark the instance "not-ready" via the `zalando.org/node-not-ready` taint
+		node, err := env.client.CoreV1().Nodes().Get(context.Background(), "i-1", metav1.GetOptions{})
+		require.NoError(t, err)
+
+		node.Spec.Taints = append(node.Spec.Taints, corev1.Taint{
+			Key:    "zalando.org/node-not-ready",
+			Effect: corev1.TaintEffectNoSchedule,
+		})
+
+		_, err = env.client.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
+		require.NoError(t, err)
+		env.StepOnce()
+
+		// Add a pod, this should not trigger scale-up right away as the node could become ready.
+		env.AddPod(NewTestPod("foo", resource.MustParse("1"), resource.MustParse("4Gi"))).
+			StepOnce().ExpectNoCommands()
+
+		// When the node is not ready for 10 minutes we expect a scaleup of another node.
+		env.StepFor(10 * time.Minute).
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1})
+	})
+}

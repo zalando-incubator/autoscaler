@@ -33,5 +33,5 @@ pipeline:
       make build-in-docker
 
       IMAGE="${DOWNSTREAM}:${VERSION}"
-      docker build -t "${IMAGE}" .
+      docker build --build-arg BASEIMAGE=registry.opensource.zalan.do/library/alpine-3.12:latest -t "${IMAGE}" .
       docker push "${IMAGE}"

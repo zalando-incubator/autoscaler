@@ -29,10 +29,6 @@ const (
 
 // IsNodeReadyAndSchedulable returns true if the node is ready and schedulable.
 func IsNodeReadyAndSchedulable(node *apiv1.Node) bool {
-	if hasTaint(node, nodeNotReadyZalandoTaint) {
-		return false
-	}
-
 	ready, _, _ := GetReadinessState(node)
 	if !ready {
 		return false
@@ -77,6 +73,9 @@ func GetReadinessState(node *apiv1.Node) (isNodeReady bool, lastTransitionTime t
 	}
 	if !readyFound {
 		return false, time.Time{}, fmt.Errorf("readiness information not found")
+	}
+	if hasTaint(node, nodeNotReadyZalandoTaint) {
+		canNodeBeReady = false
 	}
 	return canNodeBeReady, lastTransitionTime, nil
 }

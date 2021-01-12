@@ -576,19 +576,15 @@ func TestNodeNotReadyCustomTaint(t *testing.T) {
 			AddNode("i-1", false)
 
 		//// Mark the instance "not-ready" via the `zalando.org/node-not-ready` taint
-		// TODO this doesn't work at the moment
-		//node, err := env.client.CoreV1().Nodes().Get(context.Background(), "i-1", metav1.GetOptions{})
-		//require.NoError(t, err)
-		//
-		//node.Spec.Taints = append(node.Spec.Taints, corev1.Taint{
-		//	Key:    "zalando.org/node-not-ready",
-		//	Effect: corev1.TaintEffectNoSchedule,
-		//})
+		node, err := env.client.CoreV1().Nodes().Get(context.Background(), "i-1", metav1.GetOptions{})
+		require.NoError(t, err)
 
-		//_, err = env.client.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
-		//require.NoError(t, err)
-		//env.StepOnce()
-
+		node.Spec.Taints = append(node.Spec.Taints, corev1.Taint{
+			Key:    "zalando.org/node-not-ready",
+			Effect: corev1.TaintEffectNoSchedule,
+		})
+		_, err = env.client.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
+		require.NoError(t, err)
 
 		// When the node is not ready for ~7 minutes we expect a scaleup of another node.
 		env.StepFor(opts.MaxNodeProvisionTime).

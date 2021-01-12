@@ -74,7 +74,7 @@ func GetReadinessState(node *apiv1.Node) (isNodeReady bool, lastTransitionTime t
 	if !readyFound {
 		return false, time.Time{}, fmt.Errorf("readiness information not found")
 	}
-	if hasTaint(node, nodeNotReadyZalandoTaint) {
+	if !IsNodeExtendedReady(node) {
 		canNodeBeReady = false
 	}
 	return canNodeBeReady, lastTransitionTime, nil
@@ -98,12 +98,12 @@ func GetUnreadyNodeCopy(node *apiv1.Node) *apiv1.Node {
 	return newNode
 }
 
-// hasTaint returns true if the node has the taint.
-func hasTaint(node *apiv1.Node, taintName string) bool {
+// IsNodeExtendedReady returns true if the node was marked ready by the node readiness controller
+func IsNodeExtendedReady(node *apiv1.Node) bool {
 	for _, taint := range node.Spec.Taints {
-		if taint.Key == taintName {
-			return true
+		if taint.Key == nodeNotReadyZalandoTaint {
+			return false
 		}
 	}
-	return false
+	return true
 }

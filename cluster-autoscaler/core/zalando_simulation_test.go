@@ -571,9 +571,9 @@ func TestNodeNotReadyCustomTaint(t *testing.T) {
 			StepOnce().
 			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-2", delta: 1})
 
-		// Add a non-ready node
+		// Add a ready node
 		env.AddInstance("ng-2", "i-1", false).
-			AddNode("i-1", false)
+			AddNode("i-1", true)
 
 		//// Mark the instance "not-ready" via the `zalando.org/node-not-ready` taint
 		node, err := env.client.CoreV1().Nodes().Get(context.Background(), "i-1", metav1.GetOptions{})

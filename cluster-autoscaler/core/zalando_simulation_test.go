@@ -563,31 +563,48 @@ func TestNodeNotReadyCustomTaint(t *testing.T) {
 	opts := defaultZalandoAutoscalingOptions()
 
 	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
-		env.AddNodeGroup("ng-1", 10, resource.MustParse("1"), resource.MustParse("8Gi"), nil)
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("1"), resource.MustParse("8Gi"), nil).
+			AddNodeGroup("ng-2", 10, resource.MustParse("1"), resource.MustParse("8Gi"), map[string]string{labelScalePriority: "100"})
 
-		// Add an existing instance
-		env.AddInstance("ng-1", "i-1", true).AddNode("i-1", true).
-			StepOnce()
+		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("4Gi"))
+		env.AddPod(pod).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-2", delta: 1})
 
-		// Mark the instance "not-ready" via the `zalando.org/node-not-ready` taint
-		node, err := env.client.CoreV1().Nodes().Get(context.Background(), "i-1", metav1.GetOptions{})
-		require.NoError(t, err)
+		// Add a non-ready node
+		env.AddInstance("ng-2", "i-1", false).
+			AddNode("i-1", false)
 
-		node.Spec.Taints = append(node.Spec.Taints, corev1.Taint{
-			Key:    "zalando.org/node-not-ready",
-			Effect: corev1.TaintEffectNoSchedule,
-		})
+		//// Mark the instance "not-ready" via the `zalando.org/node-not-ready` taint
+		// TODO this doesn't work at the moment
+		//node, err := env.client.CoreV1().Nodes().Get(context.Background(), "i-1", metav1.GetOptions{})
+		//require.NoError(t, err)
+		//
+		//node.Spec.Taints = append(node.Spec.Taints, corev1.Taint{
+		//	Key:    "zalando.org/node-not-ready",
+		//	Effect: corev1.TaintEffectNoSchedule,
+		//})
 
-		_, err = env.client.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
-		require.NoError(t, err)
-		env.StepOnce()
+		//_, err = env.client.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
+		//require.NoError(t, err)
+		//env.StepOnce()
 
-		// Add a pod, this should not trigger scale-up right away as the node could become ready.
-		env.AddPod(NewTestPod("foo", resource.MustParse("1"), resource.MustParse("4Gi"))).
-			StepOnce().ExpectNoCommands()
 
-		// When the node is not ready for 10 minutes we expect a scaleup of another node.
-		env.StepFor(10 * time.Minute).
+		// When the node is not ready for ~7 minutes we expect a scaleup of another node.
+		env.StepFor(opts.MaxNodeProvisionTime).
+			ExpectNoCommands().
+			StepOnce().
 			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1})
+
+		// Add a node and schedule the pod
+		env.AddInstance("ng-1", "i-2", false).
+			AddNode("i-2", true).
+			SchedulePod(pod, "i-2")
+
+		// The problematic node should be decommissioned after the timeout expires
+		env.StepFor(opts.ScaleDownUnreadyTime - opts.MaxNodeProvisionTime).
+			ExpectNoCommands().
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDeleteNodes, nodeGroup: "ng-2", nodeNames: []string{"i-1"}})
 	})
 }

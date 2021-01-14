@@ -558,3 +558,49 @@ func TestDeleteTaintScaleUpDeleting(t *testing.T) {
 			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1})
 	})
 }
+
+func TestNodeNotReadyCustomTaint(t *testing.T) {
+	opts := defaultZalandoAutoscalingOptions()
+
+	RunSimulation(t, opts, 10*time.Second, func(env *zalandoTestEnv) {
+		env.AddNodeGroup("ng-1", 10, resource.MustParse("1"), resource.MustParse("8Gi"), nil).
+			AddNodeGroup("ng-2", 10, resource.MustParse("1"), resource.MustParse("8Gi"), map[string]string{labelScalePriority: "100"})
+
+		pod := NewTestPod("foo", resource.MustParse("1"), resource.MustParse("4Gi"))
+		env.AddPod(pod).
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-2", delta: 1})
+
+		// Add a ready node
+		env.AddInstance("ng-2", "i-1", false).
+			AddNode("i-1", true)
+
+		// Mark the instance "not-ready" via the `zalando.org/node-not-ready` taint
+		node, err := env.client.CoreV1().Nodes().Get(context.Background(), "i-1", metav1.GetOptions{})
+		require.NoError(t, err)
+
+		node.Spec.Taints = append(node.Spec.Taints, corev1.Taint{
+			Key:    "zalando.org/node-not-ready",
+			Effect: corev1.TaintEffectNoSchedule,
+		})
+		_, err = env.client.CoreV1().Nodes().Update(context.Background(), node, metav1.UpdateOptions{})
+		require.NoError(t, err)
+
+		// When the node is not ready for ~7 minutes we expect a scaleup of another node.
+		env.StepFor(opts.MaxNodeProvisionTime).
+			ExpectNoCommands().
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandIncreaseSize, nodeGroup: "ng-1", delta: 1})
+
+		// Add a node and schedule the pod
+		env.AddInstance("ng-1", "i-2", false).
+			AddNode("i-2", true).
+			SchedulePod(pod, "i-2")
+
+		// The problematic node should be decommissioned after the timeout expires
+		env.StepFor(opts.ScaleDownUnreadyTime - opts.MaxNodeProvisionTime).
+			ExpectNoCommands().
+			StepOnce().
+			ExpectCommands(zalandoCloudProviderCommand{commandType: zalandoCloudProviderCommandDeleteNodes, nodeGroup: "ng-2", nodeNames: []string{"i-1"}})
+	})
+}

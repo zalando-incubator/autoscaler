@@ -23,6 +23,10 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 )
 
+const (
+	nodeNotReadyZalandoTaint = "zalando.org/node-not-ready"
+)
+
 // IsNodeReadyAndSchedulable returns true if the node is ready and schedulable.
 func IsNodeReadyAndSchedulable(node *apiv1.Node) bool {
 	ready, _, _ := GetReadinessState(node)
@@ -70,6 +74,9 @@ func GetReadinessState(node *apiv1.Node) (isNodeReady bool, lastTransitionTime t
 	if !readyFound {
 		return false, time.Time{}, fmt.Errorf("readiness information not found")
 	}
+	if !IsNodeExtendedReady(node) {
+		canNodeBeReady = false
+	}
 	return canNodeBeReady, lastTransitionTime, nil
 }
 
@@ -89,4 +96,14 @@ func GetUnreadyNodeCopy(node *apiv1.Node) *apiv1.Node {
 	}
 	newNode.Status.Conditions = newNodeConditions
 	return newNode
+}
+
+// IsNodeExtendedReady returns true if the node was marked ready by the node readiness controller
+func IsNodeExtendedReady(node *apiv1.Node) bool {
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == nodeNotReadyZalandoTaint {
+			return false
+		}
+	}
+	return true
 }

@@ -896,6 +896,9 @@ func isNodeStillStarting(node *apiv1.Node) bool {
 			return true
 		}
 	}
+	if !kube_util.IsNodeExtendedReady(node) {
+		return true
+	}
 	return false
 }
 

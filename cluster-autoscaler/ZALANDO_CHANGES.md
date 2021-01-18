@@ -158,11 +158,11 @@ the pending pods can be scheduled on the node that's currently being deleted, it
 increased duration of the scale-down attempts (see the above change), this effectively breaks scale-up for hours at a
 time. This was fixed in our fork.
 
-## Expander that prefers Spot node groups
+## Priority-based expander based on node labels
 
-The `prefer-spot` expander will always scale up a Spot node group if it's available. This requires the template
-nodes returned from this ASG to have the `aws.amazon.com/spot` label set to `true` for Spot ASGs and `false`
-(or unset) for On Demand ones. It falls back to the `random` expander afterwards.
+The `highest-priority` expander selects an expansion option based on the priorities assigned to a node group. Unlike
+the `priority` expander, it reads the scaling priority from the label of a template node, which makes it slightly easier
+to configure. For groups with the same priority value, it falls back to the `random` expander.
 
 ## Job pods are considered unmovable
 

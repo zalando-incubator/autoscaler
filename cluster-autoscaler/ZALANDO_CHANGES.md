@@ -68,8 +68,7 @@ do something like this:
  * Place `n2` in backoff (5 minutes), scale-up `n1` since it's now healthy again.
  * Wait for the timeout to trigger (10 minutes).
  * …
- * Scale-up `n4` once the backoff time for ther other groups is big enough. This can take hours in a cluster that
-   has a lot of node groups.
+ * Scale-up `n4` once the backoff time for the other groups is big enough. This can take a significant amount of time.
 
 Starting the backoff at a large value (~1 hour or more) mitigates this, but it can negatively impact clusters that have
 small amounts of node groups. A transient scale-up error that quickly disappears on the cloud provider side can prevent

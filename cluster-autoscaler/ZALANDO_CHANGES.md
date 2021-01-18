@@ -69,7 +69,49 @@ This is caused by the following issues, all of which are mitigated in the Zaland
 
 Additionally, the upstream version of the autoscaler always assumes that AWS nodes would have a `kube-proxy` pod
 consuming a static amount of CPU but no memory, which will slightly reduce the CPU available for the user pods.
-In the forked version, we've added a workaround that tries to undo this. 
+In the forked version, we've added a workaround that tries to undo this.
+
+## Allow scale-down to make progress in the presence of PDBs
+
+Scale-down of nodes that run user pods is performed in multiple steps. The node is first tainted with a `NoSchedule`
+taint, then the user pods are evicted, and afterwards it's terminated on the cloud provider side. In the upstream
+version, the draining process has a hardcoded timeout of 2 minutes. If the timeout expires, the scale-down attempt is
+considered unsuccessful, and the autoscaler reverts the changes made to the node.
+
+This can result in completely breaking scale-down if there are any applications that take long enough to start and at
+the same time use a PDB that heavily restricts the number of unavailable replicas. In this situation, the autoscaler
+would keep terminating the user pods without making any actual progress when scaling down. For example, let's say we
+have three nodes (`n1`, `n2` and `n3`), each of them runs 10 replicas of the `example` application that takes 30 seconds
+to start and become ready, and there's a PDB that only allows one replica to be unavailable. If all three nodes can be
+scaled down, the autoscaler would end up doing something like this:
+ * Select one of the nodes for scale-down (let's say `n1`).
+ * Add the decommissioning taint, start evicting pods one at a time.
+ * Successfully evict the first pod, then fail on the remaining ones for the next 30 seconds.
+ * Successfully evict the second and the third pods.
+ * Time out, untaint the node, mark the scale-down as failed.
+ * Do nothing until the failed scale-down timeout expires.
+ * Repeat the same process with any of the three nodes again. If it doesn't choose node `n1` again, evicted
+   pods will be moved back.
+
+In our version, the scale-down timeout is configurable, and we run with a much higher value by default. This doesn't
+solve the issue fully, but seems to be enough for the workloads we run. We've also added metrics to track how long it
+takes to scale-down, because the upstream metrics were not updated after the logic was made asynchronous and as a result
+don't work correctly.
+
+## Fix a bug in the NodeInfo.Clone() function that corrupts internal state
+
+The autoscaler relies on `NodeInfo.Clone()` in a couple of places. That function, unfortunately, is bugged and doesn't
+correctly clone a lot of the internal state. The most glaring example is the underlying Node object, where it just
+copies the pointer instead of doing a DeepCopy. This obviously causes issues for code that patches the copied node
+afterwards, like the function that creates template nodes, which completely breaks scale-up logic in the presence of
+unregistered nodes.
+
+## Ensure that scale-up works correctly during scale-down
+
+The autoscaler erroneously considers the nodes that are currently being scaled down as upcoming ones. This means that if
+the pending pods can be scheduled on the node that's currently being deleted, it would not trigger a scale-up. With the
+increased duration of the scale-down attempts (see the above change), this effectively breaks scale-up for hours at a
+time. This was fixed in our fork.
 
 ## Expander that prefers Spot node groups
 
@@ -85,6 +127,14 @@ nodes returned from this ASG to have the `aws.amazon.com/spot` label set to `tru
 The upstream version treats Job pods as replicated ones, which means can be terminated and moved to other nodes. For
 long-running jobs, this can result in major delays in completion (if they would complete at all) and lots of wasted
 duplicate work. As a result, our fork treats Job pods as unmovable.
+
+## An attempt at improving the performance of the TopologySpreadConstraint predicate
+
+One of the main goals of our update from 1.12 to 1.18 was the support for the `TopologySpreadConstraint` predicate.
+After the initial tests showed major performance issues, we've tried to add some band-aids to the scale-up logic to
+optimise it, but in the end we've had to roll back and disable the predicate completely. Unfortunately, the design of
+both the scheduler framework and the code that uses it is deeply flawed, with some functions scaling quadratically (or
+even higher) with the number of pods, making it completely unusable in medium-sized clusters.   
 
 ## Backoff settings are customisable
 

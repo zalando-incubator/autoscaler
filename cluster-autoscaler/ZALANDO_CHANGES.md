@@ -164,9 +164,6 @@ The `prefer-spot` expander will always scale up a Spot node group if it's availa
 nodes returned from this ASG to have the `aws.amazon.com/spot` label set to `true` for Spot ASGs and `false`
 (or unset) for On Demand ones. It falls back to the `random` expander afterwards.
 
-[autoscaling groups with multiple instance types]: https://aws.amazon.com/blogs/aws/new-ec2-auto-scaling-groups-with-multiple-instance-types-purchase-options/
-[correctly detect]: https://github.com/kubernetes/autoscaler/issues/1133
-
 ## Job pods are considered unmovable
 
 The upstream version treats Job pods as replicated ones, which means can be terminated and moved to other nodes. For
@@ -181,4 +178,6 @@ optimise it, but in the end we've had to roll back and disable the predicate com
 both the scheduler framework and the code that uses it is deeply flawed, with some functions scaling quadratically (or
 even higher) with the number of pods, making it completely unusable in medium-sized clusters.   
 
+[autoscaling groups with multiple instance types]: https://aws.amazon.com/blogs/aws/new-ec2-auto-scaling-groups-with-multiple-instance-types-purchase-options/
+[correctly detect]: https://github.com/kubernetes/autoscaler/issues/1133
 [zalando_simulation_test.go]: https://github.com/zalando-incubator/autoscaler/blob/zalando-cluster-autoscaler/cluster-autoscaler/core/zalando_simulation_test.go

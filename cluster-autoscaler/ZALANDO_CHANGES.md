@@ -49,6 +49,38 @@ will be treated as if the instances had 7.5Gi memory and 2 vCPUs.
 Using autoscaling groups with multiple instance types without the `--scale-up-cloud-provider-template` option
 is unsupported and will likely not work correctly.
 
+## More reliable backoff logic
+
+We often run into issues with instance availability for particular node group in our clusters. Because the AWS cloud
+provider doesn't support properly reporting scale-up errors, we have to rely on the scale-up timeout logic to recognise
+these issues and trigger a fallback. When the upstream version detects a scale-up timeout, it marks the node group as
+failed (with an exponential backoff starting at 5 minutes and a maximum of 30 minutes) and resets the scale-up
+on the cloud provider side.
+
+This logic, however, is rather problematic in clusters where a significant number of node groups could be affected at
+the same time. Let's say we have 4 node groups, `n1` to `n4`, a scale-up timeout of 7 minutes (which might be hard to
+reduce further), and node groups `n1` to `n3` have run out of instances. The upstream version of the autoscaler will
+do something like this:
+ * Scale-up node group `n1`.
+ * Wait for the timeout to trigger (~7 minutes). 
+ * Place `n1` in backoff (5 minutes), scale-up `n2`.
+ * Wait for the timeout to trigger. During this time the backoff on `n1` will expire, making it healthy again.
+ * Place `n2` in backoff (5 minutes), scale-up `n1` since it's now healthy again.
+ * Wait for the timeout to trigger (10 minutes).
+ * …
+ * Scale-up `n4` once the backoff time for ther other groups is big enough. This can take hours in a cluster that
+   has a lot of node groups.
+
+Starting the backoff at a large value (~1 hour or more) mitigates this, but it can negatively impact clusters that have
+small amounts of node groups. A transient scale-up error that quickly disappears on the cloud provider side can prevent
+scale-up for an hour or more.
+
+In our fork, when a scale-up timeout occurs, the autoscaler places the node group in the backoff state (which doesn't
+expire) and resets the size on the cloud provider side to the current capacity plus one. The node group is not
+considered in future scale-up attempts, and the backoff is cleared only when the requested instance joins the cluster.
+The autoscaler also exposes the current state of the node groups in its metrics, allowing the operators to monitor the
+backoffs.
+
 ## Improved handling of template nodes
 
 When the autoscaler generates a template node from the cloud provider configuration, it miscalculates how many
@@ -135,12 +167,3 @@ After the initial tests showed major performance issues, we've tried to add some
 optimise it, but in the end we've had to roll back and disable the predicate completely. Unfortunately, the design of
 both the scheduler framework and the code that uses it is deeply flawed, with some functions scaling quadratically (or
 even higher) with the number of pods, making it completely unusable in medium-sized clusters.   
-
-## Backoff settings are customisable
-
-Upstream version of the autoscaler uses hardcoded settings for managing node backoff. Unfortunately, the current
-settings for the backoff can cause serious issues when some node pools cannot provision new instances (for
-example because of quota or availability issues). Since the starting value for the backoff is just 5 minutes, and
-the autoscaler relies on `--max-node-provision-time` (default of `15m`) to detect a broken pool, the autoscaler will
-spend hours jumping between multiple broken node pools instead of trying them all once and proceeding to use a
-working one.   

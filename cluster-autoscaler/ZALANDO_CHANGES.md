@@ -13,9 +13,9 @@ names of the nodes. This causes a number of issues:
  * If a pod doesn't fit, changing the instance type will not do anything since the autoscaler will 
    continue using the capacity information from existing nodes. Manually starting a node
    will only help if the new node's name sorts before the other nodes.
- * If node labels or taints are changed, and some of the pods in the cluster use node selectors or
-   affinities, it's possible that the autoscaler will not scale up because the template will pick up 
-   the labels or taints from the wrong node.
+ * If node labels or taints are changed, and some pods in the cluster use node selectors or affinities, it's
+   possible that the autoscaler will not scale up because the template will pick up the labels or taints from
+   the wrong node.
 
 The changes made in the Zalando fork make the scaling logic a lot more predictable. If the
 `--scale-up-cloud-provider-template` option is set, the autoscaler will always use the template constructed
@@ -51,12 +51,12 @@ is unsupported and will likely not work correctly.
 
 ## Improved handling of template nodes
 
-When the autoscaler generates a template node from the cloud provider configuration, it miscalculates how much
-resources the node will actually have available. In normal setup this doesn't cause significant issues, other
-than spurious scale-ups by 1 node followed by scale-downs, but it becomes a lot worse if the existing nodes
-are ignored. For example, this might cause the autoscaler to think that a node would be able to fit a pod, scale up,
-find out that the pod still doesn't fit, and then repeat until the maximum size of the node group is reached. The
-unused nodes will be removed after some time, but it still causes significant churn in the cluster.
+When the autoscaler generates a template node from the cloud provider configuration, it miscalculates how many
+resources the node will actually have available. Normally this doesn't cause significant issues, other than spurious
+scale-ups by 1 node followed by scale-downs, but it becomes worse if the existing nodes are ignored. For example,
+this might cause the autoscaler to think that a node would be able to fit a pod, scale up, find out that the pod still
+doesn't fit, and then repeat until the maximum size of the node group is reached. The unused nodes will be removed after
+some time, but it still causes significant churn in the cluster.
 
 This is caused by the following issues, all of which are mitigated in the Zalando fork:
 
@@ -83,7 +83,7 @@ nodes returned from this ASG to have the `aws.amazon.com/spot` label set to `tru
 ## Backoff settings are customisable
 
 Upstream version of the autoscaler uses hardcoded settings for managing node backoff. Unfortunately, the current
-settings for the backoff can cause serious issues when some of the node pools cannot provision new instances (for
+settings for the backoff can cause serious issues when some node pools cannot provision new instances (for
 example because of quota or availability issues). Since the starting value for the backoff is just 5 minutes, and
 the autoscaler relies on `--max-node-provision-time` (default of `15m`) to detect a broken pool, the autoscaler will
 spend hours jumping between multiple broken node pools instead of trying them all once and proceeding to use a

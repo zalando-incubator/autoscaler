@@ -130,6 +130,19 @@ solve the issue fully, but seems to be enough for the workloads we run. We've al
 takes to scale-down, because the upstream metrics were not updated after the logic was made asynchronous and as a result
 don't work correctly.
 
+## Tooling to simulate the autoscaler behaviour
+
+The existing logic of the autoscaler is spread around many internal subsystems, and we've found it very hard to predict
+how a particular sequence of events will affect the scaling. The existing test coverage is not very helpful because
+most of the tests target individual units, use test-only dependencies that don't behave exactly the same as the real
+ones, and the amount of boilerplate needed to set up the initial state and modify it afterwards is enormous. We've
+written a mock cloud provider and a set of helpers that allows us to write very high-level simulations of how the
+autoscaler would behave in particular circumstances. The examples are available in [zalando_simulation_test.go].
+
+This tooling does not cover everything, because at some point a lot of the autoscaler logic was rewritten to spawn
+goroutines which makes it very hard to test, but even the existing coverage has allowed us to quickly identify the
+issues with the scale-up logic and ensure that further changes would not break our mitigations.
+
 ## Fix a bug in the NodeInfo.Clone() function that corrupts internal state
 
 The autoscaler relies on `NodeInfo.Clone()` in a couple of places. That function, unfortunately, is bugged and doesn't
@@ -167,3 +180,5 @@ After the initial tests showed major performance issues, we've tried to add some
 optimise it, but in the end we've had to roll back and disable the predicate completely. Unfortunately, the design of
 both the scheduler framework and the code that uses it is deeply flawed, with some functions scaling quadratically (or
 even higher) with the number of pods, making it completely unusable in medium-sized clusters.   
+
+[zalando_simulation_test.go]: https://github.com/zalando-incubator/autoscaler/blob/zalando-cluster-autoscaler/cluster-autoscaler/core/zalando_simulation_test.go

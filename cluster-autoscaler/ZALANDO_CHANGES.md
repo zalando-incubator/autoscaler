@@ -80,6 +80,12 @@ nodes returned from this ASG to have the `aws.amazon.com/spot` label set to `tru
 [autoscaling groups with multiple instance types]: https://aws.amazon.com/blogs/aws/new-ec2-auto-scaling-groups-with-multiple-instance-types-purchase-options/
 [correctly detect]: https://github.com/kubernetes/autoscaler/issues/1133
 
+## Job pods are considered unmovable
+
+The upstream version treats Job pods as replicated ones, which means can be terminated and moved to other nodes. For
+long-running jobs, this can result in major delays in completion (if they would complete at all) and lots of wasted
+duplicate work. As a result, our fork treats Job pods as unmovable.
+
 ## Backoff settings are customisable
 
 Upstream version of the autoscaler uses hardcoded settings for managing node backoff. Unfortunately, the current

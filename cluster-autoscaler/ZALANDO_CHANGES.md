@@ -143,6 +143,12 @@ This tooling does not cover everything, because at some point a lot of the autos
 goroutines which makes it very hard to test, but even the existing coverage has allowed us to quickly identify the
 issues with the scale-up logic and ensure that further changes would not break our mitigations.
 
+## Extended node readiness
+
+The autoscaler treats the nodes with a predefined taint as not ready. This allows us to perform additional checks during
+node startup without having to modify `kubelet` and other components. Additionally, we can rely on the already existing
+logic in the autoscaler to automatically terminate nodes that fail to pass these checks after a timeout.
+
 ## Fix a bug in the NodeInfo.Clone() function that corrupts internal state
 
 The autoscaler relies on `NodeInfo.Clone()` in a couple of places. That function, unfortunately, is bugged and doesn't

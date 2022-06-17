@@ -10,6 +10,7 @@ pipeline:
   env:
     VERSION: "v1.18.2-internal"
     DOWNSTREAM: "registry-write.opensource.zalan.do/teapot/kube-cluster-autoscaler"
+    TARGET_NAME: "container-registry-test.zalando.net/teapot/kube-cluster-autoscaler"
   commands:
   - desc: "Installing dependencies"
     cmd: |
@@ -22,6 +23,10 @@ pipeline:
     cmd: |
       rm .zappr.yaml
       hack/verify-all.sh -v
+  - desc: "Run the test suite"
+    cmd: |
+      cd cluster-autoscaler
+      make test-in-docker
   - desc: "Build and release"
     cmd: |
       if [[ "${CDP_TARGET_BRANCH}" != "zalando-cluster-autoscaler" || -n "${CDP_PULL_REQUEST_NUMBER}" ]]; then
@@ -31,9 +36,26 @@ pipeline:
       fi
 
       cd cluster-autoscaler
-      make test-in-docker
       make build-in-docker
 
       IMAGE="${DOWNSTREAM}:${VERSION}"
-      docker build --build-arg BASEIMAGE=registry.opensource.zalan.do/library/alpine-3.12:latest -t "${IMAGE}" .
+      docker build --build-arg BASEIMAGE=container-registry.zalando.net/library/alpine-3.13:latest --build-arg TARGETARCH= -t "${IMAGE}" .
       docker push "${IMAGE}"
+  - desc: "Build and release (multi-arch)"
+    cmd: |
+      if [[ "${CDP_TARGET_BRANCH}" != "zalando-cluster-autoscaler" || -n "${CDP_PULL_REQUEST_NUMBER}" ]]; then
+        VERSION="${VERSION}.dev-${CDP_TARGET_REPOSITORY_COUNTER}"
+      else
+        VERSION="${VERSION}.${CDP_TARGET_BRANCH_COUNTER}"
+      fi
+      IMAGE="${TARGET_NAME}:${VERSION}"
+
+      cd cluster-autoscaler && mkdir -p build/amd64 build/arm64
+      GOARCH=amd64 make build-in-docker && mv cluster-autoscaler build/amd64
+      GOARCH=arm64 make build-in-docker && mv cluster-autoscaler build/arm64
+
+      docker buildx create --config /etc/cdp-buildkitd.toml --driver-opt network=host --bootstrap --use
+      docker buildx build --rm -t "${IMAGE}" --platform linux/amd64,linux/arm64 --push \
+        --build-arg BUILD_FOLDER=build --build-arg BASEIMAGE=container-registry.zalando.net/library/alpine-3.13:latest .
+
+      cdp-promote-image "${IMAGE}"

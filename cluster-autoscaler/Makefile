@@ -5,6 +5,7 @@ FLAGS=
 LDFLAGS?=-s
 ENVVAR=CGO_ENABLED=0 GO111MODULE=off
 GOOS?=linux
+GOARCH?=amd64
 REGISTRY?=staging-k8s.gcr.io
 ifdef BUILD_TAGS
   TAGS_FLAG=--tags ${BUILD_TAGS}
@@ -26,7 +27,7 @@ build: clean deps
 	$(ENVVAR) GOOS=$(GOOS) go build -o cluster-autoscaler ${LDFLAGS_FLAG} ${TAGS_FLAG}
 
 build-binary: clean deps
-	$(ENVVAR) GOOS=$(GOOS) go build -o cluster-autoscaler ${LDFLAGS_FLAG} ${TAGS_FLAG}
+	$(ENVVAR) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o cluster-autoscaler ${LDFLAGS_FLAG} ${TAGS_FLAG}
 
 test-unit: clean deps build
 	GO111MODULE=off go test --test.short -race ./... ${TAGS_FLAG}
@@ -61,7 +62,7 @@ docker-builder:
 	docker build -t autoscaling-builder ../builder
 
 build-in-docker: clean docker-builder
-	docker run -v `pwd`:/gopath/src/k8s.io/autoscaler/cluster-autoscaler/ autoscaling-builder:latest bash -c 'cd /gopath/src/k8s.io/autoscaler/cluster-autoscaler && BUILD_TAGS=${BUILD_TAGS} LDFLAGS="${LDFLAGS}" make build-binary'
+	docker run -v `pwd`:/gopath/src/k8s.io/autoscaler/cluster-autoscaler/ autoscaling-builder:latest bash -c 'cd /gopath/src/k8s.io/autoscaler/cluster-autoscaler && BUILD_TAGS=${BUILD_TAGS} LDFLAGS="${LDFLAGS}" GOARCH="${GOARCH}" make build-binary'
 
 release: build-in-docker execute-release
 	@echo "Full in-docker release ${TAG}${FOR_PROVIDER} completed"

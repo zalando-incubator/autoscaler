@@ -15,5 +15,7 @@ ARG BASEIMAGE=gcr.io/distroless/static:latest
 FROM $BASEIMAGE
 LABEL maintainer="Marcin Wielgus <mwielgus@google.com>"
 
-COPY cluster-autoscaler /
+ARG BUILD_FOLDER=.
+ARG TARGETARCH
+COPY ${BUILD_FOLDER}/${TARGETARCH}/cluster-autoscaler /
 CMD ["/cluster-autoscaler"]

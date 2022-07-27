@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM k8s.gcr.io/debian-base-amd64:1.0.0
+FROM k8s.gcr.io/debian-base:1.0.0
 MAINTAINER Tomasz Kulczynski "tkulczynski@google.com"
 
-ADD admission-controller admission-controller
+ARG TARGETARCH
+
+ADD build/${TARGETARCH}/admission-controller admission-controller
 
 ENTRYPOINT ./admission-controller --v=4 --stderrthreshold=info

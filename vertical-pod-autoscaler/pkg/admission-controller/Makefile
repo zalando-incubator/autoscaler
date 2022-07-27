@@ -2,6 +2,7 @@ all: build
 
 TAG?=dev
 REGISTRY?=staging-k8s.gcr.io
+INTERNAL_REGISTRY?=
 FLAGS=
 ENVVAR=
 GOOS?=linux
@@ -16,7 +17,8 @@ build: clean deps
 	$(ENVVAR) GOOS=$(GOOS) godep go build -o ${COMPONENT}
 
 build-binary: clean deps
-	$(ENVVAR) GOOS=$(GOOS) godep go build -o ${COMPONENT}
+	$(ENVVAR) GOOS=$(GOOS) GOARCH=amd64 godep go build -o build/amd64/${COMPONENT}
+	$(ENVVAR) GOOS=$(GOOS) GOARCH=arm64 godep go build -o build/arm64/${COMPONENT}
 
 test-unit: clean deps build
 	$(ENVVAR) godep go test --test.short -race ./... $(FLAGS)
@@ -30,7 +32,20 @@ ifndef TAG
 	ERR = $(error TAG is undefined)
 	$(ERR)
 endif
-	docker build --pull -t ${REGISTRY}/${FULL_COMPONENT}:${TAG} .
+	docker build --pull -t ${REGISTRY}/${FULL_COMPONENT}:${TAG} --build-arg TARGETARCH= .
+
+docker-build-and-publish-multiarch:
+ifndef INTERNAL_REGISTRY
+	ERR = $(error INTERNAL_REGISTRY is undefined)
+	$(ERR)
+endif
+ifndef TAG
+	ERR = $(error TAG is undefined)
+	$(ERR)
+endif
+	docker buildx create --config /etc/cdp-buildkitd.toml --driver-opt network=host --bootstrap --use
+	docker buildx build --rm -t ${INTERNAL_REGISTRY}/${FULL_COMPONENT}:${TAG} --platform linux/amd64,linux/arm64 --push .
+	cdp-promote-image ${INTERNAL_REGISTRY}/${FULL_COMPONENT}:${TAG}
 
 docker-push:
 ifndef REGISTRY
@@ -49,7 +64,7 @@ docker-builder:
 build-in-docker: clean docker-builder
 	docker run -v `pwd`/../..:/gopath/src/k8s.io/autoscaler/vertical-pod-autoscaler vpa-autoscaling-builder:latest bash -c 'cd /gopath/src/k8s.io/autoscaler/vertical-pod-autoscaler && make build-binary -C pkg/admission-controller'
 
-release: build-in-docker docker-build docker-push
+release: build-in-docker docker-build docker-build-and-publish-multiarch docker-push
 	@echo "Full in-docker release ${FULL_COMPONENT}:${TAG} completed"
 
 clean:

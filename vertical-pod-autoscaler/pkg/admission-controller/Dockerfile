@@ -15,7 +15,7 @@
 FROM k8s.gcr.io/debian-base:1.0.0
 MAINTAINER Tomasz Kulczynski "tkulczynski@google.com"
 
-ARG TARGETARCH
+ARG TARGETARCH=amd64
 
 ADD build/${TARGETARCH}/admission-controller admission-controller
 

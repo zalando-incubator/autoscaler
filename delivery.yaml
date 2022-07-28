@@ -31,6 +31,7 @@ pipeline:
       fi
 
       export REGISTRY=registry-write.opensource.zalan.do/teapot
+      export INTERNAL_REGISTRY=container-registry-test.zalando.net/teapot
 
       for f in admission-controller recommender updater; do
         (

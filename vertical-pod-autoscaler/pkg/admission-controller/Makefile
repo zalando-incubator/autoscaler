@@ -32,7 +32,7 @@ ifndef TAG
 	ERR = $(error TAG is undefined)
 	$(ERR)
 endif
-	docker build --pull -t ${REGISTRY}/${FULL_COMPONENT}:${TAG} --build-arg TARGETARCH= .
+	docker build --pull -t ${REGISTRY}/${FULL_COMPONENT}:${TAG} .
 
 docker-build-and-publish-multiarch:
 ifndef INTERNAL_REGISTRY
@@ -43,7 +43,7 @@ ifndef TAG
 	ERR = $(error TAG is undefined)
 	$(ERR)
 endif
-	docker buildx create --config /etc/cdp-buildkitd.toml --driver-opt network=host --bootstrap --use
+	docker buildx create --config /etc/cdp-buildkitd.toml --driver-opt network=host --use
 	docker buildx build --rm -t ${INTERNAL_REGISTRY}/${FULL_COMPONENT}:${TAG} --platform linux/amd64,linux/arm64 --push .
 	cdp-promote-image ${INTERNAL_REGISTRY}/${FULL_COMPONENT}:${TAG}
 

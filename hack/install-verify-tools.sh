@@ -20,7 +20,7 @@ set -o pipefail
 
 KUBE_ROOT=$(dirname "${BASH_SOURCE}")/..
 
-go get -u golang.org/x/lint/golint
+#go get -u golang.org/x/lint/golint
 
 go get -u github.com/tools/godep
 

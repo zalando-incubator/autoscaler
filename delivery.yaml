@@ -13,8 +13,6 @@ pipeline:
         cmd: |
           apt-get update
           apt-get install libseccomp-dev -qq
-          go get -u github.com/tools/godep
-          go get -u github.com/client9/misspell/cmd/misspell
           hack/install-verify-tools.sh
           go version
           export PATH=$GOPATH/bin:$PATH
@@ -57,6 +55,8 @@ pipeline:
             (
               cd vertical-pod-autoscaler/pkg/$f
               make test-unit
+              ls -al /usr/local/share/ca-certificates/cdp/cdp-proxy.crt  
+              cat /usr/local/share/ca-certificates/cdp/cdp-proxy.crt
               make release
             )
           done

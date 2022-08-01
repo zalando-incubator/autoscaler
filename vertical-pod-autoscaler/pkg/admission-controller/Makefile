@@ -2,7 +2,6 @@ all: build
 
 TAG?=dev
 REGISTRY?=staging-k8s.gcr.io
-INTERNAL_REGISTRY?=
 FLAGS=
 ENVVAR=
 GOOS?=linux
@@ -34,19 +33,6 @@ ifndef TAG
 endif
 	docker build --pull -t ${REGISTRY}/${FULL_COMPONENT}:${TAG} .
 
-docker-build-and-publish-multiarch:
-ifndef INTERNAL_REGISTRY
-	ERR = $(error INTERNAL_REGISTRY is undefined)
-	$(ERR)
-endif
-ifndef TAG
-	ERR = $(error TAG is undefined)
-	$(ERR)
-endif
-	docker buildx create --config /etc/cdp-buildkitd.toml --driver-opt network=host --use
-	docker buildx build --rm -t ${INTERNAL_REGISTRY}/${FULL_COMPONENT}:${TAG} --platform linux/amd64,linux/arm64 --push .
-	cdp-promote-image ${INTERNAL_REGISTRY}/${FULL_COMPONENT}:${TAG}
-
 docker-push:
 ifndef REGISTRY
 	ERR = $(error REGISTRY is undefined)
@@ -64,7 +50,7 @@ docker-builder:
 build-in-docker: clean docker-builder
 	docker run -v `pwd`/../..:/gopath/src/k8s.io/autoscaler/vertical-pod-autoscaler vpa-autoscaling-builder:latest bash -c 'cd /gopath/src/k8s.io/autoscaler/vertical-pod-autoscaler && make build-binary -C pkg/admission-controller'
 
-release: build-in-docker docker-build docker-build-and-publish-multiarch docker-push
+release: build-in-docker docker-build docker-push
 	@echo "Full in-docker release ${FULL_COMPONENT}:${TAG} completed"
 
 clean:

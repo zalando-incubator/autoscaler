@@ -16,7 +16,8 @@ build: clean deps
 	$(ENVVAR) GOOS=$(GOOS) godep go build -o ${COMPONENT}
 
 build-binary: clean deps
-	$(ENVVAR) GOOS=$(GOOS) godep go build -o ${COMPONENT}
+	$(ENVVAR) GOOS=$(GOOS) GOARCH=amd64 godep go build -o build/amd64/${COMPONENT}
+	$(ENVVAR) GOOS=$(GOOS) GOARCH=arm64 godep go build -o build/arm64/${COMPONENT}
 
 test-unit: clean deps build
 	$(ENVVAR) godep go test --test.short -race ./... $(FLAGS)

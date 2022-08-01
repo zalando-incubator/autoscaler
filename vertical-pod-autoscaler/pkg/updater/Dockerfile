@@ -13,9 +13,10 @@
 # limitations under the License.
 
 
-FROM k8s.gcr.io/debian-base-amd64:1.0.0
+FROM k8s.gcr.io/debian-base:1.0.0
 MAINTAINER Marcin Wielgus "mwielgus@google.com"
 
-ADD updater updater
+ARG TARGETARCH=amd64
+ADD build/${TARGETARCH}/updater updater
 
 ENTRYPOINT ./updater --v=4 --stderrthreshold=info

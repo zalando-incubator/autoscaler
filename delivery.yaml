@@ -1,10 +1,12 @@
 version: "2017-09-20"
 pipeline:
   - id: build
-    overlay: ci/golang-1-11
     type: script
+    vm_config:
+      type: linux
+      size: large
+      image: cdp-runtime/base
     working_dir: /go/src/k8s.io/autoscaler
-    vm: large
     env:
       VERSION: "v0.6.1-internal"
       DOWNSTREAM: "registry-write.opensource.zalan.do/teapot/kube-cluster-autoscaler"
@@ -12,33 +14,23 @@ pipeline:
       - desc: "Installing dependencies"
         cmd: |
           apt-get update
-          apt-get install libseccomp-dev -qq
-          hack/install-verify-tools.sh
-          go version
-          export PATH=$GOPATH/bin:$PATH
-          tee /etc/cdp-buildkitd.toml <<END
-          # allow using --network=host with docker buildx
-          insecure-entitlements = [ "network.host" ]
-          
-          # make CDP Proxy's certificate work with Buildkit (this will only work for the listed domains)
-          [registry."pierone.stups.zalan.do"]
-            ca=["/usr/local/share/ca-certificates/cdp/cdp-proxy.crt"]
-          
-          [registry."registry.opensource.zalan.do"]
-            ca=["/usr/local/share/ca-certificates/cdp/cdp-proxy.crt"]
-          
-          [registry."registry-write.opensource.zalan.do"]
-            ca=["/usr/local/share/ca-certificates/cdp/cdp-proxy.crt"]
-          
-          [registry."container-registry.zalando.net"]
-            ca=["/usr/local/share/ca-certificates/cdp/cdp-proxy.crt"]
-          
-          [registry."container-registry-test.zalando.net"]
-            ca=["/usr/local/share/ca-certificates/cdp/cdp-proxy.crt"]
+          apt-get install libseccomp-dev python -qq
+
+          curl https://dl.google.com/go/go1.11.13.linux-amd64.tar.gz -o go1.11.13.linux-amd64.tar.gz
+          rm -rf /usr/local/go && tar -C /usr/local -xzf go1.11.13.linux-amd64.tar.gz
+          tee -a  ~/.profile << END
+          export GOROOT=/usr/local/go
+          export GOPATH=/go
+          export PATH=\$PATH:\$GOROOT/bin:\$GOPATH/bin 
           END
+          source ~/.profile
+          go version
+
+          hack/install-verify-tools.sh
       - desc: "Verify"
         cmd: |
           rm .zappr.yaml
+          export EXCLUDE=verify-golint.sh
           hack/verify-all.sh -v
       - desc: "Build and release"
         cmd: |
@@ -47,16 +39,16 @@ pipeline:
           else
             export TAG="${VERSION}.${CDP_TARGET_BRANCH_COUNTER}"
           fi
-          
+
           export REGISTRY=registry-write.opensource.zalan.do/teapot
-          export INTERNAL_REGISTRY=container-registry-test.zalando.net/teapot
           
-          for f in admission-controller recommender updater; do
+          for COMPONENT in admission-controller recommender updater; do
             (
-              cd vertical-pod-autoscaler/pkg/$f
+              cd vertical-pod-autoscaler/pkg/$COMPONENT
               make test-unit
-              ls -al /usr/local/share/ca-certificates/cdp/cdp-proxy.crt  
-              cat /usr/local/share/ca-certificates/cdp/cdp-proxy.crt
               make release
+              docker buildx create --config /etc/cdp-buildkitd.toml --driver-opt network=host --use
+              docker buildx build --rm -t container-registry-test.zalando.net/teapot/vpa-${COMPONENT}:${TAG} --platform linux/amd64,linux/arm64 --push .
+              cdp-promote-image container-registry-test.zalando.net/teapot}/vpa-${COMPONENT}:${TAG}
             )
           done

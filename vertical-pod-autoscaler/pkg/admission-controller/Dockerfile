@@ -16,7 +16,6 @@ FROM k8s.gcr.io/debian-base:1.0.0
 MAINTAINER Tomasz Kulczynski "tkulczynski@google.com"
 
 ARG TARGETARCH=amd64
-
 ADD build/${TARGETARCH}/admission-controller admission-controller
 
 ENTRYPOINT ./admission-controller --v=4 --stderrthreshold=info

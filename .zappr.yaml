@@ -7,17 +7,6 @@ approvals:
       from:
         orgs:
           - zalando
-    maintainers:
-      minimum: 2
-      from:
-        users:
-          - aermakov-zalando
-          - gargravarr
-          - jonathanbeber
-          - katyanna
-          - linki
-          - mikkeloscar
-          - demoncoder95
 
 X-Zalando-Team: teapot
 X-Zalando-Type: code

@@ -49,6 +49,6 @@ pipeline:
               make release
               docker buildx create --config /etc/cdp-buildkitd.toml --driver-opt network=host --use
               docker buildx build --rm -t container-registry-test.zalando.net/teapot/vpa-${COMPONENT}:${TAG} --platform linux/amd64,linux/arm64 --push .
-              cdp-promote-image container-registry-test.zalando.net/teapot}/vpa-${COMPONENT}:${TAG}
+              cdp-promote-image container-registry-test.zalando.net/teapot/vpa-${COMPONENT}:${TAG}
             )
           done

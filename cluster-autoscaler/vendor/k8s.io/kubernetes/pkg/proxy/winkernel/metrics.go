@@ -18,59 +18,22 @@ package winkernel
 
 import (
 	"sync"
-	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-)
-
-const kubeProxySubsystem = "kubeproxy"
-
-var (
-	SyncProxyRulesLatency = prometheus.NewHistogram(
-		prometheus.HistogramOpts{
-			Subsystem: kubeProxySubsystem,
-			Name:      "sync_proxy_rules_duration_seconds",
-			Help:      "SyncProxyRules latency in seconds",
-			Buckets:   prometheus.ExponentialBuckets(0.001, 2, 15),
-		},
-	)
-
-	DeprecatedSyncProxyRulesLatency = prometheus.NewHistogram(
-		prometheus.HistogramOpts{
-			Subsystem: kubeProxySubsystem,
-			Name:      "sync_proxy_rules_latency_microseconds",
-			Help:      "(Deprecated) SyncProxyRules latency in microseconds",
-			Buckets:   prometheus.ExponentialBuckets(1000, 2, 15),
-		},
-	)
-
-	// SyncProxyRulesLastTimestamp is the timestamp proxy rules were last
-	// successfully synced.
-	SyncProxyRulesLastTimestamp = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Subsystem: kubeProxySubsystem,
-			Name:      "sync_proxy_rules_last_timestamp_seconds",
-			Help:      "The last time proxy rules were successfully synced",
-		},
-	)
+	"k8s.io/component-base/metrics/legacyregistry"
+	"k8s.io/kubernetes/pkg/proxy/metrics"
 )
 
 var registerMetricsOnce sync.Once
 
+// RegisterMetrics registers kube-proxy metrics for Windows modes.
 func RegisterMetrics() {
 	registerMetricsOnce.Do(func() {
-		prometheus.MustRegister(SyncProxyRulesLatency)
-		prometheus.MustRegister(DeprecatedSyncProxyRulesLatency)
-		prometheus.MustRegister(SyncProxyRulesLastTimestamp)
+		legacyregistry.MustRegister(metrics.SyncProxyRulesLatency)
+		legacyregistry.MustRegister(metrics.SyncProxyRulesLastTimestamp)
+		legacyregistry.MustRegister(metrics.EndpointChangesPending)
+		legacyregistry.MustRegister(metrics.EndpointChangesTotal)
+		legacyregistry.MustRegister(metrics.ServiceChangesPending)
+		legacyregistry.MustRegister(metrics.ServiceChangesTotal)
+		legacyregistry.MustRegister(metrics.SyncProxyRulesLastQueuedTimestamp)
 	})
-}
-
-// Gets the time since the specified start in microseconds.
-func sinceInMicroseconds(start time.Time) float64 {
-	return float64(time.Since(start).Nanoseconds() / time.Microsecond.Nanoseconds())
-}
-
-// Gets the time since the specified start in seconds.
-func sinceInSeconds(start time.Time) float64 {
-	return time.Since(start).Seconds()
 }

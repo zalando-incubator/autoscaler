@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM k8s.gcr.io/debian-base:1.0.0
+FROM gcr.io/distroless/static:latest
 MAINTAINER Tomasz Kulczynski "tkulczynski@google.com"
+ARG ARCH
+copy admission-controller-$ARCH /admission-controller
 
-ARG TARGETARCH=amd64
-ADD build/${TARGETARCH}/admission-controller admission-controller
-
-ENTRYPOINT ./admission-controller --v=4 --stderrthreshold=info
+ENTRYPOINT ["/admission-controller"]
+CMD ["--v=4", "--stderrthreshold=info"]

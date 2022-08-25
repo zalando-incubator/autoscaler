@@ -27,14 +27,11 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
-	"k8s.io/klog"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	klog "k8s.io/klog/v2"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 const (
-	// ProviderNameGCE is the name of GCE cloud provider.
-	ProviderNameGCE = "gce"
-
 	// GPULabel is the label added to nodes with GPU resource.
 	GPULabel = "cloud.google.com/gke-accelerator"
 )
@@ -69,7 +66,7 @@ func (gce *GceCloudProvider) Cleanup() error {
 
 // Name returns name of the cloud provider.
 func (gce *GceCloudProvider) Name() string {
-	return ProviderNameGCE
+	return cloudprovider.GceProviderName
 }
 
 // GPULabel returns the label added to nodes with GPU resource.
@@ -96,6 +93,7 @@ func (gce *GceCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
 func (gce *GceCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovider.NodeGroup, error) {
 	ref, err := GceRefFromProviderId(node.Spec.ProviderID)
 	if err != nil {
+		klog.Errorf("Error extracting node.Spec.ProviderID for node %v: %v", node.Name, err)
 		return nil, err
 	}
 	mig, err := gce.gceManager.GetMigForInstance(ref)
@@ -104,7 +102,7 @@ func (gce *GceCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudprovider.N
 
 // Pricing returns pricing model for this cloud provider or error if not available.
 func (gce *GceCloudProvider) Pricing() (cloudprovider.PricingModel, errors.AutoscalerError) {
-	return &GcePriceModel{}, nil
+	return NewGcePriceModel(NewGcePriceInfo()), nil
 }
 
 // GetAvailableMachineTypes get all machine types that can be requested from the cloud provider.
@@ -158,6 +156,10 @@ func (ref GceRef) ToProviderId() string {
 // gce://<project-id>/<zone>/<name>
 // TODO(piosz): add better check whether the id is correct
 func GceRefFromProviderId(id string) (GceRef, error) {
+	if len(id) == 0 {
+		return GceRef{}, fmt.Errorf("wrong id: expected format gce://<project-id>/<zone>/<name>, got nil")
+	}
+
 	splitted := strings.Split(id[6:], "/")
 	if len(splitted) != 3 {
 		return GceRef{}, fmt.Errorf("wrong id: expected format gce://<project-id>/<zone>/<name>, got %v", id)
@@ -174,6 +176,7 @@ type Mig interface {
 	cloudprovider.NodeGroup
 
 	GceRef() GceRef
+	Version() string
 }
 
 type gceMig struct {
@@ -182,6 +185,11 @@ type gceMig struct {
 	gceManager GceManager
 	minSize    int
 	maxSize    int
+}
+
+// Version return the Mig version.
+func (mig *gceMig) Version() string {
+	return ""
 }
 
 // GceRef returns Mig's GceRef
@@ -218,7 +226,7 @@ func (mig *gceMig) IncreaseSize(delta int) error {
 	if int(size)+delta > mig.MaxSize() {
 		return fmt.Errorf("size increase too large - desired:%d max:%d", int(size)+delta, mig.MaxSize())
 	}
-	return mig.gceManager.SetMigSize(mig, size+int64(delta))
+	return mig.gceManager.CreateInstances(mig, int64(delta))
 }
 
 // DecreaseTargetSize decreases the target size of the node group. This function
@@ -325,13 +333,19 @@ func (mig *gceMig) Autoprovisioned() bool {
 	return false
 }
 
+// GetOptions returns NodeGroupAutoscalingOptions that should be used for this particular
+// NodeGroup. Returning a nil will result in using default options.
+func (mig *gceMig) GetOptions(defaults config.NodeGroupAutoscalingOptions) (*config.NodeGroupAutoscalingOptions, error) {
+	return mig.gceManager.GetMigOptions(mig, defaults), nil
+}
+
 // TemplateNodeInfo returns a node template for this node group.
-func (mig *gceMig) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (mig *gceMig) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	node, err := mig.gceManager.GetMigTemplateNode(mig)
 	if err != nil {
 		return nil, err
 	}
-	nodeInfo := schedulernodeinfo.NewNodeInfo(cloudprovider.BuildKubeProxy(mig.Id()))
+	nodeInfo := schedulerframework.NewNodeInfo(cloudprovider.BuildKubeProxy(mig.Id()))
 	nodeInfo.SetNode(node)
 	return nodeInfo, nil
 }
@@ -348,7 +362,7 @@ func BuildGCE(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscover
 		defer config.Close()
 	}
 
-	manager, err := CreateGceManager(config, do, opts.Regional)
+	manager, err := CreateGceManager(config, do, opts.Regional, opts.ConcurrentGceRefreshes, opts.UserAgent)
 	if err != nil {
 		klog.Fatalf("Failed to create GCE Manager: %v", err)
 	}

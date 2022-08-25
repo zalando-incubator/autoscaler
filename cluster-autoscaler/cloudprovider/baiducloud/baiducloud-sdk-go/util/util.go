@@ -34,7 +34,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -42,7 +42,7 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 // GetURL gets the full URL for a http request.
@@ -433,7 +433,7 @@ func TempFile(content []byte, dir, prefix string) (*os.File, error) {
 			return nil, err
 		}
 
-		dir = path.Join(home, "tmp")
+		dir = filepath.Join(home, "tmp")
 	}
 
 	if prefix == "" {

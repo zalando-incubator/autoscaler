@@ -22,9 +22,10 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	controllerfetcher "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input/controller_fetcher"
 	vpa_utils "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -46,9 +47,6 @@ type ClusterState struct {
 	// time we've noticed the recommendation missing or last time we logged
 	// a warning about it.
 	EmptyVPAs map[VpaID]time.Time
-	// VpasWithMatchingPods contains information if there exist live pods that
-	// this VPAs selector matches.
-	VpasWithMatchingPods map[VpaID]bool
 	// Observed VPAs. Used to check if there are updates needed.
 	ObservedVpas []*vpa_types.VerticalPodAutoscaler
 
@@ -57,6 +55,9 @@ type ClusterState struct {
 	// Map with all label sets used by the aggregations. It serves as a cache
 	// that allows to quickly access labels.Set corresponding to a labelSetKey.
 	labelSetMap labelSetMap
+
+	lastAggregateContainerStateGC time.Time
+	gcInterval                    time.Duration
 }
 
 // StateMapSize is the number of pods being tracked by the VPA
@@ -95,14 +96,15 @@ type PodState struct {
 }
 
 // NewClusterState returns a new ClusterState with no pods.
-func NewClusterState() *ClusterState {
+func NewClusterState(gcInterval time.Duration) *ClusterState {
 	return &ClusterState{
-		Pods:                 make(map[PodID]*PodState),
-		Vpas:                 make(map[VpaID]*Vpa),
-		EmptyVPAs:            make(map[VpaID]time.Time),
-		VpasWithMatchingPods: make(map[VpaID]bool),
-		aggregateStateMap:    make(aggregateContainerStatesMap),
-		labelSetMap:          make(labelSetMap),
+		Pods:                          make(map[PodID]*PodState),
+		Vpas:                          make(map[VpaID]*Vpa),
+		EmptyVPAs:                     make(map[VpaID]time.Time),
+		aggregateStateMap:             make(aggregateContainerStatesMap),
+		labelSetMap:                   make(labelSetMap),
+		lastAggregateContainerStateGC: time.Unix(0, 0),
+		gcInterval:                    gcInterval,
 	}
 }
 
@@ -124,7 +126,12 @@ func (cluster *ClusterState) AddOrUpdatePod(podID PodID, newLabels labels.Set, p
 		pod = newPod(podID)
 		cluster.Pods[podID] = pod
 	}
+
 	newlabelSetKey := cluster.getLabelSetKey(newLabels)
+	if podExists && pod.labelSetKey != newlabelSetKey {
+		// This Pod is already counted in the old VPA, remove the link.
+		cluster.removePodFromItsVpa(pod)
+	}
 	if !podExists || pod.labelSetKey != newlabelSetKey {
 		pod.labelSetKey = newlabelSetKey
 		// Set the links between the containers and aggregations based on the current pod labels.
@@ -132,8 +139,29 @@ func (cluster *ClusterState) AddOrUpdatePod(podID PodID, newLabels labels.Set, p
 			containerID := ContainerID{PodID: podID, ContainerName: containerName}
 			container.aggregator = cluster.findOrCreateAggregateContainerState(containerID)
 		}
+
+		cluster.addPodToItsVpa(pod)
 	}
 	pod.Phase = phase
+}
+
+// addPodToItsVpa increases the count of Pods associated with a VPA object.
+// Does a scan similar to findOrCreateAggregateContainerState so could be optimized if needed.
+func (cluster *ClusterState) addPodToItsVpa(pod *PodState) {
+	for _, vpa := range cluster.Vpas {
+		if vpa_utils.PodLabelsMatchVPA(pod.ID.Namespace, cluster.labelSetMap[pod.labelSetKey], vpa.ID.Namespace, vpa.PodSelector) {
+			vpa.PodCount++
+		}
+	}
+}
+
+// removePodFromItsVpa decreases the count of Pods associated with a VPA object.
+func (cluster *ClusterState) removePodFromItsVpa(pod *PodState) {
+	for _, vpa := range cluster.Vpas {
+		if vpa_utils.PodLabelsMatchVPA(pod.ID.Namespace, cluster.labelSetMap[pod.labelSetKey], vpa.ID.Namespace, vpa.PodSelector) {
+			vpa.PodCount--
+		}
+	}
 }
 
 // GetContainer returns the ContainerState object for a given ContainerID or
@@ -151,6 +179,10 @@ func (cluster *ClusterState) GetContainer(containerID ContainerID) *ContainerSta
 
 // DeletePod removes an existing pod from the cluster.
 func (cluster *ClusterState) DeletePod(podID PodID) {
+	pod, found := cluster.Pods[podID]
+	if found {
+		cluster.removePodFromItsVpa(pod)
+	}
 	delete(cluster.Pods, podID)
 }
 
@@ -215,6 +247,7 @@ func (cluster *ClusterState) RecordOOM(containerID ContainerID, timestamp time.T
 // all aggregations it matches.
 func (cluster *ClusterState) AddOrUpdateVpa(apiObject *vpa_types.VerticalPodAutoscaler, selector labels.Selector) error {
 	vpaID := VpaID{Namespace: apiObject.Namespace, VpaName: apiObject.Name}
+	annotationsMap := apiObject.Annotations
 	conditionsMap := make(vpaConditionsMap)
 	for _, condition := range apiObject.Status.Conditions {
 		conditionsMap[condition.Type] = condition
@@ -239,14 +272,14 @@ func (cluster *ClusterState) AddOrUpdateVpa(apiObject *vpa_types.VerticalPodAuto
 		for aggregationKey, aggregation := range cluster.aggregateStateMap {
 			vpa.UseAggregationIfMatching(aggregationKey, aggregation)
 		}
+		vpa.PodCount = len(cluster.GetMatchingPods(vpa))
 	}
 	vpa.TargetRef = apiObject.Spec.TargetRef
+	vpa.Annotations = annotationsMap
 	vpa.Conditions = conditionsMap
 	vpa.Recommendation = currentRecommendation
-	vpa.ResourcePolicy = apiObject.Spec.ResourcePolicy
-	if apiObject.Spec.UpdatePolicy != nil {
-		vpa.UpdateMode = apiObject.Spec.UpdatePolicy.UpdateMode
-	}
+	vpa.SetUpdateMode(apiObject.Spec.UpdatePolicy)
+	vpa.SetResourcePolicy(apiObject.Spec.ResourcePolicy)
 	return nil
 }
 
@@ -261,7 +294,6 @@ func (cluster *ClusterState) DeleteVpa(vpaID VpaID) error {
 	}
 	delete(cluster.Vpas, vpaID)
 	delete(cluster.EmptyVPAs, vpaID)
-	delete(cluster.VpasWithMatchingPods, vpaID)
 	return nil
 }
 
@@ -312,28 +344,28 @@ func (cluster *ClusterState) findOrCreateAggregateContainerState(containerID Con
 		cluster.aggregateStateMap[aggregateStateKey] = aggregateContainerState
 		// Link the new aggregation to the existing VPAs.
 		for _, vpa := range cluster.Vpas {
-			if vpa.UseAggregationIfMatching(aggregateStateKey, aggregateContainerState) {
-				cluster.VpasWithMatchingPods[vpa.ID] = true
-			}
+			vpa.UseAggregationIfMatching(aggregateStateKey, aggregateContainerState)
 		}
 	}
 	return aggregateContainerState
 }
 
-// GarbageCollectAggregateCollectionStates removes obsolete AggregateCollectionStates from the ClusterState.
+// garbageCollectAggregateCollectionStates removes obsolete AggregateCollectionStates from the ClusterState.
 // AggregateCollectionState is obsolete in following situations:
-// 1) It has no samples and there are no more active pods that can contribute,
+// 1) It has no samples and there are no more contributive pods - a pod is contributive in any of following situations:
+//    a) It is in an active state - i.e. not PodSucceeded nor PodFailed.
+//    b) Its associated controller (e.g. Deployment) still exists.
 // 2) The last sample is too old to give meaningful recommendation (>8 days),
 // 3) There are no samples and the aggregate state was created >8 days ago.
-func (cluster *ClusterState) GarbageCollectAggregateCollectionStates(now time.Time) {
+func (cluster *ClusterState) garbageCollectAggregateCollectionStates(now time.Time, controllerFetcher controllerfetcher.ControllerFetcher) {
 	klog.V(1).Info("Garbage collection of AggregateCollectionStates triggered")
 	keysToDelete := make([]AggregateStateKey, 0)
-	activeKeys := cluster.getActiveAggregateStateKeys()
+	contributiveKeys := cluster.getContributiveAggregateStateKeys(controllerFetcher)
 	for key, aggregateContainerState := range cluster.aggregateStateMap {
-		isKeyActive := activeKeys[key]
-		if !isKeyActive && aggregateContainerState.isEmpty() {
+		isKeyContributive := contributiveKeys[key]
+		if !isKeyContributive && aggregateContainerState.isEmpty() {
 			keysToDelete = append(keysToDelete, key)
-			klog.V(1).Infof("Removing empty and inactive AggregateCollectionState for %+v", key)
+			klog.V(1).Infof("Removing empty and not contributive AggregateCollectionState for %+v", key)
 			continue
 		}
 		if aggregateContainerState.isExpired(now) {
@@ -349,18 +381,37 @@ func (cluster *ClusterState) GarbageCollectAggregateCollectionStates(now time.Ti
 	}
 }
 
-func (cluster *ClusterState) getActiveAggregateStateKeys() map[AggregateStateKey]bool {
-	activeKeys := map[AggregateStateKey]bool{}
+// RateLimitedGarbageCollectAggregateCollectionStates removes obsolete AggregateCollectionStates from the ClusterState.
+// It performs clean up only if more than `gcInterval` passed since the last time it performed a clean up.
+// AggregateCollectionState is obsolete in following situations:
+// 1) It has no samples and there are no more contributive pods - a pod is contributive in any of following situations:
+//    a) It is in an active state - i.e. not PodSucceeded nor PodFailed.
+//    b) Its associated controller (e.g. Deployment) still exists.
+// 2) The last sample is too old to give meaningful recommendation (>8 days),
+// 3) There are no samples and the aggregate state was created >8 days ago.
+func (cluster *ClusterState) RateLimitedGarbageCollectAggregateCollectionStates(now time.Time, controllerFetcher controllerfetcher.ControllerFetcher) {
+	if now.Sub(cluster.lastAggregateContainerStateGC) < cluster.gcInterval {
+		return
+	}
+	cluster.garbageCollectAggregateCollectionStates(now, controllerFetcher)
+	cluster.lastAggregateContainerStateGC = now
+}
+
+func (cluster *ClusterState) getContributiveAggregateStateKeys(controllerFetcher controllerfetcher.ControllerFetcher) map[AggregateStateKey]bool {
+	contributiveKeys := map[AggregateStateKey]bool{}
 	for _, pod := range cluster.Pods {
-		// Pods that will not run anymore are considered inactive.
-		if pod.Phase == apiv1.PodSucceeded || pod.Phase == apiv1.PodFailed {
-			continue
-		}
-		for container := range pod.Containers {
-			activeKeys[cluster.MakeAggregateStateKey(pod, container)] = true
+		// Pod is considered contributive in any of following situations:
+		// 1) It is in active state - i.e. not PodSucceeded nor PodFailed.
+		// 2) Its associated controller (e.g. Deployment) still exists.
+		podControllerExists := cluster.GetControllerForPodUnderVPA(pod, controllerFetcher) != nil
+		podActive := pod.Phase != apiv1.PodSucceeded && pod.Phase != apiv1.PodFailed
+		if podActive || podControllerExists {
+			for container := range pod.Containers {
+				contributiveKeys[cluster.MakeAggregateStateKey(pod, container)] = true
+			}
 		}
 	}
-	return activeKeys
+	return contributiveKeys
 }
 
 // RecordRecommendation marks the state of recommendation in the cluster. We
@@ -394,6 +445,35 @@ func (cluster *ClusterState) GetMatchingPods(vpa *Vpa) []PodID {
 		}
 	}
 	return matchingPods
+}
+
+// GetControllerForPodUnderVPA returns controller associated with given Pod. Returns nil if Pod is not controlled by a VPA object.
+func (cluster *ClusterState) GetControllerForPodUnderVPA(pod *PodState, controllerFetcher controllerfetcher.ControllerFetcher) *controllerfetcher.ControllerKeyWithAPIVersion {
+	controllingVPA := cluster.GetControllingVPA(pod)
+	if controllingVPA != nil {
+		controller := &controllerfetcher.ControllerKeyWithAPIVersion{
+			ControllerKey: controllerfetcher.ControllerKey{
+				Namespace: controllingVPA.ID.Namespace,
+				Kind:      controllingVPA.TargetRef.Kind,
+				Name:      controllingVPA.TargetRef.Name,
+			},
+			ApiVersion: controllingVPA.TargetRef.APIVersion,
+		}
+		topLevelController, _ := controllerFetcher.FindTopMostWellKnownOrScalable(controller)
+		return topLevelController
+	}
+	return nil
+}
+
+// GetControllingVPA returns a VPA object controlling given Pod.
+func (cluster *ClusterState) GetControllingVPA(pod *PodState) *Vpa {
+	for _, vpa := range cluster.Vpas {
+		if vpa_utils.PodLabelsMatchVPA(pod.ID.Namespace, cluster.labelSetMap[pod.labelSetKey],
+			vpa.ID.Namespace, vpa.PodSelector) {
+			return vpa
+		}
+	}
+	return nil
 }
 
 // Implementation of the AggregateStateKey interface. It can be used as a map key.

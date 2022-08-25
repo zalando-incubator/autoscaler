@@ -30,10 +30,9 @@ type GpuLimits struct {
 	Max int64
 }
 
-// AutoscalingOptions contain various options to customize how autoscaling works
-type AutoscalingOptions struct {
-	// MaxEmptyBulkDelete is a number of empty nodes that can be removed at the same time.
-	MaxEmptyBulkDelete int
+// NodeGroupAutoscalingOptions contain various options to customize how autoscaling of
+// a given NodeGroup works. Different options can be used for each NodeGroup.
+type NodeGroupAutoscalingOptions struct {
 	// ScaleDownUtilizationThreshold sets threshold for nodes to be considered for scale down if cpu or memory utilization is over threshold.
 	// Well-utilized nodes are not touched.
 	ScaleDownUtilizationThreshold float64
@@ -45,6 +44,15 @@ type AutoscalingOptions struct {
 	ScaleDownUnneededTime time.Duration
 	// ScaleDownUnreadyTime represents how long an unready node should be unneeded before it is eligible for scale down
 	ScaleDownUnreadyTime time.Duration
+}
+
+// AutoscalingOptions contain various options to customize how autoscaling works
+type AutoscalingOptions struct {
+	// NodeGroupDefaults are default values for per NodeGroup options.
+	// They will be used any time a specific value is not provided for a given NodeGroup.
+	NodeGroupDefaults NodeGroupAutoscalingOptions
+	// MaxEmptyBulkDelete is a number of empty nodes that can be removed at the same time.
+	MaxEmptyBulkDelete int
 	// MaxNodesTotal sets the maximum number of nodes in the whole cluster
 	MaxNodesTotal int
 	// MaxCoresTotal sets the maximum number of cores in the whole cluster
@@ -61,8 +69,12 @@ type AutoscalingOptions struct {
 	NodeGroupAutoDiscovery []string
 	// EstimatorName is the estimator used to estimate the number of needed nodes in scale up.
 	EstimatorName string
-	// ExpanderName sets the type of node group expander to be used in scale up
-	ExpanderName string
+	// ExpanderNames sets the chain of node group expanders to be used in scale up
+	ExpanderNames string
+	// GRPCExpanderCert is the location of the cert passed to the gRPC server for TLS when using the gRPC expander
+	GRPCExpanderCert string
+	// GRPCExpanderURL is the url of the gRPC server when using the gRPC expander
+	GRPCExpanderURL string
 	// IgnoreDaemonSetsUtilization is whether CA will ignore DaemonSet pods when calculating resource utilization for scaling down
 	IgnoreDaemonSetsUtilization bool
 	// IgnoreMirrorPodsUtilization is whether CA will ignore Mirror pods when calculating resource utilization for scaling down
@@ -76,6 +88,8 @@ type AutoscalingOptions struct {
 	MaxTotalUnreadyPercentage float64
 	// OkTotalUnreadyCount is the number of allowed unready nodes, irrespective of max-total-unready-percentage
 	OkTotalUnreadyCount int
+	// ScaleUpFromZero defines if CA should scale up when there 0 ready nodes.
+	ScaleUpFromZero bool
 	// CloudConfig is the path to the cloud provider configuration file. Empty string for no configuration file.
 	CloudConfig string
 	// CloudProviderName sets the type of the cloud provider CA is about to run in. Allowed values: gce, aws
@@ -107,6 +121,8 @@ type AutoscalingOptions struct {
 	NodeDeletionDelayTimeout time.Duration
 	// WriteStatusConfigMap tells if the status information should be written to a ConfigMap
 	WriteStatusConfigMap bool
+	// StaticConfigMapName
+	StatusConfigMapName string
 	// BalanceSimilarNodeGroups enables logic that identifies node groups with similar machines and tries to balance node count between them.
 	BalanceSimilarNodeGroups bool
 	// ConfigNamespace is the namespace cluster-autoscaler is running in and all related configmaps live in
@@ -131,10 +147,28 @@ type AutoscalingOptions struct {
 	MaxBulkSoftTaintCount int
 	// MaxBulkSoftTaintTime sets the maximum duration of single run of PreferNoSchedule tainting.
 	MaxBulkSoftTaintTime time.Duration
-	// Filtering out schedulable pods before CA scale up by trying to pack the schedulable pods on free capacity on existing nodes.
-	// Setting it to false employs a more lenient filtering approach that does not try to pack the pods on the nodes.
-	// Pods with nominatedNodeName set are always filtered out.
-	FilterOutSchedulablePodsUsesPacking bool
+	// MaxPodEvictionTime sets the maximum time CA tries to evict a pod before giving up.
+	MaxPodEvictionTime time.Duration
 	// IgnoredTaints is a list of taints to ignore when considering a node template for scheduling.
 	IgnoredTaints []string
+	// BalancingExtraIgnoredLabels is a list of labels to additionally ignore when comparing if two node groups are similar.
+	// Labels in BasicIgnoredLabels and the cloud provider-specific ignored labels are always ignored.
+	BalancingExtraIgnoredLabels []string
+	// AWSUseStaticInstanceList tells if AWS cloud provider use static instance type list or dynamically fetch from remote APIs.
+	AWSUseStaticInstanceList bool
+	// ConcurrentGceRefreshes is the maximum number of concurrently refreshed instance groups or instance templates.
+	ConcurrentGceRefreshes int
+	// Path to kube configuration if available
+	KubeConfigPath string
+	// ClusterAPICloudConfigAuthoritative tells the Cluster API provider to treat the CloudConfig option as authoritative and
+	// not use KubeConfigPath as a fallback when it is not provided.
+	ClusterAPICloudConfigAuthoritative bool
+	// Enable or disable cordon nodes functionality before terminating the node during downscale process
+	CordonNodeBeforeTerminate bool
+	// DaemonSetEvictionForEmptyNodes is whether CA will gracefully terminate DaemonSet pods from empty nodes.
+	DaemonSetEvictionForEmptyNodes bool
+	// DaemonSetEvictionForOccupiedNodes is whether CA will gracefully terminate DaemonSet pods from non-empty nodes.
+	DaemonSetEvictionForOccupiedNodes bool
+	// User agent to use for HTTP calls.
+	UserAgent string
 }

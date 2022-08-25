@@ -1,3 +1,4 @@
+//go:build azure
 // +build azure
 
 /*
@@ -26,15 +27,15 @@ import (
 
 // AvailableCloudProviders supported by the cloud provider builder.
 var AvailableCloudProviders = []string{
-	azure.ProviderName,
+	cloudprovider.AzureProviderName,
 }
 
 // DefaultCloudProvider on Azure-only build is Azure.
-const DefaultCloudProvider = azure.ProviderName
+const DefaultCloudProvider = cloudprovider.AzureProviderName
 
 func buildCloudProvider(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
 	switch opts.CloudProviderName {
-	case azure.ProviderName:
+	case cloudprovider.AzureProviderName:
 		return azure.BuildAzure(opts, do, rl)
 	}
 

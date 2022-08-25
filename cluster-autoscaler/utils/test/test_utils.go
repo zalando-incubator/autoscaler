@@ -18,25 +18,21 @@ package test
 
 import (
 	"fmt"
-	"time"
-
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"time"
 
+	"github.com/stretchr/testify/mock"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes/scheme"
-	refv1 "k8s.io/client-go/tools/reference"
-	"k8s.io/kubernetes/pkg/api/testapi"
-
-	"github.com/stretchr/testify/mock"
 )
 
 // BuildTestPod creates a pod with specified resources.
 func BuildTestPod(name string, cpu int64, mem int64) *apiv1.Pod {
+	startTime := metav1.Unix(0, 0)
 	pod := &apiv1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			UID:         types.UID(name),
@@ -54,6 +50,9 @@ func BuildTestPod(name string, cpu int64, mem int64) *apiv1.Pod {
 				},
 			},
 		},
+		Status: apiv1.PodStatus{
+			StartTime: &startTime,
+		},
 	}
 
 	if cpu >= 0 {
@@ -64,6 +63,20 @@ func BuildTestPod(name string, cpu int64, mem int64) *apiv1.Pod {
 	}
 
 	return pod
+}
+
+// BuildServiceTokenProjectedVolumeSource returns a ProjectedVolumeSource with SA token
+// projection
+func BuildServiceTokenProjectedVolumeSource(path string) *apiv1.ProjectedVolumeSource {
+	return &apiv1.ProjectedVolumeSource{
+		Sources: []apiv1.VolumeProjection{
+			{
+				ServiceAccountToken: &apiv1.ServiceAccountTokenProjection{
+					Path: path,
+				},
+			},
+		},
+	}
 }
 
 const (
@@ -84,6 +97,11 @@ func RequestGpuForPod(pod *apiv1.Pod, gpusCount int64) {
 		pod.Spec.Containers[0].Resources.Requests = apiv1.ResourceList{}
 	}
 	pod.Spec.Containers[0].Resources.Requests[resourceNvidiaGPU] = *resource.NewQuantity(gpusCount, resource.DecimalSI)
+}
+
+// TolerateGpuForPod adds toleration for nvidia.com/gpu to Pod
+func TolerateGpuForPod(pod *apiv1.Pod) {
+	pod.Spec.Tolerations = append(pod.Spec.Tolerations, apiv1.Toleration{Key: resourceNvidiaGPU, Operator: apiv1.TolerationOpExists})
 }
 
 // BuildTestNode creates a node with specified capacity.
@@ -149,7 +167,29 @@ func SetNodeReadyState(node *apiv1.Node, ready bool, lastTransition time.Time) {
 		SetNodeCondition(node, apiv1.NodeReady, apiv1.ConditionTrue, lastTransition)
 	} else {
 		SetNodeCondition(node, apiv1.NodeReady, apiv1.ConditionFalse, lastTransition)
+		node.Spec.Taints = append(node.Spec.Taints, apiv1.Taint{
+			Key:    "node.kubernetes.io/not-ready",
+			Value:  "true",
+			Effect: apiv1.TaintEffectNoSchedule,
+		})
 	}
+}
+
+// SetNodeNotReadyTaint sets the not ready taint on node.
+func SetNodeNotReadyTaint(node *apiv1.Node) {
+	node.Spec.Taints = append(node.Spec.Taints, apiv1.Taint{Key: apiv1.TaintNodeNotReady, Effect: apiv1.TaintEffectNoSchedule})
+}
+
+// RemoveNodeNotReadyTaint removes the not ready taint.
+func RemoveNodeNotReadyTaint(node *apiv1.Node) {
+	var final []apiv1.Taint
+	for i := range node.Spec.Taints {
+		if node.Spec.Taints[i].Key == apiv1.TaintNodeNotReady {
+			continue
+		}
+		final = append(final, node.Spec.Taints[i])
+	}
+	node.Spec.Taints = final
 }
 
 // SetNodeCondition sets node condition.
@@ -168,18 +208,6 @@ func SetNodeCondition(node *apiv1.Node, conditionType apiv1.NodeConditionType, s
 		LastTransitionTime: metav1.Time{Time: lastTransition},
 	}
 	node.Status.Conditions = append(node.Status.Conditions, condition)
-}
-
-// RefJSON builds string reference to
-func RefJSON(o runtime.Object) string {
-	ref, err := refv1.GetReference(scheme.Scheme, o)
-	if err != nil {
-		panic(err)
-	}
-
-	codec := testapi.Default.Codec()
-	json := runtime.EncodeOrDie(codec, &apiv1.SerializedReference{Reference: *ref})
-	return string(json)
 }
 
 // GenerateOwnerReferences builds OwnerReferences with a single reference
@@ -215,19 +243,54 @@ func boolptr(val bool) *bool {
 // instances, err := g.GetManagedInstances()
 // // Check if expected calls were executed.
 // 	mock.AssertExpectationsForObjects(t, server)
+//
+// Note: to provide a content type, you may pass in the desired
+// fields:
+// server := NewHttpServerMock(MockFieldContentType, MockFieldResponse)
+// ...
+// server.On("handle", "/project1/zones/us-central1-b/listManagedInstances").Return("<content type>", "<response>").Once()
+// The order of the return objects must match that of the HttpServerMockField constants passed to NewHttpServerMock()
 type HttpServerMock struct {
 	mock.Mock
 	*httptest.Server
+	fields []HttpServerMockField
 }
 
+// HttpServerMockField specifies a type of field.
+type HttpServerMockField int
+
+const (
+	// MockFieldResponse represents a string response.
+	MockFieldResponse HttpServerMockField = iota
+	// MockFieldStatusCode represents an integer HTTP response code.
+	MockFieldStatusCode
+	// MockFieldContentType represents a string content type.
+	MockFieldContentType
+	// MockFieldUserAgent represents a string user agent.
+	MockFieldUserAgent
+)
+
 // NewHttpServerMock creates new HttpServerMock.
-func NewHttpServerMock() *HttpServerMock {
-	httpServerMock := &HttpServerMock{}
+func NewHttpServerMock(fields ...HttpServerMockField) *HttpServerMock {
+	if len(fields) == 0 {
+		fields = []HttpServerMockField{MockFieldResponse}
+	}
+	foundResponse := false
+	for _, field := range fields {
+		if field == MockFieldResponse {
+			foundResponse = true
+			break
+		}
+	}
+	if !foundResponse {
+		panic("Must use MockFieldResponse.")
+	}
+	httpServerMock := &HttpServerMock{fields: fields}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/",
 		func(w http.ResponseWriter, req *http.Request) {
-			result := httpServerMock.handle(req.URL.Path)
-			w.Write([]byte(result))
+			result := httpServerMock.handle(req, w, httpServerMock)
+			_, _ = w.Write([]byte(result))
 		})
 
 	server := httptest.NewServer(mux)
@@ -235,7 +298,25 @@ func NewHttpServerMock() *HttpServerMock {
 	return httpServerMock
 }
 
-func (l *HttpServerMock) handle(url string) string {
+func (l *HttpServerMock) handle(req *http.Request, w http.ResponseWriter, serverMock *HttpServerMock) string {
+	url := req.URL.Path
+	var response string
 	args := l.Called(url)
-	return args.String(0)
+	for i, field := range l.fields {
+		switch field {
+		case MockFieldResponse:
+			response = args.String(i)
+		case MockFieldContentType:
+			w.Header().Set("Content-Type", args.String(i))
+		case MockFieldStatusCode:
+			w.WriteHeader(args.Int(i))
+		case MockFieldUserAgent:
+			gotUserAgent := req.UserAgent()
+			expectedUserAgent := args.String(i)
+			if !strings.Contains(gotUserAgent, expectedUserAgent) {
+				panic(fmt.Sprintf("Error handling URL %s, expected user agent %s but got %s.", url, expectedUserAgent, gotUserAgent))
+			}
+		}
+	}
+	return response
 }

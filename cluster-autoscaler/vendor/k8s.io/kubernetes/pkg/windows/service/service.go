@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 /*
@@ -23,14 +24,10 @@ import (
 	"time"
 
 	"k8s.io/apiserver/pkg/server"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
-)
-
-var (
-	service *handler
 )
 
 type handler struct {
@@ -47,7 +44,6 @@ func InitService(serviceName string) error {
 		fromsvc: make(chan error),
 	}
 
-	service = h
 	var err error
 	go func() {
 		err = svc.Run(serviceName, h)
@@ -83,7 +79,7 @@ Loop:
 				s <- c.CurrentStatus
 			case svc.Stop, svc.Shutdown:
 				klog.Infof("Service stopping")
-				// We need to translate this request into a signal that can be handled by the the signal handler
+				// We need to translate this request into a signal that can be handled by the signal handler
 				// handling shutdowns normally (currently apiserver/pkg/server/signal.go).
 				// If we do not do this, our main threads won't be notified of the upcoming shutdown.
 				// Since Windows services do not use any console, we cannot simply generate a CTRL_BREAK_EVENT

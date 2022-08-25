@@ -18,25 +18,36 @@ package core
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	mockprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/mocks"
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
+	. "k8s.io/autoscaler/cluster-autoscaler/core/test"
+	"k8s.io/autoscaler/cluster-autoscaler/core/utils"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
+	"k8s.io/autoscaler/cluster-autoscaler/metrics"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/nodeinfosprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/units"
 	kube_record "k8s.io/client-go/tools/record"
+	"k8s.io/component-base/metrics/legacyregistry"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/fake"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
@@ -50,332 +61,439 @@ var defaultOptions = config.AutoscalingOptions{
 	MinMemoryTotal: 0,
 }
 
+// Scale up scenarios.
 func TestScaleUpOK(t *testing.T) {
-	config := &scaleTestConfig{
-		nodes: []nodeConfig{
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
 			{"n1", 100, 100, 0, true, "ng1"},
 			{"n2", 1000, 1000, 0, true, "ng2"},
 		},
-		pods: []podConfig{
-			{"p1", 80, 0, 0, "n1"},
-			{"p2", 800, 0, 0, "n2"},
+		Pods: []PodConfig{
+			{"p1", 80, 0, 0, "n1", false},
+			{"p2", 800, 0, 0, "n2", false},
 		},
-		extraPods: []podConfig{
-			{"p-new", 500, 0, 0, ""},
+		ExtraPods: []PodConfig{
+			{"p-new", 500, 0, 0, "", false},
 		},
-		scaleUpOptionToChoose: groupSizeChange{groupName: "ng2", sizeChange: 1},
-		expectedFinalScaleUp:  groupSizeChange{groupName: "ng2", sizeChange: 1},
-		options:               defaultOptions,
+		Options:                 defaultOptions,
+		ExpansionOptionToChoose: GroupSizeChange{GroupName: "ng2", SizeChange: 1},
+	}
+	expectedResults := &ScaleTestResults{
+		FinalOption: GroupSizeChange{GroupName: "ng2", SizeChange: 1},
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsTriggeredScaleUp: []string{"p-new"},
+		},
 	}
 
-	simpleScaleUpTest(t, config)
+	simpleScaleUpTest(t, config, expectedResults)
+}
+
+// There are triggering, remaining & awaiting pods.
+func TestMixedScaleUp(t *testing.T) {
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
+			{"n1", 100, 1000, 0, true, "ng1"},
+			{"n2", 1000, 100, 0, true, "ng2"},
+		},
+		Pods: []PodConfig{
+			{"p1", 80, 0, 0, "n1", false},
+			{"p2", 800, 0, 0, "n2", false},
+		},
+		ExtraPods: []PodConfig{
+			// can only be scheduled on ng2
+			{"triggering", 900, 0, 0, "", false},
+			// can't be scheduled
+			{"remaining", 2000, 0, 0, "", false},
+			// can only be scheduled on ng1
+			{"awaiting", 0, 200, 0, "", false},
+		},
+		Options:                 defaultOptions,
+		ExpansionOptionToChoose: GroupSizeChange{GroupName: "ng2", SizeChange: 1},
+	}
+	expectedResults := &ScaleTestResults{
+		FinalOption: GroupSizeChange{GroupName: "ng2", SizeChange: 1},
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsTriggeredScaleUp:    []string{"triggering"},
+			PodsRemainUnschedulable: []string{"remaining"},
+			PodsAwaitEvaluation:     []string{"awaiting"},
+		},
+	}
+
+	simpleScaleUpTest(t, config, expectedResults)
 }
 
 func TestScaleUpMaxCoresLimitHit(t *testing.T) {
 	options := defaultOptions
 	options.MaxCoresTotal = 9
-	config := &scaleTestConfig{
-		nodes: []nodeConfig{
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
 			{"n1", 2000, 100, 0, true, "ng1"},
 			{"n2", 4000, 1000, 0, true, "ng2"},
 		},
-		pods: []podConfig{
-			{"p1", 1000, 0, 0, "n1"},
-			{"p2", 3000, 0, 0, "n2"},
+		Pods: []PodConfig{
+			{"p1", 1000, 0, 0, "n1", false},
+			{"p2", 3000, 0, 0, "n2", false},
 		},
-		extraPods: []podConfig{
-			{"p-new-1", 2000, 0, 0, ""},
-			{"p-new-2", 2000, 0, 0, ""},
+		ExtraPods: []PodConfig{
+			{"p-new-1", 2000, 0, 0, "", false},
+			{"p-new-2", 2000, 0, 0, "", false},
 		},
-		scaleUpOptionToChoose: groupSizeChange{groupName: "ng1", sizeChange: 2},
-		expectedFinalScaleUp:  groupSizeChange{groupName: "ng1", sizeChange: 1},
-		options:               options,
+		ExpansionOptionToChoose: GroupSizeChange{GroupName: "ng1", SizeChange: 2},
+		Options:                 options,
+	}
+	results := &ScaleTestResults{
+		FinalOption: GroupSizeChange{GroupName: "ng1", SizeChange: 1},
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsTriggeredScaleUp: []string{"p-new-1", "p-new-2"},
+		},
 	}
 
-	simpleScaleUpTest(t, config)
+	simpleScaleUpTest(t, config, results)
 }
 
 func TestScaleUpMaxCoresLimitHitWithNotAutoscaledGroup(t *testing.T) {
 	options := defaultOptions
 	options.MaxCoresTotal = 9
-	config := &scaleTestConfig{
-		nodes: []nodeConfig{
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
 			{"n1", 2000, 100, 0, true, "ng1"},
 			{"n2", 4000, 1000, 0, true, ""},
 		},
-		pods: []podConfig{
-			{"p1", 1000, 0, 0, "n1"},
-			{"p2", 3000, 0, 0, "n2"},
+		Pods: []PodConfig{
+			{"p1", 1000, 0, 0, "n1", false},
+			{"p2", 3000, 0, 0, "n2", false},
 		},
-		extraPods: []podConfig{
-			{"p-new-1", 2000, 0, 0, ""},
-			{"p-new-2", 2000, 0, 0, ""},
+		ExtraPods: []PodConfig{
+			{"p-new-1", 2000, 0, 0, "", false},
+			{"p-new-2", 2000, 0, 0, "", false},
 		},
-		scaleUpOptionToChoose: groupSizeChange{groupName: "ng1", sizeChange: 2},
-		expectedFinalScaleUp:  groupSizeChange{groupName: "ng1", sizeChange: 1},
-		options:               options,
+		ExpansionOptionToChoose: GroupSizeChange{GroupName: "ng1", SizeChange: 2},
+		Options:                 options,
+	}
+	results := &ScaleTestResults{
+		FinalOption: GroupSizeChange{GroupName: "ng1", SizeChange: 1},
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsTriggeredScaleUp: []string{"p-new-1", "p-new-2"},
+		},
 	}
 
-	simpleScaleUpTest(t, config)
+	simpleScaleUpTest(t, config, results)
 }
 
 func TestScaleUpMaxMemoryLimitHit(t *testing.T) {
 	options := defaultOptions
-	options.MaxMemoryTotal = 1300 * MiB
-	config := &scaleTestConfig{
-		nodes: []nodeConfig{
-			{"n1", 2000, 100 * MiB, 0, true, "ng1"},
-			{"n2", 4000, 1000 * MiB, 0, true, "ng2"},
+	options.MaxMemoryTotal = 1300 * utils.MiB
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
+			{"n1", 2000, 100 * utils.MiB, 0, true, "ng1"},
+			{"n2", 4000, 1000 * utils.MiB, 0, true, "ng2"},
 		},
-		pods: []podConfig{
-			{"p1", 1000, 0, 0, "n1"},
-			{"p2", 3000, 0, 0, "n2"},
+		Pods: []PodConfig{
+			{"p1", 1000, 0, 0, "n1", false},
+			{"p2", 3000, 0, 0, "n2", false},
 		},
-		extraPods: []podConfig{
-			{"p-new-1", 2000, 100 * MiB, 0, ""},
-			{"p-new-2", 2000, 100 * MiB, 0, ""},
-			{"p-new-3", 2000, 100 * MiB, 0, ""},
+		ExtraPods: []PodConfig{
+			{"p-new-1", 2000, 100 * utils.MiB, 0, "", false},
+			{"p-new-2", 2000, 100 * utils.MiB, 0, "", false},
+			{"p-new-3", 2000, 100 * utils.MiB, 0, "", false},
 		},
-		scaleUpOptionToChoose: groupSizeChange{groupName: "ng1", sizeChange: 3},
-		expectedFinalScaleUp:  groupSizeChange{groupName: "ng1", sizeChange: 2},
-		options:               options,
+		ExpansionOptionToChoose: GroupSizeChange{GroupName: "ng1", SizeChange: 3},
+		Options:                 options,
+	}
+	results := &ScaleTestResults{
+		FinalOption: GroupSizeChange{GroupName: "ng1", SizeChange: 2},
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsTriggeredScaleUp: []string{"p-new-1", "p-new-2", "p-new-3"},
+		},
 	}
 
-	simpleScaleUpTest(t, config)
+	simpleScaleUpTest(t, config, results)
 }
 
 func TestScaleUpMaxMemoryLimitHitWithNotAutoscaledGroup(t *testing.T) {
 	options := defaultOptions
-	options.MaxMemoryTotal = 1300 * MiB
-	config := &scaleTestConfig{
-		nodes: []nodeConfig{
-			{"n1", 2000, 100 * MiB, 0, true, "ng1"},
-			{"n2", 4000, 1000 * MiB, 0, true, ""},
+	options.MaxMemoryTotal = 1300 * utils.MiB
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
+			{"n1", 2000, 100 * utils.MiB, 0, true, "ng1"},
+			{"n2", 4000, 1000 * utils.MiB, 0, true, ""},
 		},
-		pods: []podConfig{
-			{"p1", 1000, 0, 0, "n1"},
-			{"p2", 3000, 0, 0, "n2"},
+		Pods: []PodConfig{
+			{"p1", 1000, 0, 0, "n1", false},
+			{"p2", 3000, 0, 0, "n2", false},
 		},
-		extraPods: []podConfig{
-			{"p-new-1", 2000, 100 * MiB, 0, ""},
-			{"p-new-2", 2000, 100 * MiB, 0, ""},
-			{"p-new-3", 2000, 100 * MiB, 0, ""},
+		ExtraPods: []PodConfig{
+			{"p-new-1", 2000, 100 * utils.MiB, 0, "", false},
+			{"p-new-2", 2000, 100 * utils.MiB, 0, "", false},
+			{"p-new-3", 2000, 100 * utils.MiB, 0, "", false},
 		},
-		scaleUpOptionToChoose: groupSizeChange{groupName: "ng1", sizeChange: 3},
-		expectedFinalScaleUp:  groupSizeChange{groupName: "ng1", sizeChange: 2},
-		options:               options,
+		ExpansionOptionToChoose: GroupSizeChange{GroupName: "ng1", SizeChange: 3},
+		Options:                 options,
+	}
+	results := &ScaleTestResults{
+		FinalOption: GroupSizeChange{GroupName: "ng1", SizeChange: 2},
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsTriggeredScaleUp: []string{"p-new-1", "p-new-2", "p-new-3"},
+		},
 	}
 
-	simpleScaleUpTest(t, config)
+	simpleScaleUpTest(t, config, results)
 }
 
 func TestScaleUpCapToMaxTotalNodesLimit(t *testing.T) {
 	options := defaultOptions
 	options.MaxNodesTotal = 3
-	config := &scaleTestConfig{
-		nodes: []nodeConfig{
-			{"n1", 2000, 100 * MiB, 0, true, "ng1"},
-			{"n2", 4000, 1000 * MiB, 0, true, "ng2"},
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
+			{"n1", 2000, 100 * utils.MiB, 0, true, "ng1"},
+			{"n2", 4000, 1000 * utils.MiB, 0, true, "ng2"},
 		},
-		pods: []podConfig{
-			{"p1", 1000, 0, 0, "n1"},
-			{"p2", 3000, 0, 0, "n2"},
+		Pods: []PodConfig{
+			{"p1", 1000, 0, 0, "n1", false},
+			{"p2", 3000, 0, 0, "n2", false},
 		},
-		extraPods: []podConfig{
-			{"p-new-1", 4000, 100 * MiB, 0, ""},
-			{"p-new-2", 4000, 100 * MiB, 0, ""},
-			{"p-new-3", 4000, 100 * MiB, 0, ""},
+		ExtraPods: []PodConfig{
+			{"p-new-1", 4000, 100 * utils.MiB, 0, "", false},
+			{"p-new-2", 4000, 100 * utils.MiB, 0, "", false},
+			{"p-new-3", 4000, 100 * utils.MiB, 0, "", false},
 		},
-		scaleUpOptionToChoose: groupSizeChange{groupName: "ng2", sizeChange: 3},
-		expectedFinalScaleUp:  groupSizeChange{groupName: "ng2", sizeChange: 1},
-		options:               options,
+		ExpansionOptionToChoose: GroupSizeChange{GroupName: "ng2", SizeChange: 3},
+		Options:                 options,
+	}
+	results := &ScaleTestResults{
+		FinalOption: GroupSizeChange{GroupName: "ng2", SizeChange: 1},
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsTriggeredScaleUp: []string{"p-new-1", "p-new-2", "p-new-3"},
+		},
 	}
 
-	simpleScaleUpTest(t, config)
+	simpleScaleUpTest(t, config, results)
 }
 
 func TestScaleUpCapToMaxTotalNodesLimitWithNotAutoscaledGroup(t *testing.T) {
 	options := defaultOptions
 	options.MaxNodesTotal = 3
-	config := &scaleTestConfig{
-		nodes: []nodeConfig{
-			{"n1", 2000, 100 * MiB, 0, true, ""},
-			{"n2", 4000, 1000 * MiB, 0, true, "ng2"},
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
+			{"n1", 2000, 100 * utils.MiB, 0, true, ""},
+			{"n2", 4000, 1000 * utils.MiB, 0, true, "ng2"},
 		},
-		pods: []podConfig{
-			{"p1", 1000, 0, 0, "n1"},
-			{"p2", 3000, 0, 0, "n2"},
+		Pods: []PodConfig{
+			{"p1", 1000, 0, 0, "n1", false},
+			{"p2", 3000, 0, 0, "n2", false},
 		},
-		extraPods: []podConfig{
-			{"p-new-1", 4000, 100 * MiB, 0, ""},
-			{"p-new-2", 4000, 100 * MiB, 0, ""},
-			{"p-new-3", 4000, 100 * MiB, 0, ""},
+		ExtraPods: []PodConfig{
+			{"p-new-1", 4000, 100 * utils.MiB, 0, "", false},
+			{"p-new-2", 4000, 100 * utils.MiB, 0, "", false},
+			{"p-new-3", 4000, 100 * utils.MiB, 0, "", false},
 		},
-		scaleUpOptionToChoose: groupSizeChange{groupName: "ng2", sizeChange: 3},
-		expectedFinalScaleUp:  groupSizeChange{groupName: "ng2", sizeChange: 1},
-		options:               options,
+		ExpansionOptionToChoose: GroupSizeChange{GroupName: "ng2", SizeChange: 3},
+		Options:                 options,
+	}
+	results := &ScaleTestResults{
+		FinalOption: GroupSizeChange{GroupName: "ng2", SizeChange: 1},
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsTriggeredScaleUp: []string{"p-new-1", "p-new-2", "p-new-3"},
+		},
 	}
 
-	simpleScaleUpTest(t, config)
+	simpleScaleUpTest(t, config, results)
 }
 
 func TestWillConsiderGpuAndStandardPoolForPodWhichDoesNotRequireGpu(t *testing.T) {
 	options := defaultOptions
 	options.MaxNodesTotal = 100
-	config := &scaleTestConfig{
-		nodes: []nodeConfig{
-			{"gpu-node-1", 2000, 1000 * MiB, 1, true, "gpu-pool"},
-			{"std-node-1", 2000, 1000 * MiB, 0, true, "std-pool"},
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
+			{"gpu-node-1", 2000, 1000 * utils.MiB, 1, true, "gpu-pool"},
+			{"std-node-1", 2000, 1000 * utils.MiB, 0, true, "std-pool"},
 		},
-		pods: []podConfig{
-			{"gpu-pod-1", 2000, 1000 * MiB, 1, "gpu-node-1"},
-			{"std-pod-1", 2000, 1000 * MiB, 0, "std-node-1"},
+		Pods: []PodConfig{
+			{"gpu-pod-1", 2000, 1000 * utils.MiB, 1, "gpu-node-1", true},
+			{"std-pod-1", 2000, 1000 * utils.MiB, 0, "std-node-1", false},
 		},
-		extraPods: []podConfig{
-			{"extra-std-pod", 2000, 1000 * MiB, 0, ""},
+		ExtraPods: []PodConfig{
+			{"extra-std-pod", 2000, 1000 * utils.MiB, 0, "", true},
 		},
-		expectedScaleUpOptions: []groupSizeChange{
-			{groupName: "std-pool", sizeChange: 1},
-			{groupName: "gpu-pool", sizeChange: 1},
+		ExpansionOptionToChoose: GroupSizeChange{GroupName: "std-pool", SizeChange: 1},
+		Options:                 options,
+	}
+	results := &ScaleTestResults{
+		FinalOption: GroupSizeChange{GroupName: "std-pool", SizeChange: 1},
+		ExpansionOptions: []GroupSizeChange{
+			{GroupName: "std-pool", SizeChange: 1},
+			{GroupName: "gpu-pool", SizeChange: 1},
 		},
-		scaleUpOptionToChoose: groupSizeChange{groupName: "std-pool", sizeChange: 1},
-		expectedFinalScaleUp:  groupSizeChange{groupName: "std-pool", sizeChange: 1},
-		options:               options,
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsTriggeredScaleUp: []string{"extra-std-pod"},
+		},
 	}
 
-	simpleScaleUpTest(t, config)
+	simpleScaleUpTest(t, config, results)
 }
 
 func TestWillConsiderOnlyGpuPoolForPodWhichDoesRequiresGpu(t *testing.T) {
 	options := defaultOptions
 	options.MaxNodesTotal = 100
-	config := &scaleTestConfig{
-		nodes: []nodeConfig{
-			{"gpu-node-1", 2000, 1000 * MiB, 1, true, "gpu-pool"},
-			{"std-node-1", 2000, 1000 * MiB, 0, true, "std-pool"},
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
+			{"gpu-node-1", 2000, 1000 * utils.MiB, 1, true, "gpu-pool"},
+			{"std-node-1", 2000, 1000 * utils.MiB, 0, true, "std-pool"},
 		},
-		pods: []podConfig{
-			{"gpu-pod-1", 2000, 1000 * MiB, 1, "gpu-node-1"},
-			{"std-pod-1", 2000, 1000 * MiB, 0, "std-node-1"},
+		Pods: []PodConfig{
+			{"gpu-pod-1", 2000, 1000 * utils.MiB, 1, "gpu-node-1", true},
+			{"std-pod-1", 2000, 1000 * utils.MiB, 0, "std-node-1", false},
 		},
-		extraPods: []podConfig{
-			{"extra-gpu-pod", 2000, 1000 * MiB, 1, ""},
+		ExtraPods: []PodConfig{
+			{"extra-gpu-pod", 2000, 1000 * utils.MiB, 1, "", true},
 		},
-		expectedScaleUpOptions: []groupSizeChange{
-			{groupName: "gpu-pool", sizeChange: 1},
+		ExpansionOptionToChoose: GroupSizeChange{GroupName: "gpu-pool", SizeChange: 1},
+		Options:                 options,
+	}
+	results := &ScaleTestResults{
+		FinalOption: GroupSizeChange{GroupName: "gpu-pool", SizeChange: 1},
+		ExpansionOptions: []GroupSizeChange{
+			{GroupName: "gpu-pool", SizeChange: 1},
 		},
-		scaleUpOptionToChoose: groupSizeChange{groupName: "gpu-pool", sizeChange: 1},
-		expectedFinalScaleUp:  groupSizeChange{groupName: "gpu-pool", sizeChange: 1},
-		options:               options,
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsTriggeredScaleUp: []string{"extra-gpu-pod"},
+		},
 	}
 
-	simpleScaleUpTest(t, config)
+	simpleScaleUpTest(t, config, results)
 }
 
 func TestWillConsiderAllPoolsWhichFitTwoPodsRequiringGpus(t *testing.T) {
 	options := defaultOptions
 	options.MaxNodesTotal = 100
-	config := &scaleTestConfig{
-		nodes: []nodeConfig{
-			{"gpu-1-node-1", 2000, 1000 * MiB, 1, true, "gpu-1-pool"},
-			{"gpu-2-node-1", 2000, 1000 * MiB, 2, true, "gpu-2-pool"},
-			{"gpu-4-node-1", 2000, 1000 * MiB, 4, true, "gpu-4-pool"},
-			{"std-node-1", 2000, 1000 * MiB, 0, true, "std-pool"},
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
+			{"gpu-1-node-1", 2000, 1000 * utils.MiB, 1, true, "gpu-1-pool"},
+			{"gpu-2-node-1", 2000, 1000 * utils.MiB, 2, true, "gpu-2-pool"},
+			{"gpu-4-node-1", 2000, 1000 * utils.MiB, 4, true, "gpu-4-pool"},
+			{"std-node-1", 2000, 1000 * utils.MiB, 0, true, "std-pool"},
 		},
-		pods: []podConfig{
-			{"gpu-pod-1", 2000, 1000 * MiB, 1, "gpu-1-node-1"},
-			{"gpu-pod-2", 2000, 1000 * MiB, 2, "gpu-2-node-1"},
-			{"gpu-pod-3", 2000, 1000 * MiB, 4, "gpu-4-node-1"},
-			{"std-pod-1", 2000, 1000 * MiB, 0, "std-node-1"},
+		Pods: []PodConfig{
+			{"gpu-pod-1", 2000, 1000 * utils.MiB, 1, "gpu-1-node-1", true},
+			{"gpu-pod-2", 2000, 1000 * utils.MiB, 2, "gpu-2-node-1", true},
+			{"gpu-pod-3", 2000, 1000 * utils.MiB, 4, "gpu-4-node-1", true},
+			{"std-pod-1", 2000, 1000 * utils.MiB, 0, "std-node-1", false},
 		},
-		extraPods: []podConfig{
-			{"extra-gpu-pod-1", 1, 1 * MiB, 1, ""}, // CPU and mem negligible
-			{"extra-gpu-pod-2", 1, 1 * MiB, 1, ""}, // CPU and mem negligible
-			{"extra-gpu-pod-3", 1, 1 * MiB, 1, ""}, // CPU and mem negligible
+		ExtraPods: []PodConfig{
+			{"extra-gpu-pod-1", 1, 1 * utils.MiB, 1, "", true}, // CPU and mem negligible
+			{"extra-gpu-pod-2", 1, 1 * utils.MiB, 1, "", true}, // CPU and mem negligible
+			{"extra-gpu-pod-3", 1, 1 * utils.MiB, 1, "", true}, // CPU and mem negligible
 		},
-		expectedScaleUpOptions: []groupSizeChange{
-			{groupName: "gpu-1-pool", sizeChange: 3},
-			{groupName: "gpu-2-pool", sizeChange: 2},
-			{groupName: "gpu-4-pool", sizeChange: 1},
+		ExpansionOptionToChoose: GroupSizeChange{GroupName: "gpu-1-pool", SizeChange: 3},
+		Options:                 options,
+	}
+	results := &ScaleTestResults{
+		FinalOption: GroupSizeChange{GroupName: "gpu-1-pool", SizeChange: 3},
+		ExpansionOptions: []GroupSizeChange{
+			{GroupName: "gpu-1-pool", SizeChange: 3},
+			{GroupName: "gpu-2-pool", SizeChange: 2},
+			{GroupName: "gpu-4-pool", SizeChange: 1},
 		},
-		scaleUpOptionToChoose: groupSizeChange{groupName: "gpu-1-pool", sizeChange: 3},
-		expectedFinalScaleUp:  groupSizeChange{groupName: "gpu-1-pool", sizeChange: 3},
-		options:               options,
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsTriggeredScaleUp: []string{"extra-gpu-pod-1", "extra-gpu-pod-2", "extra-gpu-pod-3"},
+		},
 	}
 
-	simpleScaleUpTest(t, config)
+	simpleScaleUpTest(t, config, results)
 }
 
-type assertingStrategy struct {
-	initialNodeConfigs     []nodeConfig
-	expectedScaleUpOptions []groupSizeChange
-	scaleUpOptionToChoose  groupSizeChange
-	t                      *testing.T
-}
-
-func (s assertingStrategy) BestOption(options []expander.Option, nodeInfo map[string]*schedulernodeinfo.NodeInfo) *expander.Option {
-	if len(s.expectedScaleUpOptions) > 0 {
-		// empty s.expectedScaleUpOptions means we do not want to do assertion on contents of actual scaleUp options
-
-		// precondition check that option to choose is part of expected options
-		assert.Contains(s.t, s.expectedScaleUpOptions, s.scaleUpOptionToChoose, "scaleUpOptionToChoose must be present in expectedScaleUpOptions")
-
-		actualScaleUpOptions := expanderOptionsToGroupSizeChanges(options)
-		assert.Subset(s.t, actualScaleUpOptions, s.expectedScaleUpOptions,
-			"actual %s and expected %s scaleUp options differ",
-			actualScaleUpOptions,
-			s.expectedScaleUpOptions)
-		assert.Equal(s.t, len(actualScaleUpOptions), len(s.expectedScaleUpOptions),
-			"actual %s and expected %s scaleUp options differ",
-			actualScaleUpOptions,
-			s.expectedScaleUpOptions)
+// No scale up scenarios.
+func TestNoScaleUpMaxCoresLimitHit(t *testing.T) {
+	options := defaultOptions
+	options.MaxCoresTotal = 7
+	options.MaxMemoryTotal = 1150
+	config := &ScaleTestConfig{
+		Nodes: []NodeConfig{
+			{"n1", 2000, 100, 0, true, "ng1"},
+			{"n2", 4000, 1000, 0, true, "ng2"},
+		},
+		Pods: []PodConfig{
+			{"p1", 1000, 0, 0, "n1", false},
+			{"p2", 3000, 0, 0, "n2", false},
+		},
+		ExtraPods: []PodConfig{
+			{"p-new-1", 2000, 0, 0, "", false},
+			{"p-new-2", 2000, 0, 0, "", false},
+		},
+		Options: options,
+	}
+	results := &ScaleTestResults{
+		NoScaleUpReason: "max cluster cpu, memory limit reached",
+		ScaleUpStatus: ScaleUpStatusInfo{
+			PodsRemainUnschedulable: []string{"p-new-1", "p-new-2"},
+		},
 	}
 
+	simpleNoScaleUpTest(t, config, results)
+}
+
+// To implement expander.Strategy, BestOption method must have a struct receiver.
+// This prevents it from modifying fields of reportingStrategy, so we need a thin
+// pointer wrapper for mutable parts.
+type expanderResults struct {
+	inputOptions []GroupSizeChange
+}
+
+type reportingStrategy struct {
+	initialNodeConfigs []NodeConfig
+	optionToChoose     GroupSizeChange
+	results            *expanderResults
+	t                  *testing.T
+}
+
+func (r reportingStrategy) BestOption(options []expander.Option, nodeInfo map[string]*schedulerframework.NodeInfo) *expander.Option {
+	r.results.inputOptions = expanderOptionsToGroupSizeChanges(options)
 	for _, option := range options {
-		scaleUpOption := expanderOptionToGroupSizeChange(option)
-		if scaleUpOption == s.scaleUpOptionToChoose {
+		GroupSizeChange := expanderOptionToGroupSizeChange(option)
+		if GroupSizeChange == r.optionToChoose {
 			return &option
 		}
 	}
-	assert.Fail(s.t, "did not find scaleUpOptionToChoose %s", s.scaleUpOptionToChoose)
+	assert.Fail(r.t, "did not find expansionOptionToChoose %s", r.optionToChoose)
 	return nil
 }
 
-func expanderOptionsToGroupSizeChanges(options []expander.Option) []groupSizeChange {
-	groupSizeChanges := make([]groupSizeChange, 0, len(options))
+func expanderOptionsToGroupSizeChanges(options []expander.Option) []GroupSizeChange {
+	groupSizeChanges := make([]GroupSizeChange, 0, len(options))
 	for _, option := range options {
-		groupSizeChange := expanderOptionToGroupSizeChange(option)
-		groupSizeChanges = append(groupSizeChanges, groupSizeChange)
+		GroupSizeChange := expanderOptionToGroupSizeChange(option)
+		groupSizeChanges = append(groupSizeChanges, GroupSizeChange)
 	}
 	return groupSizeChanges
 }
 
-func expanderOptionToGroupSizeChange(option expander.Option) groupSizeChange {
+func expanderOptionToGroupSizeChange(option expander.Option) GroupSizeChange {
 	groupName := option.NodeGroup.Id()
 	groupSizeIncrement := option.NodeCount
-	scaleUpOption := groupSizeChange{groupName, groupSizeIncrement}
+	scaleUpOption := GroupSizeChange{groupName, groupSizeIncrement}
 	return scaleUpOption
 }
 
-func simpleScaleUpTest(t *testing.T, config *scaleTestConfig) {
-	expandedGroups := make(chan groupSizeChange, 10)
+func runSimpleScaleUpTest(t *testing.T, config *ScaleTestConfig) *ScaleTestResults {
+	expandedGroups := make(chan GroupSizeChange, 10)
+	now := time.Now()
 
 	groups := make(map[string][]*apiv1.Node)
-	nodes := make([]*apiv1.Node, len(config.nodes))
-	for i, n := range config.nodes {
-		node := BuildTestNode(n.name, n.cpu, n.memory)
-		if n.gpu > 0 {
-			AddGpusToNode(node, n.gpu)
+	nodes := make([]*apiv1.Node, len(config.Nodes))
+	for i, n := range config.Nodes {
+		node := BuildTestNode(n.Name, n.Cpu, n.Memory)
+		if n.Gpu > 0 {
+			AddGpusToNode(node, n.Gpu)
 		}
-		SetNodeReadyState(node, n.ready, time.Now())
+		SetNodeReadyState(node, n.Ready, now.Add(-2*time.Minute))
 		nodes[i] = node
-		if n.group != "" {
-			groups[n.group] = append(groups[n.group], node)
+		if n.Group != "" {
+			groups[n.Group] = append(groups[n.Group], node)
 		}
 	}
 
 	pods := make([]*apiv1.Pod, 0)
-	for _, p := range config.pods {
+	for _, p := range config.Pods {
 		pod := buildTestPod(p)
 		pods = append(pods, pod)
 	}
@@ -384,7 +502,7 @@ func simpleScaleUpTest(t *testing.T, config *scaleTestConfig) {
 	listers := kube_util.NewListerRegistry(nil, nil, podLister, nil, nil, nil, nil, nil, nil, nil)
 
 	provider := testprovider.NewTestCloudProvider(func(nodeGroup string, increase int) error {
-		expandedGroups <- groupSizeChange{groupName: nodeGroup, sizeChange: increase}
+		expandedGroups <- GroupSizeChange{GroupName: nodeGroup, SizeChange: increase}
 		return nil
 	}, nil)
 
@@ -396,28 +514,30 @@ func simpleScaleUpTest(t *testing.T, config *scaleTestConfig) {
 	}
 
 	resourceLimiter := cloudprovider.NewResourceLimiter(
-		map[string]int64{cloudprovider.ResourceNameCores: config.options.MinCoresTotal, cloudprovider.ResourceNameMemory: config.options.MinMemoryTotal},
-		map[string]int64{cloudprovider.ResourceNameCores: config.options.MaxCoresTotal, cloudprovider.ResourceNameMemory: config.options.MaxMemoryTotal})
+		map[string]int64{cloudprovider.ResourceNameCores: config.Options.MinCoresTotal, cloudprovider.ResourceNameMemory: config.Options.MinMemoryTotal},
+		map[string]int64{cloudprovider.ResourceNameCores: config.Options.MaxCoresTotal, cloudprovider.ResourceNameMemory: config.Options.MaxMemoryTotal})
 	provider.SetResourceLimiter(resourceLimiter)
 
 	assert.NotNil(t, provider)
 
 	// Create context with non-random expander strategy.
-	context := NewScaleTestAutoscalingContext(config.options, &fake.Clientset{}, listers, provider, nil)
-	expander := assertingStrategy{
-		initialNodeConfigs:     config.nodes,
-		expectedScaleUpOptions: config.expectedScaleUpOptions,
-		scaleUpOptionToChoose:  config.scaleUpOptionToChoose,
-		t:                      t,
+	context, err := NewScaleTestAutoscalingContext(config.Options, &fake.Clientset{}, listers, provider, nil, nil)
+	assert.NoError(t, err)
+
+	expander := reportingStrategy{
+		initialNodeConfigs: config.Nodes,
+		optionToChoose:     config.ExpansionOptionToChoose,
+		results:            &expanderResults{},
+		t:                  t,
 	}
 	context.ExpanderStrategy = expander
 
-	nodeInfos, _ := getNodeInfosForGroups(nodes, nil, provider, listers, []*appsv1.DaemonSet{}, context.PredicateChecker, nil)
-	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, newBackoff())
+	nodeInfos, _ := nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil).Process(&context, nodes, []*appsv1.DaemonSet{}, nil, now)
+	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, NewBackoff())
 	clusterState.UpdateNodes(nodes, nodeInfos, time.Now())
 
-	extraPods := make([]*apiv1.Pod, len(config.extraPods))
-	for i, p := range config.extraPods {
+	extraPods := make([]*apiv1.Pod, len(config.ExtraPods))
+	for i, p := range config.ExtraPods {
 		pod := buildTestPod(p)
 		extraPods[i] = pod
 	}
@@ -426,153 +546,126 @@ func simpleScaleUpTest(t *testing.T, config *scaleTestConfig) {
 
 	scaleUpStatus, err := ScaleUp(&context, processors, clusterState, extraPods, nodes, []*appsv1.DaemonSet{}, nodeInfos, nil)
 	processors.ScaleUpStatusProcessor.Process(&context, scaleUpStatus)
+
 	assert.NoError(t, err)
-	assert.True(t, scaleUpStatus.WasSuccessful())
 
 	expandedGroup := getGroupSizeChangeFromChan(expandedGroups)
-	assert.NotNil(t, expandedGroup, "Expected scale up event")
-	assert.Equal(t, config.expectedFinalScaleUp, *expandedGroup)
+	var expandedGroupStruct GroupSizeChange
+	if expandedGroup != nil {
+		expandedGroupStruct = *expandedGroup
+	}
 
-	nodeEventSeen := false
+	events := []string{}
 	for eventsLeft := true; eventsLeft; {
 		select {
 		case event := <-context.Recorder.(*kube_record.FakeRecorder).Events:
-			if strings.Contains(event, "TriggeredScaleUp") && strings.Contains(event, config.expectedFinalScaleUp.groupName) {
-				nodeEventSeen = true
-			}
-			assert.NotRegexp(t, regexp.MustCompile("NotTriggerScaleUp"), event)
+			events = append(events, event)
 		default:
 			eventsLeft = false
 		}
 	}
-	assert.True(t, nodeEventSeen)
+
+	return &ScaleTestResults{
+		ExpansionOptions: expander.results.inputOptions,
+		FinalOption:      expandedGroupStruct,
+		ScaleUpStatus:    simplifyScaleUpStatus(scaleUpStatus),
+		Events:           events,
+	}
 }
 
-func getGroupSizeChangeFromChan(c chan groupSizeChange) *groupSizeChange {
+func simpleNoScaleUpTest(t *testing.T, config *ScaleTestConfig, expectedResults *ScaleTestResults) {
+	results := runSimpleScaleUpTest(t, config)
+
+	assert.Equal(t, GroupSizeChange{}, results.FinalOption)
+	assert.False(t, results.ScaleUpStatus.WasSuccessful())
+	noScaleUpEventSeen := false
+	for _, event := range results.Events {
+		if strings.Contains(event, "NotTriggerScaleUp") {
+			if strings.Contains(event, expectedResults.NoScaleUpReason) {
+				noScaleUpEventSeen = true
+			} else {
+				// Surprisingly useful for debugging.
+				fmt.Println("Event:", event)
+			}
+		}
+		assert.NotRegexp(t, regexp.MustCompile("TriggeredScaleUp"), event)
+	}
+	assert.True(t, noScaleUpEventSeen)
+	assert.ElementsMatch(t, results.ScaleUpStatus.PodsTriggeredScaleUp, expectedResults.ScaleUpStatus.PodsTriggeredScaleUp,
+		"actual and expected triggering pods should be the same")
+	assert.ElementsMatch(t, results.ScaleUpStatus.PodsRemainUnschedulable, expectedResults.ScaleUpStatus.PodsRemainUnschedulable,
+		"actual and expected remaining pods should be the same")
+	assert.ElementsMatch(t, results.ScaleUpStatus.PodsAwaitEvaluation, expectedResults.ScaleUpStatus.PodsAwaitEvaluation,
+		"actual and expected awaiting evaluation pods should be the same")
+}
+
+func simpleScaleUpTest(t *testing.T, config *ScaleTestConfig, expectedResults *ScaleTestResults) {
+	results := runSimpleScaleUpTest(t, config)
+
+	assert.NotNil(t, results.FinalOption, "Expected scale up event")
+	assert.Equal(t, expectedResults.FinalOption, results.FinalOption)
+	assert.True(t, results.ScaleUpStatus.WasSuccessful())
+	nodeEventSeen := false
+	for _, event := range results.Events {
+		if strings.Contains(event, "TriggeredScaleUp") && strings.Contains(event, expectedResults.FinalOption.GroupName) {
+			nodeEventSeen = true
+		}
+		if len(expectedResults.ScaleUpStatus.PodsRemainUnschedulable) == 0 {
+			assert.NotRegexp(t, regexp.MustCompile("NotTriggerScaleUp"), event)
+		}
+	}
+	assert.True(t, nodeEventSeen)
+
+	if len(expectedResults.ExpansionOptions) > 0 {
+		// Empty ExpansionOptions means we do not want to do any assertions
+		// on contents of actual scaleUp options
+
+		// Check that option to choose is part of expected options.
+		assert.Contains(t, expectedResults.ExpansionOptions, config.ExpansionOptionToChoose, "final expected expansion option must be in expected expansion options")
+		assert.Contains(t, results.ExpansionOptions, config.ExpansionOptionToChoose, "final expected expansion option must be in expected expansion options")
+
+		assert.ElementsMatch(t, results.ExpansionOptions, expectedResults.ExpansionOptions,
+			"actual and expected expansion options should be the same")
+	}
+
+	assert.ElementsMatch(t, results.ScaleUpStatus.PodsTriggeredScaleUp, expectedResults.ScaleUpStatus.PodsTriggeredScaleUp,
+		"actual and expected triggering pods should be the same")
+	assert.ElementsMatch(t, results.ScaleUpStatus.PodsRemainUnschedulable, expectedResults.ScaleUpStatus.PodsRemainUnschedulable,
+		"actual and expected remaining pods should be the same")
+	assert.ElementsMatch(t, results.ScaleUpStatus.PodsAwaitEvaluation, expectedResults.ScaleUpStatus.PodsAwaitEvaluation,
+		"actual and expected awaiting evaluation pods should be the same")
+}
+
+func getGroupSizeChangeFromChan(c chan GroupSizeChange) *GroupSizeChange {
 	select {
 	case val := <-c:
 		return &val
-	case <-time.After(10 * time.Second):
+	case <-time.After(100 * time.Millisecond):
 		return nil
 	}
 }
 
-func buildTestPod(p podConfig) *apiv1.Pod {
-	pod := BuildTestPod(p.name, p.cpu, p.memory)
-	if p.gpu > 0 {
-		RequestGpuForPod(pod, p.gpu)
+func buildTestPod(p PodConfig) *apiv1.Pod {
+	pod := BuildTestPod(p.Name, p.Cpu, p.Memory)
+	if p.Gpu > 0 {
+		RequestGpuForPod(pod, p.Gpu)
 	}
-	if p.node != "" {
-		pod.Spec.NodeName = p.node
+	if p.ToleratesGpu {
+		TolerateGpuForPod(pod)
+	}
+	if p.Node != "" {
+		pod.Spec.NodeName = p.Node
 	}
 	return pod
 }
 
-func TestScaleUpNodeComingNoScale(t *testing.T) {
-	n1 := BuildTestNode("n1", 100, 1000)
-	SetNodeReadyState(n1, true, time.Now())
-	n2 := BuildTestNode("n2", 1000, 1000)
-	SetNodeReadyState(n2, true, time.Now())
-
-	p1 := BuildTestPod("p1", 80, 0)
-	p2 := BuildTestPod("p2", 800, 0)
-	p1.Spec.NodeName = "n1"
-	p2.Spec.NodeName = "n2"
-
-	podLister := kube_util.NewTestPodLister([]*apiv1.Pod{p1, p2})
-	listers := kube_util.NewListerRegistry(nil, nil, podLister, nil, nil, nil, nil, nil, nil, nil)
-
-	provider := testprovider.NewTestCloudProvider(func(nodeGroup string, increase int) error {
-		t.Fatalf("No expansion is expected, but increased %s by %d", nodeGroup, increase)
-		return nil
-	}, nil)
-	provider.AddNodeGroup("ng1", 1, 10, 1)
-	provider.AddNodeGroup("ng2", 1, 10, 2)
-	provider.AddNode("ng1", n1)
-	provider.AddNode("ng2", n2)
-
-	options := config.AutoscalingOptions{
-		EstimatorName:  estimator.BinpackingEstimatorName,
-		MaxCoresTotal:  config.DefaultMaxClusterCores,
-		MaxMemoryTotal: config.DefaultMaxClusterMemory,
-	}
-	context := NewScaleTestAutoscalingContext(options, &fake.Clientset{}, listers, provider, nil)
-
-	nodes := []*apiv1.Node{n1, n2}
-	nodeInfos, _ := getNodeInfosForGroups(nodes, nil, provider, listers, []*appsv1.DaemonSet{}, context.PredicateChecker, nil)
-	clusterState := clusterstate.NewClusterStateRegistry(
-		provider,
-		clusterstate.ClusterStateRegistryConfig{MaxNodeProvisionTime: 5 * time.Minute},
-		context.LogRecorder,
-		newBackoff())
-	clusterState.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng2"), 1, time.Now())
-	clusterState.UpdateNodes(nodes, nodeInfos, time.Now())
-
-	p3 := BuildTestPod("p-new", 550, 0)
-
-	processors := NewTestProcessors()
-
-	scaleUpStatus, err := ScaleUp(&context, processors, clusterState, []*apiv1.Pod{p3}, nodes, []*appsv1.DaemonSet{}, nodeInfos, nil)
-	assert.NoError(t, err)
-	// A node is already coming - no need for scale up.
-	assert.False(t, scaleUpStatus.WasSuccessful())
-}
-
-func TestScaleUpNodeComingHasScale(t *testing.T) {
-	n1 := BuildTestNode("n1", 100, 1000)
-	SetNodeReadyState(n1, true, time.Now())
-	n2 := BuildTestNode("n2", 1000, 1000)
-	SetNodeReadyState(n2, true, time.Now())
-
-	p1 := BuildTestPod("p1", 80, 0)
-	p2 := BuildTestPod("p2", 800, 0)
-	p1.Spec.NodeName = "n1"
-	p2.Spec.NodeName = "n2"
-
-	podLister := kube_util.NewTestPodLister([]*apiv1.Pod{p1, p2})
-	listers := kube_util.NewListerRegistry(nil, nil, podLister, nil, nil, nil, nil, nil, nil, nil)
-
-	expandedGroups := make(chan string, 10)
-	provider := testprovider.NewTestCloudProvider(func(nodeGroup string, increase int) error {
-		expandedGroups <- fmt.Sprintf("%s-%d", nodeGroup, increase)
-		return nil
-	}, nil)
-	provider.AddNodeGroup("ng1", 1, 10, 1)
-	provider.AddNodeGroup("ng2", 1, 10, 2)
-	provider.AddNode("ng1", n1)
-	provider.AddNode("ng2", n2)
-
-	context := NewScaleTestAutoscalingContext(defaultOptions, &fake.Clientset{}, listers, provider, nil)
-
-	nodes := []*apiv1.Node{n1, n2}
-	nodeInfos, _ := getNodeInfosForGroups(nodes, nil, provider, listers, []*appsv1.DaemonSet{}, context.PredicateChecker, nil)
-	clusterState := clusterstate.NewClusterStateRegistry(
-		provider,
-		clusterstate.ClusterStateRegistryConfig{
-			MaxNodeProvisionTime: 5 * time.Minute,
-		},
-		context.LogRecorder,
-		newBackoff())
-	clusterState.RegisterOrUpdateScaleUp(provider.GetNodeGroup("ng2"), 1, time.Now())
-	clusterState.UpdateNodes(nodes, nodeInfos, time.Now())
-
-	p3 := BuildTestPod("p-new", 550, 0)
-	p4 := BuildTestPod("p-new", 550, 0)
-
-	processors := NewTestProcessors()
-	scaleUpStatus, err := ScaleUp(&context, processors, clusterState, []*apiv1.Pod{p3, p4}, nodes, []*appsv1.DaemonSet{}, nodeInfos, nil)
-
-	assert.NoError(t, err)
-	// Two nodes needed but one node is already coming, so it should increase by one.
-	assert.True(t, scaleUpStatus.WasSuccessful())
-	assert.Equal(t, "ng2-1", getStringFromChan(expandedGroups))
-}
-
 func TestScaleUpUnhealthy(t *testing.T) {
+	now := time.Now()
+	someTimeAgo := now.Add(-2 * time.Minute)
 	n1 := BuildTestNode("n1", 100, 1000)
-	SetNodeReadyState(n1, true, time.Now())
+	SetNodeReadyState(n1, true, someTimeAgo)
 	n2 := BuildTestNode("n2", 1000, 1000)
-	SetNodeReadyState(n2, true, time.Now())
+	SetNodeReadyState(n2, true, someTimeAgo)
 
 	p1 := BuildTestPod("p1", 80, 0)
 	p2 := BuildTestPod("p2", 800, 0)
@@ -596,11 +689,12 @@ func TestScaleUpUnhealthy(t *testing.T) {
 		MaxCoresTotal:  config.DefaultMaxClusterCores,
 		MaxMemoryTotal: config.DefaultMaxClusterMemory,
 	}
-	context := NewScaleTestAutoscalingContext(options, &fake.Clientset{}, listers, provider, nil)
+	context, err := NewScaleTestAutoscalingContext(options, &fake.Clientset{}, listers, provider, nil, nil)
+	assert.NoError(t, err)
 
 	nodes := []*apiv1.Node{n1, n2}
-	nodeInfos, _ := getNodeInfosForGroups(nodes, nil, provider, listers, []*appsv1.DaemonSet{}, context.PredicateChecker, nil)
-	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, newBackoff())
+	nodeInfos, _ := nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil).Process(&context, nodes, []*appsv1.DaemonSet{}, nil, now)
+	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, NewBackoff())
 	clusterState.UpdateNodes(nodes, nodeInfos, time.Now())
 	p3 := BuildTestPod("p-new", 550, 0)
 
@@ -614,7 +708,8 @@ func TestScaleUpUnhealthy(t *testing.T) {
 
 func TestScaleUpNoHelp(t *testing.T) {
 	n1 := BuildTestNode("n1", 100, 1000)
-	SetNodeReadyState(n1, true, time.Now())
+	now := time.Now()
+	SetNodeReadyState(n1, true, now.Add(-2*time.Minute))
 
 	p1 := BuildTestPod("p1", 80, 0)
 	p1.Spec.NodeName = "n1"
@@ -635,11 +730,12 @@ func TestScaleUpNoHelp(t *testing.T) {
 		MaxCoresTotal:  config.DefaultMaxClusterCores,
 		MaxMemoryTotal: config.DefaultMaxClusterMemory,
 	}
-	context := NewScaleTestAutoscalingContext(options, &fake.Clientset{}, listers, provider, nil)
+	context, err := NewScaleTestAutoscalingContext(options, &fake.Clientset{}, listers, provider, nil, nil)
+	assert.NoError(t, err)
 
 	nodes := []*apiv1.Node{n1}
-	nodeInfos, _ := getNodeInfosForGroups(nodes, nil, provider, listers, []*appsv1.DaemonSet{}, context.PredicateChecker, nil)
-	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, newBackoff())
+	nodeInfos, _ := nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil).Process(&context, nodes, []*appsv1.DaemonSet{}, nil, now)
+	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, NewBackoff())
 	clusterState.UpdateNodes(nodes, nodeInfos, time.Now())
 	p3 := BuildTestPod("p-new", 500, 0)
 
@@ -675,12 +771,14 @@ func TestScaleUpBalanceGroups(t *testing.T) {
 	podList := make([]*apiv1.Pod, 0, len(testCfg))
 	nodes := make([]*apiv1.Node, 0)
 
+	now := time.Now()
+
 	for gid, gconf := range testCfg {
 		provider.AddNodeGroup(gid, gconf.min, gconf.max, gconf.size)
 		for i := 0; i < gconf.size; i++ {
 			nodeName := fmt.Sprintf("%v-node-%v", gid, i)
 			node := BuildTestNode(nodeName, 100, 1000)
-			SetNodeReadyState(node, true, time.Now())
+			SetNodeReadyState(node, true, now.Add(-2*time.Minute))
 			nodes = append(nodes, node)
 
 			pod := BuildTestPod(fmt.Sprintf("%v-pod-%v", gid, i), 80, 0)
@@ -700,10 +798,11 @@ func TestScaleUpBalanceGroups(t *testing.T) {
 		MaxCoresTotal:            config.DefaultMaxClusterCores,
 		MaxMemoryTotal:           config.DefaultMaxClusterMemory,
 	}
-	context := NewScaleTestAutoscalingContext(options, &fake.Clientset{}, listers, provider, nil)
+	context, err := NewScaleTestAutoscalingContext(options, &fake.Clientset{}, listers, provider, nil, nil)
+	assert.NoError(t, err)
 
-	nodeInfos, _ := getNodeInfosForGroups(nodes, nil, provider, listers, []*appsv1.DaemonSet{}, context.PredicateChecker, nil)
-	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, newBackoff())
+	nodeInfos, _ := nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil).Process(&context, nodes, []*appsv1.DaemonSet{}, nil, now)
+	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, NewBackoff())
 	clusterState.UpdateNodes(nodes, nodeInfos, time.Now())
 
 	pods := make([]*apiv1.Pod, 0)
@@ -739,7 +838,7 @@ func TestScaleUpAutoprovisionedNodeGroup(t *testing.T) {
 
 	t1 := BuildTestNode("t1", 4000, 1000000)
 	SetNodeReadyState(t1, true, time.Time{})
-	ti1 := schedulernodeinfo.NewNodeInfo()
+	ti1 := schedulerframework.NewNodeInfo()
 	ti1.SetNode(t1)
 
 	provider := testprovider.NewTestAutoprovisioningCloudProvider(
@@ -749,7 +848,7 @@ func TestScaleUpAutoprovisionedNodeGroup(t *testing.T) {
 		}, nil, func(nodeGroup string) error {
 			createdGroups <- nodeGroup
 			return nil
-		}, nil, []string{"T1"}, map[string]*schedulernodeinfo.NodeInfo{"T1": ti1})
+		}, nil, []string{"T1"}, map[string]*schedulerframework.NodeInfo{"T1": ti1})
 
 	options := config.AutoscalingOptions{
 		EstimatorName:                    estimator.BinpackingEstimatorName,
@@ -760,22 +859,82 @@ func TestScaleUpAutoprovisionedNodeGroup(t *testing.T) {
 	}
 	podLister := kube_util.NewTestPodLister([]*apiv1.Pod{})
 	listers := kube_util.NewListerRegistry(nil, nil, podLister, nil, nil, nil, nil, nil, nil, nil)
-	context := NewScaleTestAutoscalingContext(options, fakeClient, listers, provider, nil)
+	context, err := NewScaleTestAutoscalingContext(options, fakeClient, listers, provider, nil, nil)
+	assert.NoError(t, err)
 
-	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, newBackoff())
+	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, NewBackoff())
 
 	processors := NewTestProcessors()
-	processors.NodeGroupListProcessor = &mockAutoprovisioningNodeGroupListProcessor{t}
-	processors.NodeGroupManager = &mockAutoprovisioningNodeGroupManager{t}
+	processors.NodeGroupListProcessor = &MockAutoprovisioningNodeGroupListProcessor{t}
+	processors.NodeGroupManager = &MockAutoprovisioningNodeGroupManager{t, 0}
 
 	nodes := []*apiv1.Node{}
-	nodeInfos, _ := getNodeInfosForGroups(nodes, nil, provider, context.ListerRegistry, []*appsv1.DaemonSet{}, context.PredicateChecker, nil)
+	nodeInfos, _ := nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil).Process(&context, nodes, []*appsv1.DaemonSet{}, nil, time.Now())
 
 	scaleUpStatus, err := ScaleUp(&context, processors, clusterState, []*apiv1.Pod{p1}, nodes, []*appsv1.DaemonSet{}, nodeInfos, nil)
 	assert.NoError(t, err)
 	assert.True(t, scaleUpStatus.WasSuccessful())
-	assert.Equal(t, "autoprovisioned-T1", getStringFromChan(createdGroups))
-	assert.Equal(t, "autoprovisioned-T1-1", getStringFromChan(expandedGroups))
+	assert.Equal(t, "autoprovisioned-T1", utils.GetStringFromChan(createdGroups))
+	assert.Equal(t, "autoprovisioned-T1-1", utils.GetStringFromChan(expandedGroups))
+}
+
+func TestScaleUpBalanceAutoprovisionedNodeGroups(t *testing.T) {
+	createdGroups := make(chan string, 10)
+	expandedGroups := make(chan string, 10)
+
+	p1 := BuildTestPod("p1", 80, 0)
+	p2 := BuildTestPod("p2", 80, 0)
+	p3 := BuildTestPod("p3", 80, 0)
+
+	fakeClient := &fake.Clientset{}
+
+	t1 := BuildTestNode("t1", 100, 1000000)
+	SetNodeReadyState(t1, true, time.Time{})
+	ti1 := schedulerframework.NewNodeInfo()
+	ti1.SetNode(t1)
+
+	provider := testprovider.NewTestAutoprovisioningCloudProvider(
+		func(nodeGroup string, increase int) error {
+			expandedGroups <- fmt.Sprintf("%s-%d", nodeGroup, increase)
+			return nil
+		}, nil, func(nodeGroup string) error {
+			createdGroups <- nodeGroup
+			return nil
+		}, nil, []string{"T1"}, map[string]*schedulerframework.NodeInfo{"T1": ti1})
+
+	options := config.AutoscalingOptions{
+		BalanceSimilarNodeGroups:         true,
+		EstimatorName:                    estimator.BinpackingEstimatorName,
+		MaxCoresTotal:                    5000 * 64,
+		MaxMemoryTotal:                   5000 * 64 * 20,
+		NodeAutoprovisioningEnabled:      true,
+		MaxAutoprovisionedNodeGroupCount: 10,
+	}
+	podLister := kube_util.NewTestPodLister([]*apiv1.Pod{})
+	listers := kube_util.NewListerRegistry(nil, nil, podLister, nil, nil, nil, nil, nil, nil, nil)
+	context, err := NewScaleTestAutoscalingContext(options, fakeClient, listers, provider, nil, nil)
+	assert.NoError(t, err)
+
+	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, NewBackoff())
+
+	processors := NewTestProcessors()
+	processors.NodeGroupListProcessor = &MockAutoprovisioningNodeGroupListProcessor{t}
+	processors.NodeGroupManager = &MockAutoprovisioningNodeGroupManager{t, 2}
+
+	nodes := []*apiv1.Node{}
+	nodeInfos, _ := nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil).Process(&context, nodes, []*appsv1.DaemonSet{}, nil, time.Now())
+
+	scaleUpStatus, err := ScaleUp(&context, processors, clusterState, []*apiv1.Pod{p1, p2, p3}, nodes, []*appsv1.DaemonSet{}, nodeInfos, nil)
+	assert.NoError(t, err)
+	assert.True(t, scaleUpStatus.WasSuccessful())
+	assert.Equal(t, "autoprovisioned-T1", utils.GetStringFromChan(createdGroups))
+	expandedGroupMap := map[string]bool{}
+	for i := 0; i < 3; i++ {
+		expandedGroupMap[utils.GetStringFromChan(expandedGroups)] = true
+	}
+	assert.True(t, expandedGroupMap["autoprovisioned-T1-1"])
+	assert.True(t, expandedGroupMap["autoprovisioned-T1-1-1"])
+	assert.True(t, expandedGroupMap["autoprovisioned-T1-2-1"])
 }
 
 func TestCheckScaleUpDeltaWithinLimits(t *testing.T) {
@@ -824,5 +983,50 @@ func TestCheckScaleUpDeltaWithinLimits(t *testing.T) {
 		} else {
 			assert.Equal(t, scaleUpLimitsCheckResult{true, test.exceededResources}, checkResult)
 		}
+	}
+}
+
+func TestAuthError(t *testing.T) {
+	metrics.RegisterAll(false)
+	context, err := NewScaleTestAutoscalingContext(config.AutoscalingOptions{}, &fake.Clientset{}, nil, nil, nil, nil)
+	assert.NoError(t, err)
+
+	nodeGroup := &mockprovider.NodeGroup{}
+	info := nodegroupset.ScaleUpInfo{Group: nodeGroup}
+	nodeGroup.On("Id").Return("A")
+	nodeGroup.On("IncreaseSize", 0).Return(errors.NewAutoscalerError(errors.AutoscalerErrorType("abcd"), ""))
+
+	clusterStateRegistry := clusterstate.NewClusterStateRegistry(nil, clusterstate.ClusterStateRegistryConfig{}, context.LogRecorder, NewBackoff())
+
+	aerr := executeScaleUp(&context, clusterStateRegistry, info, "", time.Now())
+	assert.Error(t, aerr)
+
+	req, err := http.NewRequest("GET", "/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(legacyregistry.Handler().ServeHTTP)
+	handler.ServeHTTP(rr, req)
+
+	// Check that the status code is what we expect.
+	if status := rr.Code; status != http.StatusOK {
+		t.Errorf("handler returned wrong status code: got %v want %v",
+			status, http.StatusOK)
+	}
+	// Check that the failed scale up reason is set correctly.
+	assert.Contains(t, rr.Body.String(), "cluster_autoscaler_failed_scale_ups_total{reason=\"abcd\"} 1")
+}
+
+func simplifyScaleUpStatus(scaleUpStatus *status.ScaleUpStatus) ScaleUpStatusInfo {
+	remainUnschedulable := []string{}
+	for _, nsi := range scaleUpStatus.PodsRemainUnschedulable {
+		remainUnschedulable = append(remainUnschedulable, nsi.Pod.Name)
+	}
+	return ScaleUpStatusInfo{
+		Result:                  scaleUpStatus.Result,
+		PodsTriggeredScaleUp:    ExtractPodNames(scaleUpStatus.PodsTriggeredScaleUp),
+		PodsRemainUnschedulable: remainUnschedulable,
+		PodsAwaitEvaluation:     ExtractPodNames(scaleUpStatus.PodsAwaitEvaluation),
 	}
 }

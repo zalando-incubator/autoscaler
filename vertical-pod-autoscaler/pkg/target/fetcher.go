@@ -17,19 +17,20 @@ limitations under the License.
 package target
 
 import (
+	"context"
 	"fmt"
-	"k8s.io/klog"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
+	batchv1beta1 "k8s.io/api/batch/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/client-go/discovery"
 	cacheddiscovery "k8s.io/client-go/discovery/cached"
 	"k8s.io/client-go/dynamic"
@@ -39,6 +40,7 @@ import (
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/scale"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -61,6 +63,7 @@ const (
 	statefulSet           wellKnownController = "StatefulSet"
 	replicationController wellKnownController = "ReplicationController"
 	job                   wellKnownController = "Job"
+	cronJob               wellKnownController = "CronJob"
 )
 
 // NewVpaTargetSelectorFetcher returns new instance of VpaTargetSelectorFetcher
@@ -84,6 +87,7 @@ func NewVpaTargetSelectorFetcher(config *rest.Config, kubeClient kube_client.Int
 		statefulSet:           factory.Apps().V1().StatefulSets().Informer(),
 		replicationController: factory.Core().V1().ReplicationControllers().Informer(),
 		job:                   factory.Batch().V1().Jobs().Informer(),
+		cronJob:               factory.Batch().V1beta1().CronJobs().Informer(),
 	}
 
 	for kind, informer := range informersMap {
@@ -115,7 +119,7 @@ type vpaTargetSelectorFetcher struct {
 
 func (f *vpaTargetSelectorFetcher) Fetch(vpa *vpa_types.VerticalPodAutoscaler) (labels.Selector, error) {
 	if vpa.Spec.TargetRef == nil {
-		return nil, fmt.Errorf("targetRef not defined")
+		return nil, fmt.Errorf("targetRef not defined. If this is a v1beta1 object switch to v1beta2.")
 	}
 	kind := wellKnownController(vpa.Spec.TargetRef.Kind)
 	informer, exists := f.informersMap[kind]
@@ -150,45 +154,23 @@ func getLabelSelector(informer cache.SharedIndexInformer, kind, namespace, name 
 	if !exists {
 		return nil, fmt.Errorf("%s %s/%s does not exist", kind, namespace, name)
 	}
-	switch obj.(type) {
+	switch apiObj := obj.(type) {
 	case (*appsv1.DaemonSet):
-		apiObj, ok := obj.(*appsv1.DaemonSet)
-		if !ok {
-			return nil, fmt.Errorf("Failed to parse %s %s/%s", kind, namespace, name)
-		}
 		return metav1.LabelSelectorAsSelector(apiObj.Spec.Selector)
 	case (*appsv1.Deployment):
-		apiObj, ok := obj.(*appsv1.Deployment)
-		if !ok {
-			return nil, fmt.Errorf("Failed to parse %s %s/%s", kind, namespace, name)
-		}
 		return metav1.LabelSelectorAsSelector(apiObj.Spec.Selector)
 	case (*appsv1.StatefulSet):
-		apiObj, ok := obj.(*appsv1.StatefulSet)
-		if !ok {
-			return nil, fmt.Errorf("Failed to parse %s %s/%s", kind, namespace, name)
-		}
 		return metav1.LabelSelectorAsSelector(apiObj.Spec.Selector)
 	case (*appsv1.ReplicaSet):
-		apiObj, ok := obj.(*appsv1.ReplicaSet)
-		if !ok {
-			return nil, fmt.Errorf("Failed to parse %s %s/%s", kind, namespace, name)
-		}
 		return metav1.LabelSelectorAsSelector(apiObj.Spec.Selector)
 	case (*batchv1.Job):
-		apiObj, ok := obj.(*batchv1.Job)
-		if !ok {
-			return nil, fmt.Errorf("Failed to parse %s %s/%s", kind, namespace, name)
-		}
 		return metav1.LabelSelectorAsSelector(apiObj.Spec.Selector)
+	case (*batchv1beta1.CronJob):
+		return metav1.LabelSelectorAsSelector(metav1.SetAsLabelSelector(apiObj.Spec.JobTemplate.Spec.Template.Labels))
 	case (*corev1.ReplicationController):
-		apiObj, ok := obj.(*corev1.ReplicationController)
-		if !ok {
-			return nil, fmt.Errorf("Failed to parse %s %s/%s", kind, namespace, name)
-		}
 		return metav1.LabelSelectorAsSelector(metav1.SetAsLabelSelector(apiObj.Spec.Selector))
 	}
-	return nil, fmt.Errorf("Don't know how to read label seletor")
+	return nil, fmt.Errorf("don't know how to read label seletor")
 }
 
 func (f *vpaTargetSelectorFetcher) getLabelSelectorFromResource(
@@ -202,8 +184,11 @@ func (f *vpaTargetSelectorFetcher) getLabelSelectorFromResource(
 	var lastError error
 	for _, mapping := range mappings {
 		groupResource := mapping.Resource.GroupResource()
-		scale, err := f.scaleNamespacer.Scales(namespace).Get(groupResource, name)
+		scale, err := f.scaleNamespacer.Scales(namespace).Get(context.TODO(), groupResource, name, metav1.GetOptions{})
 		if err == nil {
+			if scale.Status.Selector == "" {
+				return nil, fmt.Errorf("Resource %s/%s has an empty selector for scale sub-resource", namespace, name)
+			}
 			selector, err := labels.Parse(scale.Status.Selector)
 			if err != nil {
 				return nil, err

@@ -24,16 +24,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-10-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2021-07-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2017-05-10/resources"
 	azStorage "github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/Azure/go-autorest/autorest/to"
-	"k8s.io/klog"
 
 	apiv1 "k8s.io/api/core/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	klog "k8s.io/klog/v2"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
+)
+
+const (
+	clusterAutoscalerDeploymentPrefix = `cluster-autoscaler-`
+	defaultMaxDeploymentsCount        = 10
 )
 
 // AgentPool implements NodeGroup interface for agent pools deployed by aks-engine.
@@ -61,6 +68,7 @@ func NewAgentPool(spec *dynamic.NodeGroupSpec, az *AzureManager) (*AgentPool, er
 		minSize: spec.MinSize,
 		maxSize: spec.MaxSize,
 		manager: az,
+		curSize: -1,
 	}
 
 	if err := as.initialize(); err != nil {
@@ -112,17 +120,39 @@ func (as *AgentPool) Autoprovisioned() bool {
 	return false
 }
 
+// GetOptions returns NodeGroupAutoscalingOptions that should be used for this particular
+// NodeGroup. Returning a nil will result in using default options.
+func (as *AgentPool) GetOptions(defaults config.NodeGroupAutoscalingOptions) (*config.NodeGroupAutoscalingOptions, error) {
+	return nil, cloudprovider.ErrNotImplemented
+}
+
 // MaxSize returns maximum size of the node group.
 func (as *AgentPool) MaxSize() int {
 	return as.maxSize
 }
 
+// Id returns AgentPool id.
+func (as *AgentPool) Id() string {
+	return as.Name
+}
+
+func (as *AgentPool) getVMsFromCache() ([]compute.VirtualMachine, error) {
+	allVMs := as.manager.azureCache.getVirtualMachines()
+	if _, exists := allVMs[as.Name]; !exists {
+		return []compute.VirtualMachine{}, fmt.Errorf("could not find VMs with poolName: %s", as.Name)
+	}
+	return allVMs[as.Name], nil
+}
+
 // GetVMIndexes gets indexes of all virtual machines belonging to the agent pool.
 func (as *AgentPool) GetVMIndexes() ([]int, map[int]string, error) {
-	instances, err := as.GetVirtualMachines()
+	klog.V(6).Infof("GetVMIndexes: starts for as %v", as)
+
+	instances, err := as.getVMsFromCache()
 	if err != nil {
 		return nil, nil, err
 	}
+	klog.V(6).Infof("GetVMIndexes: got instances, length = %d", len(instances))
 
 	indexes := make([]int, 0)
 	indexToVM := make(map[int]string)
@@ -160,6 +190,11 @@ func (as *AgentPool) getCurSize() (int64, error) {
 	}
 	klog.V(5).Infof("Returning agent pool (%q) size: %d\n", as.Name, len(indexes))
 
+	if as.curSize != int64(len(indexes)) {
+		klog.V(6).Infof("getCurSize:as.curSize(%d) != real size (%d), invalidating cache", as.curSize, len(indexes))
+		as.manager.invalidateCache()
+	}
+
 	as.curSize = int64(len(indexes))
 	as.lastRefresh = time.Now()
 	return as.curSize, nil
@@ -176,14 +211,82 @@ func (as *AgentPool) TargetSize() (int, error) {
 	return int(size), nil
 }
 
+func (as *AgentPool) getAllSucceededAndFailedDeployments() (succeededAndFailedDeployments []resources.DeploymentExtended, err error) {
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
+
+	deploymentsFilter := "provisioningState eq 'Succeeded' or provisioningState eq 'Failed'"
+	succeededAndFailedDeployments, err = as.manager.azClient.deploymentsClient.List(ctx, as.manager.config.ResourceGroup, deploymentsFilter, nil)
+	if err != nil {
+		klog.Errorf("getAllSucceededAndFailedDeployments: failed to list succeeded or failed deployments with error: %v", err)
+		return nil, err
+	}
+
+	return succeededAndFailedDeployments, err
+}
+
+// deleteOutdatedDeployments keeps the newest deployments in the resource group and delete others,
+// since Azure resource group deployments have a hard cap of 800, outdated deployments must be deleted
+// to prevent the `DeploymentQuotaExceeded` error. see: issue #2154.
+func (as *AgentPool) deleteOutdatedDeployments() (err error) {
+	deployments, err := as.getAllSucceededAndFailedDeployments()
+	if err != nil {
+		return err
+	}
+
+	for i := len(deployments) - 1; i >= 0; i-- {
+		klog.V(4).Infof("deleteOutdatedDeployments: found deployments[i].Name: %s", *deployments[i].Name)
+		if deployments[i].Name != nil && !strings.HasPrefix(*deployments[i].Name, clusterAutoscalerDeploymentPrefix) {
+			deployments = append(deployments[:i], deployments[i+1:]...)
+		}
+	}
+
+	if int64(len(deployments)) <= as.manager.config.MaxDeploymentsCount {
+		klog.V(4).Infof("deleteOutdatedDeployments: the number of deployments (%d) is under threshold, skip deleting", len(deployments))
+		return err
+	}
+
+	sort.Slice(deployments, func(i, j int) bool {
+		return deployments[i].Properties.Timestamp.Time.After(deployments[j].Properties.Timestamp.Time)
+	})
+
+	toBeDeleted := deployments[as.manager.config.MaxDeploymentsCount:]
+
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
+
+	errList := make([]error, 0)
+	for _, deployment := range toBeDeleted {
+		klog.V(4).Infof("deleteOutdatedDeployments: starts deleting outdated deployment (%s)", *deployment.Name)
+		_, err := as.manager.azClient.deploymentsClient.Delete(ctx, as.manager.config.ResourceGroup, *deployment.Name)
+		if err != nil {
+			errList = append(errList, err)
+		}
+	}
+
+	return utilerrors.NewAggregate(errList)
+}
+
 // IncreaseSize increases agent pool size
 func (as *AgentPool) IncreaseSize(delta int) error {
 	as.mutex.Lock()
 	defer as.mutex.Unlock()
 
+	if as.curSize == -1 {
+		return fmt.Errorf("the availability set %s is under initialization, skipping IncreaseSize", as.Name)
+	}
+
 	if delta <= 0 {
 		return fmt.Errorf("size increase must be positive")
 	}
+
+	err := as.deleteOutdatedDeployments()
+	if err != nil {
+		klog.Warningf("IncreaseSize: failed to cleanup outdated deployments with err: %v.", err)
+	}
+
+	klog.V(6).Infof("IncreaseSize: invalidating cache")
+	as.manager.invalidateCache()
 
 	indexes, _, err := as.GetVMIndexes()
 	if err != nil {
@@ -223,38 +326,13 @@ func (as *AgentPool) IncreaseSize(delta int) error {
 		// Update cache after scale success.
 		as.curSize = int64(expectedSize)
 		as.lastRefresh = time.Now()
+		klog.V(6).Info("IncreaseSize: invalidating cache")
+		as.manager.invalidateCache()
 		return nil
 	}
 
 	klog.Errorf("deploymentsClient.CreateOrUpdate for deployment %q failed: %v", newDeploymentName, realError)
 	return realError
-}
-
-// GetVirtualMachines returns list of nodes for the given agent pool.
-func (as *AgentPool) GetVirtualMachines() (instances []compute.VirtualMachine, err error) {
-	ctx, cancel := getContextWithCancel()
-	defer cancel()
-
-	result, err := as.manager.azClient.virtualMachinesClient.List(ctx, as.manager.config.ResourceGroup)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, instance := range result {
-		if instance.Tags == nil {
-			continue
-		}
-
-		tags := instance.Tags
-		vmPoolName := tags["poolName"]
-		if vmPoolName == nil || !strings.EqualFold(*vmPoolName, as.Id()) {
-			continue
-		}
-
-		instances = append(instances, instance)
-	}
-
-	return instances, nil
 }
 
 // DecreaseTargetSize decreases the target size of the node group. This function
@@ -266,7 +344,7 @@ func (as *AgentPool) DecreaseTargetSize(delta int) error {
 	as.mutex.Lock()
 	defer as.mutex.Unlock()
 
-	nodes, err := as.GetVirtualMachines()
+	nodes, err := as.getVMsFromCache()
 	if err != nil {
 		return err
 	}
@@ -290,14 +368,14 @@ func (as *AgentPool) Belongs(node *apiv1.Node) (bool, error) {
 		Name: node.Spec.ProviderID,
 	}
 
-	targetAsg, err := as.manager.GetAsgForInstance(ref)
+	targetAsg, err := as.manager.GetNodeGroupForInstance(ref)
 	if err != nil {
 		return false, err
 	}
 	if targetAsg == nil {
 		return false, fmt.Errorf("%s doesn't belong to a known agent pool", node.Name)
 	}
-	if !strings.EqualFold(targetAsg.Id(), as.Id()) {
+	if !strings.EqualFold(targetAsg.Id(), as.Name) {
 		return false, nil
 	}
 	return true, nil
@@ -309,13 +387,13 @@ func (as *AgentPool) DeleteInstances(instances []*azureRef) error {
 		return nil
 	}
 
-	commonAsg, err := as.manager.GetAsgForInstance(instances[0])
+	commonAsg, err := as.manager.GetNodeGroupForInstance(instances[0])
 	if err != nil {
 		return err
 	}
 
 	for _, instance := range instances {
-		asg, err := as.manager.GetAsgForInstance(instance)
+		asg, err := as.manager.GetNodeGroupForInstance(instance)
 		if err != nil {
 			return err
 		}
@@ -339,12 +417,14 @@ func (as *AgentPool) DeleteInstances(instances []*azureRef) error {
 		}
 	}
 
+	klog.V(6).Infof("DeleteInstances: invalidating cache")
+	as.manager.invalidateCache()
 	return nil
 }
 
 // DeleteNodes deletes the nodes from the group.
 func (as *AgentPool) DeleteNodes(nodes []*apiv1.Node) error {
-	klog.V(8).Infof("Delete nodes requested: %v\n", nodes)
+	klog.V(6).Infof("Delete nodes requested: %v\n", nodes)
 	indexes, _, err := as.GetVMIndexes()
 	if err != nil {
 		return err
@@ -362,7 +442,7 @@ func (as *AgentPool) DeleteNodes(nodes []*apiv1.Node) error {
 		}
 
 		if belongs != true {
-			return fmt.Errorf("%s belongs to a different asg than %s", node.Name, as.Id())
+			return fmt.Errorf("%s belongs to a different asg than %s", node.Name, as.Name)
 		}
 
 		ref := &azureRef{
@@ -371,27 +451,27 @@ func (as *AgentPool) DeleteNodes(nodes []*apiv1.Node) error {
 		refs = append(refs, ref)
 	}
 
-	return as.DeleteInstances(refs)
-}
+	err = as.deleteOutdatedDeployments()
+	if err != nil {
+		klog.Warningf("DeleteNodes: failed to cleanup outdated deployments with err: %v.", err)
+	}
 
-// Id returns AgentPool id.
-func (as *AgentPool) Id() string {
-	return as.Name
+	return as.DeleteInstances(refs)
 }
 
 // Debug returns a debug string for the agent pool.
 func (as *AgentPool) Debug() string {
-	return fmt.Sprintf("%s (%d:%d)", as.Id(), as.MinSize(), as.MaxSize())
+	return fmt.Sprintf("%s (%d:%d)", as.Name, as.MinSize(), as.MaxSize())
 }
 
 // TemplateNodeInfo returns a node template for this agent pool.
-func (as *AgentPool) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (as *AgentPool) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	return nil, cloudprovider.ErrNotImplemented
 }
 
 // Nodes returns a list of all nodes that belong to this node group.
 func (as *AgentPool) Nodes() ([]cloudprovider.Instance, error) {
-	instances, err := as.GetVirtualMachines()
+	instances, err := as.getVMsFromCache()
 	if err != nil {
 		return nil, err
 	}
@@ -418,9 +498,9 @@ func (as *AgentPool) deleteBlob(accountName, vhdContainer, vhdBlob string) error
 	ctx, cancel := getContextWithCancel()
 	defer cancel()
 
-	storageKeysResult, err := as.manager.azClient.storageAccountsClient.ListKeys(ctx, as.manager.config.ResourceGroup, accountName)
-	if err != nil {
-		return err
+	storageKeysResult, rerr := as.manager.azClient.storageAccountsClient.ListKeys(ctx, as.manager.config.ResourceGroup, accountName)
+	if rerr != nil {
+		return rerr.Error()
 	}
 
 	keys := *storageKeysResult.Keys
@@ -441,15 +521,15 @@ func (as *AgentPool) deleteVirtualMachine(name string) error {
 	ctx, cancel := getContextWithCancel()
 	defer cancel()
 
-	vm, err := as.manager.azClient.virtualMachinesClient.Get(ctx, as.manager.config.ResourceGroup, name, "")
-	if err != nil {
-		if exists, _ := checkResourceExistsFromError(err); !exists {
+	vm, rerr := as.manager.azClient.virtualMachinesClient.Get(ctx, as.manager.config.ResourceGroup, name, "")
+	if rerr != nil {
+		if exists, _ := checkResourceExistsFromRetryError(rerr); !exists {
 			klog.V(2).Infof("VirtualMachine %s/%s has already been removed", as.manager.config.ResourceGroup, name)
 			return nil
 		}
 
-		klog.Errorf("failed to get VM: %s/%s: %s", as.manager.config.ResourceGroup, name, err.Error())
-		return err
+		klog.Errorf("failed to get VM: %s/%s: %s", as.manager.config.ResourceGroup, name, rerr.Error())
+		return rerr.Error()
 	}
 
 	vhd := vm.VirtualMachineProperties.StorageProfile.OsDisk.Vhd
@@ -465,7 +545,7 @@ func (as *AgentPool) deleteVirtualMachine(name string) error {
 	if nicID == nil {
 		klog.Warningf("NIC ID is not set for VM (%s/%s)", as.manager.config.ResourceGroup, name)
 	} else {
-		nicName, err = resourceName(*nicID)
+		nicName, err := resourceName(*nicID)
 		if err != nil {
 			return err
 		}
@@ -477,8 +557,8 @@ func (as *AgentPool) deleteVirtualMachine(name string) error {
 	defer deleteCancel()
 
 	klog.Infof("waiting for VirtualMachine deletion: %s/%s", as.manager.config.ResourceGroup, name)
-	_, err = as.manager.azClient.virtualMachinesClient.Delete(deleteCtx, as.manager.config.ResourceGroup, name)
-	_, realErr := checkResourceExistsFromError(err)
+	rerr = as.manager.azClient.virtualMachinesClient.Delete(deleteCtx, as.manager.config.ResourceGroup, name)
+	_, realErr := checkResourceExistsFromRetryError(rerr)
 	if realErr != nil {
 		return realErr
 	}
@@ -488,9 +568,9 @@ func (as *AgentPool) deleteVirtualMachine(name string) error {
 		klog.Infof("deleting nic: %s/%s", as.manager.config.ResourceGroup, nicName)
 		interfaceCtx, interfaceCancel := getContextWithCancel()
 		defer interfaceCancel()
-		_, err = as.manager.azClient.interfacesClient.Delete(interfaceCtx, as.manager.config.ResourceGroup, nicName)
+		rerr := as.manager.azClient.interfacesClient.Delete(interfaceCtx, as.manager.config.ResourceGroup, nicName)
 		klog.Infof("waiting for nic deletion: %s/%s", as.manager.config.ResourceGroup, nicName)
-		_, realErr := checkResourceExistsFromError(err)
+		_, realErr := checkResourceExistsFromRetryError(rerr)
 		if realErr != nil {
 			return realErr
 		}
@@ -520,8 +600,8 @@ func (as *AgentPool) deleteVirtualMachine(name string) error {
 			klog.Infof("deleting managed disk: %s/%s", as.manager.config.ResourceGroup, *osDiskName)
 			disksCtx, disksCancel := getContextWithCancel()
 			defer disksCancel()
-			_, err = as.manager.azClient.disksClient.Delete(disksCtx, as.manager.config.ResourceGroup, *osDiskName)
-			_, realErr := checkResourceExistsFromError(err)
+			rerr := as.manager.azClient.disksClient.Delete(disksCtx, as.manager.config.ResourceGroup, *osDiskName)
+			_, realErr := checkResourceExistsFromRetryError(rerr)
 			if realErr != nil {
 				return realErr
 			}

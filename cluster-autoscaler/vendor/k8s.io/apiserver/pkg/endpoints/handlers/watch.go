@@ -19,23 +19,22 @@ package handlers
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 	"time"
 
+	"golang.org/x/net/websocket"
+
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	metav1beta1 "k8s.io/apimachinery/pkg/apis/meta/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer/streaming"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/apiserver/pkg/endpoints/handlers/negotiation"
 	"k8s.io/apiserver/pkg/endpoints/metrics"
-	"k8s.io/apiserver/pkg/server/httplog"
 	"k8s.io/apiserver/pkg/util/wsstream"
-
-	"golang.org/x/net/websocket"
 )
 
 // nothing will ever be sent down this channel
@@ -64,6 +63,8 @@ func (w *realTimeoutFactory) TimeoutCh() (<-chan time.Time, func() bool) {
 // serveWatch will serve a watch response.
 // TODO: the functionality in this method and in WatchServer.Serve is not cleanly decoupled.
 func serveWatch(watcher watch.Interface, scope *RequestScope, mediaTypeOptions negotiation.MediaTypeOptions, req *http.Request, w http.ResponseWriter, timeout time.Duration) {
+	defer watcher.Stop()
+
 	options, err := optionsForTransform(mediaTypeOptions, req)
 	if err != nil {
 		scope.err(err, w, req)
@@ -125,7 +126,7 @@ func serveWatch(watcher watch.Interface, scope *RequestScope, mediaTypeOptions n
 			// When we are transformed to a table, use the table options as the state for whether we
 			// should print headers - on watch, we only want to print table headers on the first object
 			// and omit them on subsequent events.
-			if tableOptions, ok := options.(*metav1beta1.TableOptions); ok {
+			if tableOptions, ok := options.(*metav1.TableOptions); ok {
 				tableOptions.NoHeaders = true
 			}
 			return result
@@ -162,10 +163,8 @@ type WatchServer struct {
 // or over a websocket connection.
 func (s *WatchServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	kind := s.Scope.Kind
-	metrics.RegisteredWatchers.WithLabelValues(kind.Group, kind.Version, kind.Kind).Inc()
-	defer metrics.RegisteredWatchers.WithLabelValues(kind.Group, kind.Version, kind.Kind).Dec()
-
-	w = httplog.Unlogged(w)
+	metrics.RegisteredWatchers.WithContext(req.Context()).WithLabelValues(kind.Group, kind.Version, kind.Kind).Inc()
+	defer metrics.RegisteredWatchers.WithContext(req.Context()).WithLabelValues(kind.Group, kind.Version, kind.Kind).Dec()
 
 	if wsstream.IsWebSocketRequest(req) {
 		w.Header().Set("Content-Type", s.MediaType)
@@ -173,13 +172,6 @@ func (s *WatchServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	cn, ok := w.(http.CloseNotifier)
-	if !ok {
-		err := fmt.Errorf("unable to start watch - can't get http.CloseNotifier: %#v", w)
-		utilruntime.HandleError(err)
-		s.Scope.err(errors.NewInternalError(err), w, req)
-		return
-	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		err := fmt.Errorf("unable to start watch - can't get http.Flusher: %#v", w)
@@ -196,12 +188,21 @@ func (s *WatchServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		s.Scope.err(errors.NewBadRequest(err.Error()), w, req)
 		return
 	}
-	e := streaming.NewEncoder(framer, s.Encoder)
+
+	var e streaming.Encoder
+	var memoryAllocator runtime.MemoryAllocator
+
+	if encoder, supportsAllocator := s.Encoder.(runtime.EncoderWithAllocator); supportsAllocator {
+		memoryAllocator = runtime.AllocatorPool.Get().(*runtime.Allocator)
+		defer runtime.AllocatorPool.Put(memoryAllocator)
+		e = streaming.NewEncoderWithAllocator(framer, encoder, memoryAllocator)
+	} else {
+		e = streaming.NewEncoder(framer, s.Encoder)
+	}
 
 	// ensure the connection times out
 	timeoutCh, cleanup := s.TimeoutFactory.TimeoutCh()
 	defer cleanup()
-	defer s.Watching.Stop()
 
 	// begin the stream
 	w.Header().Set("Content-Type", s.MediaType)
@@ -214,9 +215,24 @@ func (s *WatchServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	outEvent := &metav1.WatchEvent{}
 	buf := &bytes.Buffer{}
 	ch := s.Watching.ResultChan()
+	done := req.Context().Done()
+
+	embeddedEncodeFn := s.EmbeddedEncoder.Encode
+	if encoder, supportsAllocator := s.EmbeddedEncoder.(runtime.EncoderWithAllocator); supportsAllocator {
+		if memoryAllocator == nil {
+			// don't put the allocator inside the embeddedEncodeFn as that would allocate memory on every call.
+			// instead, we allocate the buffer for the entire watch session and release it when we close the connection.
+			memoryAllocator = runtime.AllocatorPool.Get().(*runtime.Allocator)
+			defer runtime.AllocatorPool.Put(memoryAllocator)
+		}
+		embeddedEncodeFn = func(obj runtime.Object, w io.Writer) error {
+			return encoder.EncodeWithAllocator(obj, w, memoryAllocator)
+		}
+	}
+
 	for {
 		select {
-		case <-cn.CloseNotify():
+		case <-done:
 			return
 		case <-timeoutCh:
 			return
@@ -225,9 +241,10 @@ func (s *WatchServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				// End of results.
 				return
 			}
+			metrics.WatchEvents.WithContext(req.Context()).WithLabelValues(kind.Group, kind.Version, kind.Kind).Inc()
 
 			obj := s.Fixup(event.Object)
-			if err := s.EmbeddedEncoder.Encode(obj, buf); err != nil {
+			if err := embeddedEncodeFn(obj, buf); err != nil {
 				// unexpected error
 				utilruntime.HandleError(fmt.Errorf("unable to encode watch object %T: %v", obj, err))
 				return
@@ -237,6 +254,7 @@ func (s *WatchServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			// type
 			unknown.Raw = buf.Bytes()
 			event.Object = &unknown
+			metrics.WatchEventsSizes.WithContext(req.Context()).WithLabelValues(kind.Group, kind.Version, kind.Kind).Observe(float64(len(unknown.Raw)))
 
 			*outEvent = metav1.WatchEvent{}
 
@@ -283,10 +301,10 @@ func (s *WatchServer) HandleWS(ws *websocket.Conn) {
 	buf := &bytes.Buffer{}
 	streamBuf := &bytes.Buffer{}
 	ch := s.Watching.ResultChan()
+
 	for {
 		select {
 		case <-done:
-			s.Watching.Stop()
 			return
 		case event, ok := <-ch:
 			if !ok {
@@ -315,25 +333,21 @@ func (s *WatchServer) HandleWS(ws *websocket.Conn) {
 			if err != nil {
 				utilruntime.HandleError(fmt.Errorf("unable to convert watch object: %v", err))
 				// client disconnect.
-				s.Watching.Stop()
 				return
 			}
 			if err := s.Encoder.Encode(outEvent, streamBuf); err != nil {
 				// encoding error
 				utilruntime.HandleError(fmt.Errorf("unable to encode event: %v", err))
-				s.Watching.Stop()
 				return
 			}
 			if s.UseTextFraming {
 				if err := websocket.Message.Send(ws, streamBuf.String()); err != nil {
 					// Client disconnect.
-					s.Watching.Stop()
 					return
 				}
 			} else {
 				if err := websocket.Message.Send(ws, streamBuf.Bytes()); err != nil {
 					// Client disconnect.
-					s.Watching.Stop()
 					return
 				}
 			}

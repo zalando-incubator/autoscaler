@@ -1,3 +1,4 @@
+//go:build !linux
 // +build !linux
 
 /*
@@ -26,13 +27,10 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (
-	// ProviderName is the cloud provider name for kubemark
-	ProviderName = "kubemark"
-
 	// GPULabel is the label added to nodes with GPU resource.
 	GPULabel = "cloud.google.com/gke-accelerator"
 )

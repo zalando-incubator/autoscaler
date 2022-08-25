@@ -17,20 +17,19 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"time"
 
-	"k8s.io/api/admissionregistration/v1beta1"
+	admissionregistration "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/klog"
-	"k8s.io/utils/pointer"
+	"k8s.io/klog/v2"
 )
 
 const (
-	webhookConfigName     = "vpa-webhook-config"
-	webhookTimeoutSeconds = 10
+	webhookConfigName = "vpa-webhook-config"
 )
 
 // get a clientset with in-cluster config.
@@ -58,58 +57,61 @@ func configTLS(clientset *kubernetes.Clientset, serverCert, serverKey []byte) *t
 
 // register this webhook admission controller with the kube-apiserver
 // by creating MutatingWebhookConfiguration.
-func selfRegistration(clientset *kubernetes.Clientset, caCert []byte, namespace *string, url string, registerByURL bool) {
+func selfRegistration(clientset *kubernetes.Clientset, caCert []byte, namespace, serviceName, url string, registerByURL bool, timeoutSeconds int32) {
 	time.Sleep(10 * time.Second)
-	client := clientset.AdmissionregistrationV1beta1().MutatingWebhookConfigurations()
-	_, err := client.Get(webhookConfigName, metav1.GetOptions{})
+	client := clientset.AdmissionregistrationV1().MutatingWebhookConfigurations()
+	_, err := client.Get(context.TODO(), webhookConfigName, metav1.GetOptions{})
 	if err == nil {
-		if err2 := client.Delete(webhookConfigName, nil); err2 != nil {
+		if err2 := client.Delete(context.TODO(), webhookConfigName, metav1.DeleteOptions{}); err2 != nil {
 			klog.Fatal(err2)
 		}
 	}
-	RegisterClientConfig := v1beta1.WebhookClientConfig{}
+	RegisterClientConfig := admissionregistration.WebhookClientConfig{}
 	if !registerByURL {
-		RegisterClientConfig.Service = &v1beta1.ServiceReference{
-			Namespace: *namespace,
-			Name:      "vpa-webhook",
+		RegisterClientConfig.Service = &admissionregistration.ServiceReference{
+			Namespace: namespace,
+			Name:      serviceName,
 		}
 	} else {
 		RegisterClientConfig.URL = &url
 	}
+	sideEffects := admissionregistration.SideEffectClassNone
+	failurePolicy := admissionregistration.Ignore
 	RegisterClientConfig.CABundle = caCert
-	sideEffects := v1beta1.SideEffectClassNone
-	webhookConfig := &v1beta1.MutatingWebhookConfiguration{
+	webhookConfig := &admissionregistration.MutatingWebhookConfiguration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: webhookConfigName,
 		},
-		Webhooks: []v1beta1.Webhook{
+		Webhooks: []admissionregistration.MutatingWebhook{
 			{
-				Name: "vpa.k8s.io",
-				Rules: []v1beta1.RuleWithOperations{
+				Name:                    "vpa.k8s.io",
+				AdmissionReviewVersions: []string{"v1"},
+				Rules: []admissionregistration.RuleWithOperations{
 					{
-						Operations: []v1beta1.OperationType{v1beta1.Create},
-						Rule: v1beta1.Rule{
+						Operations: []admissionregistration.OperationType{admissionregistration.Create},
+						Rule: admissionregistration.Rule{
 							APIGroups:   []string{""},
 							APIVersions: []string{"v1"},
 							Resources:   []string{"pods"},
 						},
 					},
 					{
-						Operations: []v1beta1.OperationType{v1beta1.Create, v1beta1.Update},
-						Rule: v1beta1.Rule{
+						Operations: []admissionregistration.OperationType{admissionregistration.Create, admissionregistration.Update},
+						Rule: admissionregistration.Rule{
 							APIGroups:   []string{"autoscaling.k8s.io"},
 							APIVersions: []string{"*"},
 							Resources:   []string{"verticalpodautoscalers"},
 						},
 					},
 				},
-				SideEffects:    &sideEffects,
+				FailurePolicy:  &failurePolicy,
 				ClientConfig:   RegisterClientConfig,
-				TimeoutSeconds: pointer.Int32Ptr(webhookTimeoutSeconds),
+				SideEffects:    &sideEffects,
+				TimeoutSeconds: &timeoutSeconds,
 			},
 		},
 	}
-	if _, err := client.Create(webhookConfig); err != nil {
+	if _, err := client.Create(context.TODO(), webhookConfig, metav1.CreateOptions{}); err != nil {
 		klog.Fatal(err)
 	} else {
 		klog.V(3).Info("Self registration as MutatingWebhook succeeded.")

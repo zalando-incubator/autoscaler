@@ -13,10 +13,11 @@
 # limitations under the License.
 
 
-FROM k8s.gcr.io/debian-base:1.0.0
+FROM gcr.io/distroless/static:latest
 MAINTAINER Marcin Wielgus "mwielgus@google.com"
 
-ARG TARGETARCH=amd64
-ADD build/${TARGETARCH}/updater updater
+ARG ARCH
+COPY updater-$ARCH /updater
 
-ENTRYPOINT ./updater --v=4 --stderrthreshold=info
+ENTRYPOINT ["/updater"]
+CMD ["--v=4", "--stderrthreshold=info"]

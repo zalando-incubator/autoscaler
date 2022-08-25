@@ -20,10 +20,17 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-10-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2021-07-01/compute"
 	"github.com/stretchr/testify/assert"
+
+	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 )
+
+func GetTestAzureUtil(t *testing.T) *AzUtil {
+	return &AzUtil{manager: newTestAzureManager(t)}
+}
 
 func TestSplitBlobURI(t *testing.T) {
 	expectedAccountName := "vhdstorage8h8pjybi9hbsl6"
@@ -89,7 +96,7 @@ func TestWindowsVMNameParts(t *testing.T) {
 			t.Fatalf("incorrect poolPrefix. expected=%s actual=%s", d.expectedPoolPrefix, poolPrefix)
 		}
 		if orch != d.expectedOrch {
-			t.Fatalf("incorrect acs string. expected=%s actual=%s", d.expectedOrch, orch)
+			t.Fatalf("incorrect aks string. expected=%s actual=%s", d.expectedOrch, orch)
 		}
 		if poolIndex != d.expectedPoolIndex {
 			t.Fatalf("incorrect poolIndex. expected=%d actual=%d", d.expectedPoolIndex, poolIndex)
@@ -106,7 +113,7 @@ func TestWindowsVMNameParts(t *testing.T) {
 func TestGetVMNameIndexLinux(t *testing.T) {
 	expectedAgentIndex := 65
 
-	agentIndex, err := GetVMNameIndex(compute.Linux, "k8s-agentpool1-38988164-65")
+	agentIndex, err := GetVMNameIndex(compute.OperatingSystemTypesLinux, "k8s-agentpool1-38988164-65")
 	if agentIndex != expectedAgentIndex {
 		t.Fatalf("incorrect agentIndex. expected=%d actual=%d", expectedAgentIndex, agentIndex)
 	}
@@ -118,7 +125,7 @@ func TestGetVMNameIndexLinux(t *testing.T) {
 func TestGetVMNameIndexWindows(t *testing.T) {
 	expectedAgentIndex := 20
 
-	agentIndex, err := GetVMNameIndex(compute.Windows, "38988k8s90320")
+	agentIndex, err := GetVMNameIndex(compute.OperatingSystemTypesWindows, "38988k8s90320")
 	if agentIndex != expectedAgentIndex {
 		t.Fatalf("incorrect agentIndex. expected=%d actual=%d", expectedAgentIndex, agentIndex)
 	}
@@ -243,4 +250,177 @@ func TestConvertResourceGroupNameToLower(t *testing.T) {
 		assert.Nil(t, err, test.desc)
 		assert.Equal(t, test.expected, real, test.desc)
 	}
+}
+
+func TestIsAzureRequestsThrottled(t *testing.T) {
+	tests := []struct {
+		desc     string
+		rerr     *retry.Error
+		expected bool
+	}{
+		{
+			desc:     "nil error should return false",
+			expected: false,
+		},
+		{
+			desc: "non http.StatusTooManyRequests error should return false",
+			rerr: &retry.Error{
+				HTTPStatusCode: http.StatusBadRequest,
+			},
+			expected: false,
+		},
+		{
+			desc: "http.StatusTooManyRequests error should return true",
+			rerr: &retry.Error{
+				HTTPStatusCode: http.StatusTooManyRequests,
+			},
+			expected: true,
+		},
+		{
+			desc: "Nul HTTP code and non-expired Retry-After should return true",
+			rerr: &retry.Error{
+				RetryAfter: time.Now().Add(time.Hour),
+			},
+			expected: true,
+		},
+	}
+
+	for _, test := range tests {
+		real := isAzureRequestsThrottled(test.rerr)
+		assert.Equal(t, test.expected, real, test.desc)
+	}
+}
+
+func TestNormalizeMasterResourcesForScaling(t *testing.T) {
+	templateMap := map[string]interface{}{
+		resourcesFieldName: []interface{}{
+			map[string]interface{}{
+				nameFieldName: "variables('masterVMNamePrefix')",
+				typeFieldName: vmExtensionType,
+			},
+			map[string]interface{}{
+				nameFieldName: 1,
+				typeFieldName: vmResourceType,
+			},
+			map[string]interface{}{
+				nameFieldName: "foo",
+				typeFieldName: vmResourceType,
+			},
+			map[string]interface{}{
+				nameFieldName:       "variables('masterVMNamePrefix')",
+				typeFieldName:       vmResourceType,
+				propertiesFieldName: "foo",
+			},
+			map[string]interface{}{
+				nameFieldName: "variables('masterVMNamePrefix')",
+				typeFieldName: vmResourceType,
+				propertiesFieldName: map[string]interface{}{
+					hardwareProfileFieldName: "foo",
+				},
+			},
+			map[string]interface{}{
+				nameFieldName: "variables('masterVMNamePrefix')",
+				typeFieldName: vmResourceType,
+				propertiesFieldName: map[string]interface{}{
+					hardwareProfileFieldName: map[string]interface{}{
+						vmSizeFieldName: "size",
+					},
+				},
+			},
+			map[string]interface{}{
+				nameFieldName: "variables('masterVMNamePrefix')",
+				typeFieldName: vmResourceType,
+				propertiesFieldName: map[string]interface{}{
+					hardwareProfileFieldName: map[string]interface{}{},
+					osProfileFieldName:       "foo",
+				},
+			},
+			map[string]interface{}{
+				nameFieldName: "variables('masterVMNamePrefix')",
+				typeFieldName: vmResourceType,
+				propertiesFieldName: map[string]interface{}{
+					hardwareProfileFieldName: map[string]interface{}{},
+					osProfileFieldName: map[string]interface{}{
+						customDataFieldName: "data",
+					},
+				},
+			},
+			map[string]interface{}{
+				nameFieldName: "variables('masterVMNamePrefix')",
+				typeFieldName: vmResourceType,
+				propertiesFieldName: map[string]interface{}{
+					hardwareProfileFieldName: map[string]interface{}{},
+					storageProfileFieldName:  "foo",
+				},
+			},
+			map[string]interface{}{
+				nameFieldName: "variables('masterVMNamePrefix')",
+				typeFieldName: vmResourceType,
+				propertiesFieldName: map[string]interface{}{
+					hardwareProfileFieldName: map[string]interface{}{},
+					storageProfileFieldName: map[string]interface{}{
+						imageReferenceFieldName: "image",
+					},
+				},
+			},
+		},
+	}
+	err := normalizeMasterResourcesForScaling(templateMap)
+	assert.Equal(t, 9, len(templateMap[resourcesFieldName].([]interface{})))
+	assert.NoError(t, err)
+}
+
+func TestNormalizeForK8sVMASScalingUp(t *testing.T) {
+	templateMap := map[string]interface{}{
+		resourcesFieldName: []interface{}{
+			map[string]interface{}{
+				typeFieldName: nsgResourceType,
+			},
+			map[string]interface{}{
+				typeFieldName: nsgResourceType,
+			},
+		},
+	}
+	err := normalizeForK8sVMASScalingUp(templateMap)
+	expectedErr := fmt.Errorf("found 2 resources with type %s in the template. "+
+		"There should only be 1", nsgResourceType)
+	assert.Equal(t, expectedErr, err)
+
+	templateMap = map[string]interface{}{
+		resourcesFieldName: []interface{}{
+			map[string]interface{}{
+				typeFieldName: rtResourceType,
+			},
+			map[string]interface{}{
+				typeFieldName: rtResourceType,
+			},
+		},
+	}
+	expectedErr = fmt.Errorf("found 2 resources with type %s in the template. "+
+		"There should only be 1", rtResourceType)
+	err = normalizeForK8sVMASScalingUp(templateMap)
+	assert.Equal(t, expectedErr, err)
+
+	templateMap = map[string]interface{}{
+		resourcesFieldName: []interface{}{
+			map[string]interface{}{
+				typeFieldName: nsgResourceType,
+			},
+			map[string]interface{}{
+				dependsOnFieldName: []interface{}{nsgResourceType, "foo"},
+			},
+		},
+	}
+	err = normalizeForK8sVMASScalingUp(templateMap)
+	for _, resource := range templateMap[resourcesFieldName].([]interface{}) {
+		deps, ok := resource.([]interface{})
+		if ok {
+			for _, dep := range deps {
+				if names, ok := dep.(map[string]interface{})[dependsOnFieldName]; ok {
+					assert.Equal(t, 1, len(names.([]interface{})))
+				}
+			}
+		}
+	}
+	assert.NoError(t, err)
 }

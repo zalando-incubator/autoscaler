@@ -22,7 +22,32 @@ KUBE_ROOT=$(dirname "${BASH_SOURCE}")/..
 cd "${KUBE_ROOT}"
 
 GOLINT=${GOLINT:-"golint"}
-PACKAGES=($(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/pkg/client | grep -v vertical-pod-autoscaler/pkg/apis | grep -v cluster-autoscaler/cloudprovider/magnum/gophercloud))
+excluded_packages=(
+  '/vendor/'
+  'vertical-pod-autoscaler/pkg/client'
+  'cluster-autoscaler/cloudprovider/magnum/gophercloud'
+  'cluster-autoscaler/cloudprovider/digitalocean/godo'
+  'cluster-autoscaler/cloudprovider/bizflycloud/gobizfly'
+  'cluster-autoscaler/cloudprovider/brightbox/gobrightbox'
+  'cluster-autoscaler/cloudprovider/brightbox/k8ssdk'
+  'cluster-autoscaler/cloudprovider/brightbox/linkheader'
+  'cluster-autoscaler/cloudprovider/brightbox/go-cache'
+  'cluster-autoscaler/cloudprovider/externalgrpc/protos'
+  'cluster-autoscaler/cloudprovider/exoscale/internal'
+  'cluster-autoscaler/cloudprovider/huaweicloud/huaweicloud-sdk-go-v3'
+  'cluster-autoscaler/cloudprovider/ionoscloud/ionos-cloud-sdk-go'
+  'cluster-autoscaler/cloudprovider/hetzner/hcloud-go'
+  'cluster-autoscaler/expander/grpcplugin/protos'
+  'cluster-autoscaler/cloudprovider/tencentcloud/tencentcloud-sdk-go'
+)
+
+FIND_PACKAGES='go list ./... '
+for package in "${excluded_packages[@]}"; do
+     FIND_PACKAGES+="| grep -v ${package} "
+done
+
+PACKAGES=()
+mapfile -t PACKAGES < <(eval ${FIND_PACKAGES})
 bad_files=()
 for package in "${PACKAGES[@]}"; do
   out=$("${GOLINT}" -min_confidence=0.9 "${package}")

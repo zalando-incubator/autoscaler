@@ -19,9 +19,13 @@ package csi
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"google.golang.org/grpc"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	servermetrics "k8s.io/kubernetes/pkg/kubelet/server/metrics"
 	"k8s.io/kubernetes/pkg/volume"
+	volumeutil "k8s.io/kubernetes/pkg/volume/util"
 )
 
 var _ volume.MetricsProvider = &metricsCsi{}
@@ -48,6 +52,8 @@ func NewMetricsCsi(volumeID string, targetPath string, driverName csiDriverName)
 }
 
 func (mc *metricsCsi) GetMetrics() (*volume.Metrics, error) {
+	startTime := time.Now()
+	defer servermetrics.CollectVolumeStatCalDuration(string(mc.csiClientGetter.driverName), startTime)
 	currentTime := metav1.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), csiTimeout)
 	defer cancel()
@@ -61,9 +67,11 @@ func (mc *metricsCsi) GetMetrics() (*volume.Metrics, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	// if plugin doesnot support volume status, return.
 	if !volumeStatsSet {
-		return nil, nil
+		return nil, volume.NewNotSupportedErrorWithDriverName(
+			string(mc.csiClientGetter.driverName))
 	}
 	// Get Volumestatus
 	metrics, err := csiClient.NodeGetVolumeStats(ctx, mc.volumeID, mc.targetPath)
@@ -76,4 +84,52 @@ func (mc *metricsCsi) GetMetrics() (*volume.Metrics, error) {
 	//set recorded time
 	metrics.Time = currentTime
 	return metrics, nil
+}
+
+// MetricsManager defines the metrics mananger for CSI operation
+type MetricsManager struct {
+	driverName string
+}
+
+// NewCSIMetricsManager creates a CSIMetricsManager object
+func NewCSIMetricsManager(driverName string) *MetricsManager {
+	cmm := MetricsManager{
+		driverName: driverName,
+	}
+	return &cmm
+}
+
+type additionalInfo struct {
+	Migrated string
+}
+type additionalInfoKeyType struct{}
+
+var additionalInfoKey additionalInfoKeyType
+
+// RecordMetricsInterceptor is a grpc interceptor that is used to
+// record CSI operation
+func (cmm *MetricsManager) RecordMetricsInterceptor(
+	ctx context.Context,
+	method string,
+	req, reply interface{},
+	cc *grpc.ClientConn,
+	invoker grpc.UnaryInvoker,
+	opts ...grpc.CallOption) error {
+	start := time.Now()
+	err := invoker(ctx, method, req, reply, cc, opts...)
+	duration := time.Since(start)
+	// Check if this is migrated operation
+	additionalInfoVal := ctx.Value(additionalInfoKey)
+	migrated := "false"
+	if additionalInfoVal != nil {
+		additionalInfoVal, ok := additionalInfoVal.(additionalInfo)
+		if !ok {
+			return err
+		}
+		migrated = additionalInfoVal.Migrated
+	}
+	// Record the metric latency
+	volumeutil.RecordCSIOperationLatencyMetrics(cmm.driverName, method, err, duration, migrated)
+
+	return err
 }

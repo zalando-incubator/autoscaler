@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	vpa_fake "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned/fake"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/test"
 )
@@ -40,8 +40,8 @@ var (
 )
 
 func init() {
-	flag.Set("alsologtostderr", "true")
-	flag.Set("v", "5")
+	flag.Set("alsologtostderr", "true") //nolint:errcheck
+	flag.Set("v", "5")                  //nolint:errcheck
 }
 
 func parseLabelSelector(selector string) labels.Selector {
@@ -93,7 +93,7 @@ func TestUpdateVpaIfNeeded(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.caseName, func(t *testing.T) {
 			fakeClient := vpa_fake.NewSimpleClientset(&vpa_types.VerticalPodAutoscalerList{Items: []vpa_types.VerticalPodAutoscaler{*tc.observedVpa}})
-			_, err := UpdateVpaStatusIfNeeded(fakeClient.AutoscalingV1beta2().VerticalPodAutoscalers(tc.updatedVpa.Namespace),
+			_, err := UpdateVpaStatusIfNeeded(fakeClient.AutoscalingV1().VerticalPodAutoscalers(tc.updatedVpa.Namespace),
 				tc.updatedVpa.Name, &tc.updatedVpa.Status, &tc.observedVpa.Status)
 			assert.NoError(t, err, "Unexpected error occurred.")
 			actions := fakeClient.Actions()
@@ -194,4 +194,80 @@ func TestGetContainerResourcePolicy(t *testing.T) {
 	assert.Equal(t, &containerPolicy1, GetContainerResourcePolicy("container1", &policy))
 	assert.Equal(t, &containerPolicy2, GetContainerResourcePolicy("container2", &policy))
 	assert.Equal(t, &defaultPolicy, GetContainerResourcePolicy("container3", &policy))
+}
+
+func TestGetContainerControlledResources(t *testing.T) {
+	requestsAndLimits := vpa_types.ContainerControlledValuesRequestsAndLimits
+	requestsOnly := vpa_types.ContainerControlledValuesRequestsOnly
+	for _, tc := range []struct {
+		name          string
+		containerName string
+		policy        *vpa_types.PodResourcePolicy
+		expected      vpa_types.ContainerControlledValues
+	}{
+		{
+			name:          "default policy is RequestAndLimits",
+			containerName: "any",
+			policy:        nil,
+			expected:      vpa_types.ContainerControlledValuesRequestsAndLimits,
+		}, {
+			name:          "container default policy is RequestsAndLimits",
+			containerName: "any",
+			policy: &vpa_types.PodResourcePolicy{
+				ContainerPolicies: []vpa_types.ContainerResourcePolicy{{
+					ContainerName:    vpa_types.DefaultContainerResourcePolicy,
+					ControlledValues: &requestsAndLimits,
+				}},
+			},
+			expected: vpa_types.ContainerControlledValuesRequestsAndLimits,
+		}, {
+			name:          "container default policy is RequestsOnly",
+			containerName: "any",
+			policy: &vpa_types.PodResourcePolicy{
+				ContainerPolicies: []vpa_types.ContainerResourcePolicy{{
+					ContainerName:    vpa_types.DefaultContainerResourcePolicy,
+					ControlledValues: &requestsOnly,
+				}},
+			},
+			expected: vpa_types.ContainerControlledValuesRequestsOnly,
+		}, {
+			name:          "RequestAndLimits is used when no policy for given container specified",
+			containerName: "other",
+			policy: &vpa_types.PodResourcePolicy{
+				ContainerPolicies: []vpa_types.ContainerResourcePolicy{{
+					ContainerName:    "some",
+					ControlledValues: &requestsOnly,
+				}},
+			},
+			expected: vpa_types.ContainerControlledValuesRequestsAndLimits,
+		}, {
+			name:          "RequestsOnly specified explicitly",
+			containerName: "some",
+			policy: &vpa_types.PodResourcePolicy{
+				ContainerPolicies: []vpa_types.ContainerResourcePolicy{{
+					ContainerName:    "some",
+					ControlledValues: &requestsOnly,
+				}},
+			},
+			expected: vpa_types.ContainerControlledValuesRequestsOnly,
+		}, {
+			name:          "RequestsAndLimits specified explicitly overrides default",
+			containerName: "some",
+			policy: &vpa_types.PodResourcePolicy{
+				ContainerPolicies: []vpa_types.ContainerResourcePolicy{{
+					ContainerName:    vpa_types.DefaultContainerResourcePolicy,
+					ControlledValues: &requestsOnly,
+				}, {
+					ContainerName:    "some",
+					ControlledValues: &requestsAndLimits,
+				}},
+			},
+			expected: vpa_types.ContainerControlledValuesRequestsAndLimits,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := GetContainerControlledValues(tc.containerName, tc.policy)
+			assert.Equal(t, got, tc.expected)
+		})
+	}
 }

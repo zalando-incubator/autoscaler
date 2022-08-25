@@ -34,18 +34,14 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (
 	// MaxNodeStartupTime is the maximum time from the moment the node is registered to the time the node is ready.
 	MaxNodeStartupTime = 15 * time.Minute
-
-	// MaxStatusSettingDelayAfterCreation is the maximum time for node to set its initial status after the
-	// node is registered.
-	MaxStatusSettingDelayAfterCreation = 2 * time.Minute
 
 	// MaxNodeGroupBackoffDuration is the maximum backoff duration for a NodeGroup after new nodes failed to start.
 	MaxNodeGroupBackoffDuration = 30 * time.Minute
@@ -127,7 +123,7 @@ type ClusterStateRegistry struct {
 	scaleUpRequests                    map[string]*ScaleUpRequest // nodeGroupName -> ScaleUpRequest
 	scaleDownRequests                  []*ScaleDownRequest
 	nodes                              []*apiv1.Node
-	nodeInfosForGroups                 map[string]*schedulernodeinfo.NodeInfo
+	nodeInfosForGroups                 map[string]*schedulerframework.NodeInfo
 	cloudProvider                      cloudprovider.CloudProvider
 	perNodeGroupReadiness              map[string]Readiness
 	totalReadiness                     Readiness
@@ -287,7 +283,7 @@ func (csr *ClusterStateRegistry) backoffNodeGroup(nodeGroup cloudprovider.NodeGr
 func (csr *ClusterStateRegistry) RegisterFailedScaleUp(nodeGroup cloudprovider.NodeGroup, reason metrics.FailedScaleUpReason, currentTime time.Time) {
 	csr.Lock()
 	defer csr.Unlock()
-	csr.registerFailedScaleUpNoLock(nodeGroup, reason, cloudprovider.OtherErrorClass, "cloudProviderError", currentTime)
+	csr.registerFailedScaleUpNoLock(nodeGroup, reason, cloudprovider.OtherErrorClass, string(reason), currentTime)
 }
 
 func (csr *ClusterStateRegistry) registerFailedScaleUpNoLock(nodeGroup cloudprovider.NodeGroup, reason metrics.FailedScaleUpReason, errorClass cloudprovider.InstanceErrorClass, errorCode string, currentTime time.Time) {
@@ -297,7 +293,7 @@ func (csr *ClusterStateRegistry) registerFailedScaleUpNoLock(nodeGroup cloudprov
 }
 
 // UpdateNodes updates the state of the nodes in the ClusterStateRegistry and recalculates the stats
-func (csr *ClusterStateRegistry) UpdateNodes(nodes []*apiv1.Node, nodeInfosForGroups map[string]*schedulernodeinfo.NodeInfo, currentTime time.Time) error {
+func (csr *ClusterStateRegistry) UpdateNodes(nodes []*apiv1.Node, nodeInfosForGroups map[string]*schedulerframework.NodeInfo, currentTime time.Time) error {
 	csr.updateNodeGroupMetrics()
 	targetSizes, err := getTargetSizes(csr.cloudProvider)
 	if err != nil {
@@ -362,7 +358,7 @@ func (csr *ClusterStateRegistry) IsClusterHealthy() bool {
 	csr.Lock()
 	defer csr.Unlock()
 
-	totalUnready := csr.totalReadiness.Unready + csr.totalReadiness.LongNotStarted + csr.totalReadiness.LongUnregistered
+	totalUnready := csr.totalReadiness.Unready
 
 	if totalUnready > csr.config.OkTotalUnreadyCount &&
 		float64(totalUnready) > csr.config.MaxTotalUnreadyPercentage/100.0*float64(len(csr.nodes)) {
@@ -399,7 +395,7 @@ func (csr *ClusterStateRegistry) IsNodeGroupHealthy(nodeGroupName string) bool {
 
 	if unjustifiedUnready > csr.config.OkTotalUnreadyCount &&
 		float64(unjustifiedUnready) > csr.config.MaxTotalUnreadyPercentage/100.0*
-			float64(readiness.Ready+readiness.Unready+readiness.NotStarted+readiness.LongNotStarted) {
+			float64(readiness.Ready+readiness.Unready+readiness.NotStarted) {
 		return false
 	}
 
@@ -432,6 +428,11 @@ func (csr *ClusterStateRegistry) IsNodeGroupSafeToScaleUp(nodeGroup cloudprovide
 }
 
 func (csr *ClusterStateRegistry) getProvisionedAndTargetSizesForNodeGroup(nodeGroupName string) (provisioned, target int, ok bool) {
+	if len(csr.acceptableRanges) == 0 {
+		klog.Warningf("AcceptableRanges have not been populated yet. Skip checking")
+		return 0, 0, false
+	}
+
 	acceptable, found := csr.acceptableRanges[nodeGroupName]
 	if !found {
 		klog.Warningf("Failed to find acceptable ranges for %v", nodeGroupName)
@@ -447,7 +448,7 @@ func (csr *ClusterStateRegistry) getProvisionedAndTargetSizesForNodeGroup(nodeGr
 		}
 		return 0, target, true
 	}
-	provisioned = readiness.Registered - readiness.NotStarted - readiness.LongNotStarted
+	provisioned = readiness.Registered - readiness.NotStarted
 
 	return provisioned, target, true
 }
@@ -526,8 +527,6 @@ type Readiness struct {
 	// Number of nodes that are being currently deleted. They exist in K8S but
 	// are not included in NodeGroup.TargetSize().
 	Deleted int
-	// Number of nodes that failed to start within a reasonable limit.
-	LongNotStarted int
 	// Number of nodes that are not yet fully started.
 	NotStarted int
 	// Number of all registered nodes in the group (ready/unready/deleted/etc).
@@ -538,6 +537,10 @@ type Readiness struct {
 	Unregistered int
 	// Time when the readiness was measured.
 	Time time.Time
+	// Number of nodes that are Unready due to missing resources.
+	// This field is only used for exposing information externally and
+	// doesn't influence CA behavior.
+	ResourceUnready int
 }
 
 func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
@@ -545,25 +548,26 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 	perNodeGroup := make(map[string]Readiness)
 	total := Readiness{Time: currentTime}
 
-	update := func(current Readiness, node *apiv1.Node, ready bool) Readiness {
+	update := func(current Readiness, node *apiv1.Node, nr kube_util.NodeReadiness) Readiness {
 		current.Registered++
 		if deletetaint.HasToBeDeletedTaint(node) {
 			current.Deleted++
-		} else if stillStarting := isNodeStillStarting(node); stillStarting && node.CreationTimestamp.Time.Add(MaxNodeStartupTime).Before(currentTime) {
-			current.LongNotStarted++
-		} else if stillStarting {
-			current.NotStarted++
-		} else if ready {
+		} else if nr.Ready {
 			current.Ready++
+		} else if node.CreationTimestamp.Time.Add(MaxNodeStartupTime).After(currentTime) {
+			current.NotStarted++
 		} else {
 			current.Unready++
+			if nr.Reason == kube_util.ResourceUnready {
+				current.ResourceUnready++
+			}
 		}
 		return current
 	}
 
 	for _, node := range csr.nodes {
 		nodeGroup, errNg := csr.cloudProvider.NodeGroupForNode(node)
-		ready, _, errReady := kube_util.GetReadinessState(node)
+		nr, errReady := kube_util.GetNodeReadiness(node)
 
 		// Node is most likely not autoscaled, however check the errors.
 		if nodeGroup == nil || reflect.ValueOf(nodeGroup).IsNil() {
@@ -574,19 +578,25 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 				klog.Warningf("Failed to get readiness info for %s: %v", node.Name, errReady)
 			}
 		} else {
-			perNodeGroup[nodeGroup.Id()] = update(perNodeGroup[nodeGroup.Id()], node, ready)
+			perNodeGroup[nodeGroup.Id()] = update(perNodeGroup[nodeGroup.Id()], node, nr)
 		}
-		total = update(total, node, ready)
+		total = update(total, node, nr)
 	}
 
+	var longUnregisteredNodeNames []string
 	for _, unregistered := range csr.unregisteredNodes {
 		nodeGroup, errNg := csr.cloudProvider.NodeGroupForNode(unregistered.Node)
 		if errNg != nil {
 			klog.Warningf("Failed to get nodegroup for %s: %v", unregistered.Node.Name, errNg)
 			continue
 		}
+		if nodeGroup == nil || reflect.ValueOf(nodeGroup).IsNil() {
+			klog.Warningf("Nodegroup is nil for %s", unregistered.Node.Name)
+			continue
+		}
 		perNgCopy := perNodeGroup[nodeGroup.Id()]
 		if unregistered.UnregisteredSince.Add(csr.config.MaxNodeProvisionTime).Before(currentTime) {
+			longUnregisteredNodeNames = append(longUnregisteredNodeNames, unregistered.Node.Name)
 			perNgCopy.LongUnregistered++
 			total.LongUnregistered++
 		} else {
@@ -594,6 +604,9 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 			total.Unregistered++
 		}
 		perNodeGroup[nodeGroup.Id()] = perNgCopy
+	}
+	if total.LongUnregistered > 0 {
+		klog.V(3).Infof("Found longUnregistered Nodes %s", longUnregisteredNodeNames)
 	}
 
 	for ngId, ngReadiness := range perNodeGroup {
@@ -734,11 +747,11 @@ func (csr *ClusterStateRegistry) GetClusterReadiness() Readiness {
 func buildHealthStatusNodeGroup(isReady bool, readiness Readiness, acceptable AcceptableRange, minSize, maxSize int) api.ClusterAutoscalerCondition {
 	condition := api.ClusterAutoscalerCondition{
 		Type: api.ClusterAutoscalerHealth,
-		Message: fmt.Sprintf("ready=%d unready=%d notStarted=%d longNotStarted=%d registered=%d longUnregistered=%d cloudProviderTarget=%d (minSize=%d, maxSize=%d)",
+		Message: fmt.Sprintf("ready=%d unready=%d (resourceUnready=%d) notStarted=%d longNotStarted=0 registered=%d longUnregistered=%d cloudProviderTarget=%d (minSize=%d, maxSize=%d)",
 			readiness.Ready,
 			readiness.Unready,
+			readiness.ResourceUnready,
 			readiness.NotStarted,
-			readiness.LongNotStarted,
 			readiness.Registered,
 			readiness.LongUnregistered,
 			acceptable.CurrentTarget,
@@ -789,11 +802,11 @@ func buildScaleDownStatusNodeGroup(candidates []string, lastProbed time.Time) ap
 func buildHealthStatusClusterwide(isReady bool, readiness Readiness) api.ClusterAutoscalerCondition {
 	condition := api.ClusterAutoscalerCondition{
 		Type: api.ClusterAutoscalerHealth,
-		Message: fmt.Sprintf("ready=%d unready=%d notStarted=%d longNotStarted=%d registered=%d longUnregistered=%d",
+		Message: fmt.Sprintf("ready=%d unready=%d (resourceUnready=%d) notStarted=%d longNotStarted=0 registered=%d longUnregistered=%d",
 			readiness.Ready,
 			readiness.Unready,
+			readiness.ResourceUnready,
 			readiness.NotStarted,
-			readiness.LongNotStarted,
 			readiness.Registered,
 			readiness.LongUnregistered,
 		),
@@ -849,27 +862,6 @@ func buildScaleDownStatusClusterwide(candidates map[string][]string, lastProbed 
 		condition.Status = api.ClusterAutoscalerNoCandidates
 	}
 	return condition
-}
-
-func isNodeStillStarting(node *apiv1.Node) bool {
-	for _, condition := range node.Status.Conditions {
-		if condition.Type == apiv1.NodeReady &&
-			condition.Status != apiv1.ConditionTrue &&
-			condition.LastTransitionTime.Time.Sub(node.CreationTimestamp.Time) < MaxStatusSettingDelayAfterCreation {
-			return true
-		}
-		if condition.Type == apiv1.NodeOutOfDisk &&
-			condition.Status == apiv1.ConditionTrue &&
-			condition.LastTransitionTime.Time.Sub(node.CreationTimestamp.Time) < MaxStatusSettingDelayAfterCreation {
-			return true
-		}
-		if condition.Type == apiv1.NodeNetworkUnavailable &&
-			condition.Status == apiv1.ConditionTrue &&
-			condition.LastTransitionTime.Time.Sub(node.CreationTimestamp.Time) < MaxStatusSettingDelayAfterCreation {
-			return true
-		}
-	}
-	return false
 }
 
 func updateLastTransition(oldStatus, newStatus *api.ClusterAutoscalerStatus) {
@@ -934,7 +926,7 @@ func (csr *ClusterStateRegistry) GetUpcomingNodes() map[string]int {
 		readiness := csr.perNodeGroupReadiness[id]
 		ar := csr.acceptableRanges[id]
 		// newNodes is the number of nodes that
-		newNodes := ar.CurrentTarget - (readiness.Ready + readiness.Unready + readiness.LongNotStarted + readiness.LongUnregistered)
+		newNodes := ar.CurrentTarget - (readiness.Ready + readiness.Unready + readiness.LongUnregistered)
 		if newNodes <= 0 {
 			// Negative value is unlikely but theoretically possible.
 			continue
@@ -966,7 +958,7 @@ func getNotRegisteredNodes(allNodes []*apiv1.Node, cloudProviderNodeInstances ma
 		for _, instance := range instances {
 			if !registered.Has(instance.Id) {
 				notRegistered = append(notRegistered, UnregisteredNode{
-					Node:              fakeNode(instance),
+					Node:              fakeNode(instance, cloudprovider.FakeNodeUnregistered),
 					UnregisteredSince: time,
 				})
 			}
@@ -975,16 +967,18 @@ func getNotRegisteredNodes(allNodes []*apiv1.Node, cloudProviderNodeInstances ma
 	return notRegistered
 }
 
-// GetClusterSize calculates and returns cluster's current size and target size. The current size is the
-// actual number of nodes provisioned in Kubernetes, the target size is the number of nodes the CA wants.
-func (csr *ClusterStateRegistry) GetClusterSize() (currentSize, targetSize int) {
+// GetAutoscaledNodesCount calculates and returns the actual and the target number of nodes
+// belonging to autoscaled node groups in the cluster.
+func (csr *ClusterStateRegistry) GetAutoscaledNodesCount() (currentSize, targetSize int) {
 	csr.Lock()
 	defer csr.Unlock()
 
 	for _, accRange := range csr.acceptableRanges {
 		targetSize += accRange.CurrentTarget
 	}
-	currentSize = csr.totalReadiness.Registered - csr.totalReadiness.NotStarted - csr.totalReadiness.LongNotStarted
+	for _, readiness := range csr.perNodeGroupReadiness {
+		currentSize += readiness.Registered - readiness.NotStarted
+	}
 	return currentSize, targetSize
 }
 
@@ -1029,7 +1023,7 @@ func (csr *ClusterStateRegistry) handleInstanceCreationErrorsForNodeGroup(
 			}
 		}
 
-		klog.V(1).Infof("Failed adding %v nodes (%v unseen previously) to group %v due to %v", len(instances), len(unseenInstanceIds), nodeGroup.Id(), errorCode)
+		klog.V(1).Infof("Failed adding %v nodes (%v unseen previously) to group %v due to %v; errorMessages=%#v", len(instances), len(unseenInstanceIds), nodeGroup.Id(), errorCode, currentUniqueErrorMessagesForErrorCode[errorCode])
 		if len(unseenInstanceIds) > 0 && csr.IsNodeGroupScalingUp(nodeGroup.Id()) {
 			csr.logRecorder.Eventf(
 				apiv1.EventTypeWarning,
@@ -1101,8 +1095,8 @@ func (csr *ClusterStateRegistry) buildInstanceToErrorCodeMappings(instances []cl
 	return
 }
 
-// GetCreatedNodesWithOutOfResourcesErrors returns list of nodes being created which reported create error of "out of resources" class.
-func (csr *ClusterStateRegistry) GetCreatedNodesWithOutOfResourcesErrors() []*apiv1.Node {
+// GetCreatedNodesWithErrors returns list of nodes being created which reported create error.
+func (csr *ClusterStateRegistry) GetCreatedNodesWithErrors() []*apiv1.Node {
 	csr.Lock()
 	defer csr.Unlock()
 
@@ -1111,7 +1105,7 @@ func (csr *ClusterStateRegistry) GetCreatedNodesWithOutOfResourcesErrors() []*ap
 		_, _, instancesByErrorCode := csr.buildInstanceToErrorCodeMappings(nodeGroupInstances)
 		for _, instances := range instancesByErrorCode {
 			for _, instance := range instances {
-				nodesWithCreateErrors = append(nodesWithCreateErrors, fakeNode(instance))
+				nodesWithCreateErrors = append(nodesWithCreateErrors, fakeNode(instance, cloudprovider.FakeNodeCreateError))
 			}
 		}
 	}
@@ -1123,10 +1117,18 @@ func (csr *ClusterStateRegistry) RefreshCloudProviderNodeInstancesCache() {
 	csr.cloudProviderNodeInstancesCache.Refresh()
 }
 
-func fakeNode(instance cloudprovider.Instance) *apiv1.Node {
+// InvalidateNodeInstancesCacheEntry removes a node group from the cloud provider node instances cache.
+func (csr *ClusterStateRegistry) InvalidateNodeInstancesCacheEntry(nodeGroup cloudprovider.NodeGroup) {
+	csr.cloudProviderNodeInstancesCache.InvalidateCacheEntry(nodeGroup)
+}
+
+func fakeNode(instance cloudprovider.Instance, reason string) *apiv1.Node {
 	return &apiv1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: instance.Id,
+			Annotations: map[string]string{
+				cloudprovider.FakeNodeReasonAnnotation: reason,
+			},
 		},
 		Spec: apiv1.NodeSpec{
 			ProviderID: instance.Id,

@@ -18,14 +18,15 @@ limitations under the License.
 package metrics
 
 import (
+	"math"
 	"net/http"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"k8s.io/klog"
-	_ "k8s.io/kubernetes/pkg/client/metrics/prometheus" // for client-go metrics registration
+	_ "k8s.io/component-base/metrics/prometheus/restclient" // for client-go metrics registration
+	"k8s.io/klog/v2"
 )
 
 // ExecutionTimer measures execution time of a computation, split into major steps
@@ -39,6 +40,10 @@ type ExecutionTimer struct {
 const (
 	// TopMetricsNamespace is a prefix for all VPA-related metrics namespaces
 	TopMetricsNamespace = "vpa_"
+
+	// MaxVpaSizeLog - The metrics will distinguish VPA sizes up to 2^MaxVpaSizeLog (~1M)
+	// Anything above that size will be reported in the top bucket.
+	MaxVpaSizeLog = 20
 )
 
 // Initialize sets up Prometheus to expose metrics & (optionally) health-check on the given address
@@ -72,7 +77,7 @@ func (t *ExecutionTimer) ObserveStep(step string) {
 
 // ObserveTotal measures the execution time from the creation of the ExecutionTimer
 func (t *ExecutionTimer) ObserveTotal() {
-	(*t.histo).WithLabelValues("total").Observe(time.Now().Sub(t.start).Seconds())
+	(*t.histo).WithLabelValues("total").Observe(time.Since(t.start).Seconds())
 }
 
 // CreateExecutionTimeMetric prepares a new histogram labeled with execution step
@@ -86,4 +91,18 @@ func CreateExecutionTimeMetric(namespace string, help string) *prometheus.Histog
 				20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 120.0, 150.0, 240.0, 300.0},
 		}, []string{"step"},
 	)
+}
+
+// GetVpaSizeLog2 returns a bucket number for a metric labelled with number of Pods under a given VPA.
+// It is basically log2(vpaSize), capped to MaxVpaSizeLog
+func GetVpaSizeLog2(vpaSize int) int {
+	if vpaSize == 0 {
+		return 0
+	}
+
+	ret := int(math.Log2(float64(vpaSize)))
+	if ret > MaxVpaSizeLog {
+		return MaxVpaSizeLog
+	}
+	return ret
 }

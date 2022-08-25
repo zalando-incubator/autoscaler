@@ -22,7 +22,7 @@ import (
 	"io/ioutil"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -46,7 +46,7 @@ type Backend struct {
 type StorageFactory interface {
 	// New finds the storage destination for the given group and resource. It will
 	// return an error if the group has no storage destination configured.
-	NewConfig(groupResource schema.GroupResource) (*storagebackend.Config, error)
+	NewConfig(groupResource schema.GroupResource) (*storagebackend.ConfigForResource, error)
 
 	// ResourcePrefix returns the overridden resource prefix for the GroupResource
 	// This allows for cohabitation of resources with different native types and provides
@@ -240,7 +240,8 @@ func getAllResourcesAlias(resource schema.GroupResource) schema.GroupResource {
 
 func (s *DefaultStorageFactory) getStorageGroupResource(groupResource schema.GroupResource) schema.GroupResource {
 	for _, potentialStorageResource := range s.Overrides[groupResource].cohabitatingResources {
-		if s.APIResourceConfigSource.AnyVersionForGroupEnabled(potentialStorageResource.Group) {
+		// TODO deads2k or liggitt determine if have ever stored any of our cohabitating resources in a different location on new clusters
+		if s.APIResourceConfigSource.AnyResourceForGroupEnabled(potentialStorageResource.Group) {
 			return potentialStorageResource
 		}
 	}
@@ -250,7 +251,7 @@ func (s *DefaultStorageFactory) getStorageGroupResource(groupResource schema.Gro
 
 // New finds the storage destination for the given group and resource. It will
 // return an error if the group has no storage destination configured.
-func (s *DefaultStorageFactory) NewConfig(groupResource schema.GroupResource) (*storagebackend.Config, error) {
+func (s *DefaultStorageFactory) NewConfig(groupResource schema.GroupResource) (*storagebackend.ConfigForResource, error) {
 	chosenStorageResource := s.getStorageGroupResource(groupResource)
 
 	// operate on copy
@@ -284,7 +285,7 @@ func (s *DefaultStorageFactory) NewConfig(groupResource schema.GroupResource) (*
 	}
 	klog.V(3).Infof("storing %v in %v, reading as %v from %#v", groupResource, codecConfig.StorageVersion, codecConfig.MemoryVersion, codecConfig.Config)
 
-	return &storageConfig, nil
+	return storageConfig.ForResource(groupResource), nil
 }
 
 // Backends returns all backends for all registered storage destinations.
@@ -307,8 +308,8 @@ func (s *DefaultStorageFactory) Backends() []Backend {
 			tlsConfig.Certificates = []tls.Certificate{cert}
 		}
 	}
-	if len(s.StorageConfig.Transport.CAFile) > 0 {
-		if caCert, err := ioutil.ReadFile(s.StorageConfig.Transport.CAFile); err != nil {
+	if len(s.StorageConfig.Transport.TrustedCAFile) > 0 {
+		if caCert, err := ioutil.ReadFile(s.StorageConfig.Transport.TrustedCAFile); err != nil {
 			klog.Errorf("failed to read ca file while getting backends: %s", err)
 		} else {
 			caPool := x509.NewCertPool()

@@ -21,10 +21,11 @@ import (
 
 	"github.com/stretchr/testify/mock"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
 	v1lister "k8s.io/client-go/listers/core/v1"
 )
@@ -33,7 +34,7 @@ var scheme = runtime.NewScheme()
 var codecs = serializer.NewCodecFactory(scheme)
 
 func init() {
-	v1.AddToScheme(scheme)
+	utilruntime.Must(v1.AddToScheme(scheme))
 }
 
 const pod1Yaml = `
@@ -58,6 +59,7 @@ spec:
         memory: "1024Mi"
         cpu: "1000m"
 `
+
 const pod2Yaml = `
 apiVersion: v1
 kind: Pod
@@ -121,7 +123,8 @@ func newSpecClientTestCase() *specClientTestCase {
 		podYamls: []string{pod1Yaml, pod2Yaml},
 	}
 }
-func newTestContainerSpec(podID model.PodID, containerName string, milicores int, memory int) BasicContainerSpec {
+
+func newTestContainerSpec(podID model.PodID, containerName string, milicores int, memory int64) BasicContainerSpec {
 	containerID := model.ContainerID{
 		PodID:         podID,
 		ContainerName: containerName,

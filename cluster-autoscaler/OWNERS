@@ -1,13 +1,8 @@
 approvers:
-- piosz
 - aleksandra-malinowska
-- losipiuk
-- krzysztof-jastrzebski
-reviewers:
 - feiskyer
-- piosz
+- towca
+reviewers:
 - aleksandra-malinowska
-- losipiuk
-- krzysztof-jastrzebski
+- feiskyer
 - Jeffwan
-

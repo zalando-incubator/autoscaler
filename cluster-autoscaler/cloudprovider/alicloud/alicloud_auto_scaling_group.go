@@ -21,8 +21,9 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	"k8s.io/klog"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	"k8s.io/autoscaler/cluster-autoscaler/config"
+	klog "k8s.io/klog/v2"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 // Asg implements NodeGroup interface.
@@ -173,7 +174,7 @@ func (asg *Asg) Nodes() ([]cloudprovider.Instance, error) {
 }
 
 // TemplateNodeInfo returns a node template for this node group.
-func (asg *Asg) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (asg *Asg) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	template, err := asg.manager.getAsgTemplate(asg.id)
 	if err != nil {
 		return nil, err
@@ -185,7 +186,7 @@ func (asg *Asg) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
 		return nil, err
 	}
 
-	nodeInfo := schedulernodeinfo.NewNodeInfo(cloudprovider.BuildKubeProxy(asg.id))
+	nodeInfo := schedulerframework.NewNodeInfo(cloudprovider.BuildKubeProxy(asg.id))
 	nodeInfo.SetNode(node)
 	return nodeInfo, nil
 }
@@ -210,4 +211,10 @@ func (asg *Asg) Autoprovisioned() bool {
 // This will be executed only for autoprovisioned node groups, once their size drops to 0.
 func (asg *Asg) Delete() error {
 	return cloudprovider.ErrNotImplemented
+}
+
+// GetOptions returns NodeGroupAutoscalingOptions that should be used for this particular
+// NodeGroup. Returning a nil will result in using default options.
+func (asg *Asg) GetOptions(defaults config.NodeGroupAutoscalingOptions) (*config.NodeGroupAutoscalingOptions, error) {
+	return nil, cloudprovider.ErrNotImplemented
 }

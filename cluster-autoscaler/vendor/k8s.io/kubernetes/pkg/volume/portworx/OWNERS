@@ -1,4 +1,9 @@
 # See the OWNERS docs at https://go.k8s.io/owners
 
-maintainers:
-- adityadani
+approvers:
+  - saad-ali
+reviewers:
+  - saad-ali
+emeritus_approvers:
+  - lpabon
+  - rootfs

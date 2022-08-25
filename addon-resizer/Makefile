@@ -27,6 +27,8 @@ IMGNAME = addon-resizer
 IMAGE = $(REGISTRY)/$(IMGNAME)
 MULTI_ARCH_IMG = $(IMAGE)-$(ARCH)
 TAG = 2.3
+# The output type could either be docker (local), or registry.
+OUTPUT_TYPE ?= docker
 
 BASEIMAGE?=gcr.io/distroless/static:latest
 
@@ -37,25 +39,39 @@ all: all-container
 sub-container-%:
 	$(MAKE) ARCH=$* container
 
+sub-manifest-push-%:
+	$(MAKE) ARCH=$* manifest-push
+
 sub-push-%:
 	$(MAKE) ARCH=$* push
 
 all-container: test $(addprefix sub-container-,$(ALL_ARCH))
 
-all-push: $(addprefix sub-push-,$(ALL_ARCH))
+all-manifest-push: $(addprefix sub-manifest-push-,$(ALL_ARCH))
+	docker manifest push -p $(IMAGE):$(TAG)
+
+all-push: $(addprefix sub-push-,$(ALL_ARCH)) all-manifest-push
+
+buildx-setup:
+	docker buildx inspect img-builder > /dev/null || docker buildx create --name img-builder --use
+
 container: .container-$(ARCH)
-.container-$(ARCH):
+.container-$(ARCH): buildx-setup
 	cp -r * $(TEMP_DIR)
 	cd $(TEMP_DIR) && sed -i 's|BASEIMAGE|$(BASEIMAGE)|g' Dockerfile
 
-	docker run --rm -it -v $(TEMP_DIR):$(TEMP_DIR):Z -v `pwd`:/go/src/k8s.io/autoscaler/addon-resizer/:Z \
+	docker run --rm -v $(TEMP_DIR):$(TEMP_DIR):Z -v `pwd`:/go/src/k8s.io/autoscaler/addon-resizer/:Z \
         golang:${GOLANG_VERSION} \
         /bin/bash -c "\
             go get github.com/tools/godep && \
             cd /go/src/k8s.io/autoscaler/addon-resizer/ && \
-            CGO_ENABLED=0 GOARM=$(GOARM) GOARCH=$(ARCH) godep go build -a -installsuffix cgo --ldflags '-w' -o $(TEMP_DIR)/pod_nanny main.go"
+            CGO_ENABLED=0 GOARM=$(GOARM) GOARCH=$(ARCH) godep go build -a -installsuffix cgo --ldflags '-w -X k8s.io/autoscaler/addon-resizer/nanny.AddonResizerVersion=$(TAG)' -o $(TEMP_DIR)/pod_nanny main.go"
 
-	docker build -t $(MULTI_ARCH_IMG):$(TAG) $(TEMP_DIR)
+	docker buildx build \
+		--pull \
+		--platform linux/$(ARCH) \
+		--output=type=$(OUTPUT_TYPE) \
+		-t $(MULTI_ARCH_IMG):$(TAG) $(TEMP_DIR)
 
 ifeq ($(ARCH), amd64)
 	# This is for to maintain the backward compatibility
@@ -63,7 +79,7 @@ ifeq ($(ARCH), amd64)
 endif
 
 test:
-	docker run --rm -it -v `pwd`:/go/src/k8s.io/autoscaler/addon-resizer/:Z \
+	docker run --rm -v `pwd`:/go/src/k8s.io/autoscaler/addon-resizer/:Z \
 	golang:${GOLANG_VERSION} \
         /bin/bash -c "\
             go get github.com/tools/godep && \
@@ -76,6 +92,11 @@ push: .push-$(ARCH)
 ifeq ($(ARCH), amd64)
 	gcloud docker -- push $(IMAGE):$(TAG)
 endif
+
+manifest-push: .manifest-push-$(ARCH)
+.manifest-push-$(ARCH):
+	docker manifest create --amend $(IMAGE):$(TAG) $(MULTI_ARCH_IMG):$(TAG) && \
+	docker manifest annotate --os=linux --arch=$(ARCH) $(IMAGE):$(TAG) $(MULTI_ARCH_IMG):$(TAG)
 
 clean: $(addprefix sub-clean-,$(ALL_ARCH))
 sub-clean-%:

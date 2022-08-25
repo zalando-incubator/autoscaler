@@ -19,7 +19,7 @@ package model
 import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // ResourceName represents the name of the resource monitored by recommender.
@@ -98,6 +98,23 @@ func ResourcesAsResourceList(resources Resources) apiv1.ResourceList {
 		result[newKey] = quantity
 	}
 	return result
+}
+
+// ResourceNamesApiToModel converts an array of resource names expressed in API types into model types.
+func ResourceNamesApiToModel(resources []apiv1.ResourceName) *[]ResourceName {
+	result := make([]ResourceName, 0, len(resources))
+	for _, resource := range resources {
+		switch resource {
+		case apiv1.ResourceCPU:
+			result = append(result, ResourceCPU)
+		case apiv1.ResourceMemory:
+			result = append(result, ResourceMemory)
+		default:
+			klog.Errorf("Cannot translate %v resource name", resource)
+			continue
+		}
+	}
+	return &result
 }
 
 // RoundResourceAmount returns the given resource amount rounded down to the

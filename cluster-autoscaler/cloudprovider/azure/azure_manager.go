@@ -14,35 +14,32 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+//go:generate go run azure_instance_types/gen.go
+
 package azure
 
 import (
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/azure"
-	"gopkg.in/gcfg.v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (
 	vmTypeVMSS     = "vmss"
 	vmTypeStandard = "standard"
-	vmTypeACS      = "acs"
 	vmTypeAKS      = "aks"
 
 	scaleToZeroSupportedStandard = false
 	scaleToZeroSupportedVMSS     = true
 	refreshInterval              = 1 * time.Minute
-
-	// The path of deployment parameters for standard vm.
-	deploymentParametersPath = "/var/lib/azure/azuredeploy.parameters.json"
 )
 
 // AzureManager handles Azure communication and data caching.
@@ -51,100 +48,17 @@ type AzureManager struct {
 	azClient *azClient
 	env      azure.Environment
 
-	asgCache              *asgCache
-	lastRefresh           time.Time
-	asgAutoDiscoverySpecs []cloudprovider.LabelAutoDiscoveryConfig
-	explicitlyConfigured  map[string]bool
+	azureCache           *azureCache
+	lastRefresh          time.Time
+	autoDiscoverySpecs   []labelAutoDiscoveryConfig
+	explicitlyConfigured map[string]bool
 }
 
-// Config holds the configuration parsed from the --cloud-config flag
-type Config struct {
-	Cloud          string `json:"cloud" yaml:"cloud"`
-	TenantID       string `json:"tenantId" yaml:"tenantId"`
-	SubscriptionID string `json:"subscriptionId" yaml:"subscriptionId"`
-	ResourceGroup  string `json:"resourceGroup" yaml:"resourceGroup"`
-	VMType         string `json:"vmType" yaml:"vmType"`
-
-	AADClientID                 string `json:"aadClientId" yaml:"aadClientId"`
-	AADClientSecret             string `json:"aadClientSecret" yaml:"aadClientSecret"`
-	AADClientCertPath           string `json:"aadClientCertPath" yaml:"aadClientCertPath"`
-	AADClientCertPassword       string `json:"aadClientCertPassword" yaml:"aadClientCertPassword"`
-	UseManagedIdentityExtension bool   `json:"useManagedIdentityExtension" yaml:"useManagedIdentityExtension"`
-
-	// Configs only for standard vmType (agent pools).
-	Deployment           string                 `json:"deployment" yaml:"deployment"`
-	DeploymentParameters map[string]interface{} `json:"deploymentParameters" yaml:"deploymentParameters"`
-
-	//Configs only for ACS/AKS
-	ClusterName string `json:"clusterName" yaml:"clusterName"`
-	//Config only for AKS
-	NodeResourceGroup string `json:"nodeResourceGroup" yaml:"nodeResourceGroup"`
-}
-
-// TrimSpace removes all leading and trailing white spaces.
-func (c *Config) TrimSpace() {
-	c.Cloud = strings.TrimSpace(c.Cloud)
-	c.TenantID = strings.TrimSpace(c.TenantID)
-	c.SubscriptionID = strings.TrimSpace(c.SubscriptionID)
-	c.ResourceGroup = strings.TrimSpace(c.ResourceGroup)
-	c.VMType = strings.TrimSpace(c.VMType)
-	c.AADClientID = strings.TrimSpace(c.AADClientID)
-	c.AADClientSecret = strings.TrimSpace(c.AADClientSecret)
-	c.AADClientCertPath = strings.TrimSpace(c.AADClientCertPath)
-	c.AADClientCertPassword = strings.TrimSpace(c.AADClientCertPassword)
-	c.Deployment = strings.TrimSpace(c.Deployment)
-	c.ClusterName = strings.TrimSpace(c.ClusterName)
-	c.NodeResourceGroup = strings.TrimSpace(c.NodeResourceGroup)
-}
-
-// CreateAzureManager creates Azure Manager object to work with Azure.
-func CreateAzureManager(configReader io.Reader, discoveryOpts cloudprovider.NodeGroupDiscoveryOptions) (*AzureManager, error) {
-	var err error
-	var cfg Config
-
-	if configReader != nil {
-		if err := gcfg.ReadInto(&cfg, configReader); err != nil {
-			klog.Errorf("Couldn't read config: %v", err)
-			return nil, err
-		}
-	} else {
-		cfg.Cloud = os.Getenv("ARM_CLOUD")
-		cfg.SubscriptionID = os.Getenv("ARM_SUBSCRIPTION_ID")
-		cfg.ResourceGroup = os.Getenv("ARM_RESOURCE_GROUP")
-		cfg.TenantID = os.Getenv("ARM_TENANT_ID")
-		cfg.AADClientID = os.Getenv("ARM_CLIENT_ID")
-		cfg.AADClientSecret = os.Getenv("ARM_CLIENT_SECRET")
-		cfg.VMType = strings.ToLower(os.Getenv("ARM_VM_TYPE"))
-		cfg.AADClientCertPath = os.Getenv("ARM_CLIENT_CERT_PATH")
-		cfg.AADClientCertPassword = os.Getenv("ARM_CLIENT_CERT_PASSWORD")
-		cfg.Deployment = os.Getenv("ARM_DEPLOYMENT")
-		cfg.ClusterName = os.Getenv("AZURE_CLUSTER_NAME")
-		cfg.NodeResourceGroup = os.Getenv("AZURE_NODE_RESOURCE_GROUP")
-
-		useManagedIdentityExtensionFromEnv := os.Getenv("ARM_USE_MANAGED_IDENTITY_EXTENSION")
-		if len(useManagedIdentityExtensionFromEnv) > 0 {
-			cfg.UseManagedIdentityExtension, err = strconv.ParseBool(useManagedIdentityExtensionFromEnv)
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-	cfg.TrimSpace()
-
-	// Defaulting vmType to vmss.
-	if cfg.VMType == "" {
-		cfg.VMType = vmTypeVMSS
-	}
-
-	// Read parameters from deploymentParametersPath if it is not set.
-	if cfg.VMType == vmTypeStandard && len(cfg.DeploymentParameters) == 0 {
-		parameters, err := readDeploymentParameters(deploymentParametersPath)
-		if err != nil {
-			klog.Errorf("readDeploymentParameters failed with error: %v", err)
-			return nil, err
-		}
-
-		cfg.DeploymentParameters = parameters
+// createAzureManagerInternal allows for a custom azClient to be passed in by tests.
+func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovider.NodeGroupDiscoveryOptions, azClient *azClient) (*AzureManager, error) {
+	cfg, err := BuildAzureConfig(configReader)
+	if err != nil {
+		return nil, err
 	}
 
 	// Defaulting env to Azure Public Cloud.
@@ -156,38 +70,40 @@ func CreateAzureManager(configReader io.Reader, discoveryOpts cloudprovider.Node
 		}
 	}
 
-	if err := validateConfig(&cfg); err != nil {
-		return nil, err
-	}
-
 	klog.Infof("Starting azure manager with subscription ID %q", cfg.SubscriptionID)
 
-	azClient, err := newAzClient(&cfg, &env)
-	if err != nil {
-		return nil, err
+	if azClient == nil {
+		azClient, err = newAzClient(cfg, &env)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Create azure manager.
 	manager := &AzureManager{
-		config:               &cfg,
+		config:               cfg,
 		env:                  env,
 		azClient:             azClient,
 		explicitlyConfigured: make(map[string]bool),
 	}
 
-	cache, err := newAsgCache()
+	cacheTTL := refreshInterval
+	if cfg.VmssCacheTTL != 0 {
+		cacheTTL = time.Duration(cfg.VmssCacheTTL) * time.Second
+	}
+	cache, err := newAzureCache(azClient, cacheTTL, cfg.ResourceGroup, cfg.VMType)
 	if err != nil {
 		return nil, err
 	}
-	manager.asgCache = cache
+	manager.azureCache = cache
 
-	specs, err := discoveryOpts.ParseLabelAutoDiscoverySpecs()
+	specs, err := ParseLabelAutoDiscoverySpecs(discoveryOpts)
 	if err != nil {
 		return nil, err
 	}
-	manager.asgAutoDiscoverySpecs = specs
+	manager.autoDiscoverySpecs = specs
 
-	if err := manager.fetchExplicitAsgs(discoveryOpts.NodeGroupSpecs); err != nil {
+	if err := manager.fetchExplicitNodeGroups(discoveryOpts.NodeGroupSpecs); err != nil {
 		return nil, err
 	}
 
@@ -198,28 +114,31 @@ func CreateAzureManager(configReader io.Reader, discoveryOpts cloudprovider.Node
 	return manager, nil
 }
 
-func (m *AzureManager) fetchExplicitAsgs(specs []string) error {
+// CreateAzureManager creates Azure Manager object to work with Azure.
+func CreateAzureManager(configReader io.Reader, discoveryOpts cloudprovider.NodeGroupDiscoveryOptions) (*AzureManager, error) {
+	return createAzureManagerInternal(configReader, discoveryOpts, nil)
+}
+
+func (m *AzureManager) fetchExplicitNodeGroups(specs []string) error {
 	changed := false
 	for _, spec := range specs {
-		asg, err := m.buildAsgFromSpec(spec)
+		nodeGroup, err := m.buildNodeGroupFromSpec(spec)
 		if err != nil {
 			return fmt.Errorf("failed to parse node group spec: %v", err)
 		}
-		if m.RegisterAsg(asg) {
+		if m.RegisterNodeGroup(nodeGroup) {
 			changed = true
 		}
-		m.explicitlyConfigured[asg.Id()] = true
+		m.explicitlyConfigured[nodeGroup.Id()] = true
 	}
 
 	if changed {
-		if err := m.regenerateCache(); err != nil {
-			return err
-		}
+		m.invalidateCache()
 	}
 	return nil
 }
 
-func (m *AzureManager) buildAsgFromSpec(spec string) (cloudprovider.NodeGroup, error) {
+func (m *AzureManager) buildNodeGroupFromSpec(spec string) (cloudprovider.NodeGroup, error) {
 	scaleToZeroSupported := scaleToZeroSupportedStandard
 	if strings.EqualFold(m.config.VMType, vmTypeVMSS) {
 		scaleToZeroSupported = scaleToZeroSupportedVMSS
@@ -233,11 +152,9 @@ func (m *AzureManager) buildAsgFromSpec(spec string) (cloudprovider.NodeGroup, e
 	case vmTypeStandard:
 		return NewAgentPool(s, m)
 	case vmTypeVMSS:
-		return NewScaleSet(s, m)
-	case vmTypeACS:
-		fallthrough
+		return NewScaleSet(s, m, -1)
 	case vmTypeAKS:
-		return NewContainerServiceAgentPool(s, m)
+		return NewAKSAgentPool(s, m)
 	default:
 		return nil, fmt.Errorf("vmtype %s not supported", m.config.VMType)
 	}
@@ -246,130 +163,136 @@ func (m *AzureManager) buildAsgFromSpec(spec string) (cloudprovider.NodeGroup, e
 // Refresh is called before every main loop and can be used to dynamically update cloud provider state.
 // In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
 func (m *AzureManager) Refresh() error {
-	if m.lastRefresh.Add(refreshInterval).After(time.Now()) {
+	if m.lastRefresh.Add(m.azureCache.refreshInterval).After(time.Now()) {
 		return nil
 	}
 	return m.forceRefresh()
 }
 
 func (m *AzureManager) forceRefresh() error {
-	if err := m.fetchAutoAsgs(); err != nil {
-		klog.Errorf("Failed to fetch ASGs: %v", err)
+	if err := m.fetchAutoNodeGroups(); err != nil {
+		klog.Errorf("Failed to fetch autodiscovered nodegroups: %v", err)
+	}
+	if err := m.azureCache.regenerate(); err != nil {
+		klog.Errorf("Failed to regenerate Azure cache: %v", err)
 		return err
 	}
 	m.lastRefresh = time.Now()
-	klog.V(2).Infof("Refreshed ASG list, next refresh after %v", m.lastRefresh.Add(refreshInterval))
+	klog.V(2).Infof("Refreshed Azure VM and VMSS list, next refresh after %v", m.lastRefresh.Add(m.azureCache.refreshInterval))
 	return nil
 }
 
-// Fetch automatically discovered ASGs. These ASGs should be unregistered if
+func (m *AzureManager) invalidateCache() {
+	m.lastRefresh = time.Now().Add(-1 * m.azureCache.refreshInterval)
+	klog.V(2).Infof("Invalidated Azure cache")
+}
+
+// Fetch automatically discovered NodeGroups. These NodeGroups should be unregistered if
 // they no longer exist in Azure.
-func (m *AzureManager) fetchAutoAsgs() error {
-	groups, err := m.getFilteredAutoscalingGroups(m.asgAutoDiscoverySpecs)
+func (m *AzureManager) fetchAutoNodeGroups() error {
+	groups, err := m.getFilteredNodeGroups(m.autoDiscoverySpecs)
 	if err != nil {
-		return fmt.Errorf("cannot autodiscover ASGs: %s", err)
+		return fmt.Errorf("cannot autodiscover NodeGroups: %s", err)
 	}
 
 	changed := false
 	exists := make(map[string]bool)
-	for _, asg := range groups {
-		asgID := asg.Id()
-		exists[asgID] = true
-		if m.explicitlyConfigured[asgID] {
-			// This ASG was explicitly configured, but would also be
+	for _, group := range groups {
+		id := group.Id()
+		exists[id] = true
+		if m.explicitlyConfigured[id] {
+			// This NodeGroup was explicitly configured, but would also be
 			// autodiscovered. We want the explicitly configured min and max
 			// nodes to take precedence.
-			klog.V(3).Infof("Ignoring explicitly configured ASG %s for autodiscovery.", asg.Id())
+			klog.V(3).Infof("Ignoring explicitly configured NodeGroup %s for autodiscovery.", group.Id())
 			continue
 		}
-		if m.RegisterAsg(asg) {
-			klog.V(3).Infof("Autodiscovered ASG %s using tags %v", asg.Id(), m.asgAutoDiscoverySpecs)
+		if m.RegisterNodeGroup(group) {
+			klog.V(3).Infof("Autodiscovered NodeGroup %s using tags %v", group.Id(), m.autoDiscoverySpecs)
 			changed = true
 		}
 	}
 
-	for _, asg := range m.getAsgs() {
-		asgID := asg.Id()
-		if !exists[asgID] && !m.explicitlyConfigured[asgID] {
-			m.UnregisterAsg(asg)
+	for _, nodeGroup := range m.getNodeGroups() {
+		nodeGroupID := nodeGroup.Id()
+		if !exists[nodeGroupID] && !m.explicitlyConfigured[nodeGroupID] {
+			m.UnregisterNodeGroup(nodeGroup)
 			changed = true
 		}
 	}
 
 	if changed {
-		if err := m.regenerateCache(); err != nil {
-			return err
-		}
+		m.invalidateCache()
 	}
 
 	return nil
 }
 
-func (m *AzureManager) getAsgs() []cloudprovider.NodeGroup {
-	return m.asgCache.get()
+func (m *AzureManager) getNodeGroups() []cloudprovider.NodeGroup {
+	return m.azureCache.getRegisteredNodeGroups()
 }
 
-// RegisterAsg registers an ASG.
-func (m *AzureManager) RegisterAsg(asg cloudprovider.NodeGroup) bool {
-	return m.asgCache.Register(asg)
+// RegisterNodeGroup registers an a NodeGroup.
+func (m *AzureManager) RegisterNodeGroup(nodeGroup cloudprovider.NodeGroup) bool {
+	return m.azureCache.Register(nodeGroup)
 }
 
-// UnregisterAsg unregisters an ASG.
-func (m *AzureManager) UnregisterAsg(asg cloudprovider.NodeGroup) bool {
-	return m.asgCache.Unregister(asg)
+// UnregisterNodeGroup unregisters a NodeGroup.
+func (m *AzureManager) UnregisterNodeGroup(nodeGroup cloudprovider.NodeGroup) bool {
+	return m.azureCache.Unregister(nodeGroup)
 }
 
-// GetAsgForInstance returns AsgConfig of the given Instance
-func (m *AzureManager) GetAsgForInstance(instance *azureRef) (cloudprovider.NodeGroup, error) {
-	return m.asgCache.FindForInstance(instance, m.config.VMType)
+// GetNodeGroupForInstance returns the NodeGroup of the given Instance
+func (m *AzureManager) GetNodeGroupForInstance(instance *azureRef) (cloudprovider.NodeGroup, error) {
+	return m.azureCache.FindForInstance(instance, m.config.VMType)
 }
 
-func (m *AzureManager) regenerateCache() error {
-	m.asgCache.mutex.Lock()
-	defer m.asgCache.mutex.Unlock()
-	return m.asgCache.regenerate()
+// GetScaleSetOptions parse options extracted from VMSS tags and merges them with provided defaults
+func (m *AzureManager) GetScaleSetOptions(scaleSetName string, defaults config.NodeGroupAutoscalingOptions) *config.NodeGroupAutoscalingOptions {
+	options := m.azureCache.getAutoscalingOptions(azureRef{Name: scaleSetName})
+	if options == nil || len(options) == 0 {
+		return &defaults
+	}
+
+	if opt, ok := getFloat64Option(options, scaleSetName, config.DefaultScaleDownUtilizationThresholdKey); ok {
+		defaults.ScaleDownUtilizationThreshold = opt
+	}
+	if opt, ok := getFloat64Option(options, scaleSetName, config.DefaultScaleDownGpuUtilizationThresholdKey); ok {
+		defaults.ScaleDownGpuUtilizationThreshold = opt
+	}
+	if opt, ok := getDurationOption(options, scaleSetName, config.DefaultScaleDownUnneededTimeKey); ok {
+		defaults.ScaleDownUnneededTime = opt
+	}
+	if opt, ok := getDurationOption(options, scaleSetName, config.DefaultScaleDownUnreadyTimeKey); ok {
+		defaults.ScaleDownUnreadyTime = opt
+	}
+
+	return &defaults
 }
 
-// Cleanup the ASG cache.
+// Cleanup the cache.
 func (m *AzureManager) Cleanup() {
-	m.asgCache.Cleanup()
+	m.azureCache.Cleanup()
 }
 
-func (m *AzureManager) getFilteredAutoscalingGroups(filter []cloudprovider.LabelAutoDiscoveryConfig) (asgs []cloudprovider.NodeGroup, err error) {
+func (m *AzureManager) getFilteredNodeGroups(filter []labelAutoDiscoveryConfig) (nodeGroups []cloudprovider.NodeGroup, err error) {
 	if len(filter) == 0 {
 		return nil, nil
 	}
 
-	switch m.config.VMType {
-	case vmTypeVMSS:
-		asgs, err = m.listScaleSets(filter)
-	case vmTypeStandard:
-		asgs, err = m.listAgentPools(filter)
-	case vmTypeACS:
-	case vmTypeAKS:
-		return nil, nil
-	default:
-		err = fmt.Errorf("vmType %q not supported", m.config.VMType)
-	}
-	if err != nil {
-		return nil, err
+	if m.config.VMType == vmTypeVMSS {
+		return m.getFilteredScaleSets(filter)
 	}
 
-	return asgs, nil
+	return nil, fmt.Errorf("vmType %q does not support autodiscovery", m.config.VMType)
 }
 
-// listScaleSets gets a list of scale sets and instanceIDs.
-func (m *AzureManager) listScaleSets(filter []cloudprovider.LabelAutoDiscoveryConfig) (asgs []cloudprovider.NodeGroup, err error) {
-	ctx, cancel := getContextWithCancel()
-	defer cancel()
+// getFilteredScaleSets gets a list of scale sets and instanceIDs.
+func (m *AzureManager) getFilteredScaleSets(filter []labelAutoDiscoveryConfig) ([]cloudprovider.NodeGroup, error) {
+	vmssList := m.azureCache.getScaleSets()
 
-	result, err := m.azClient.virtualMachineScaleSetsClient.List(ctx, m.config.ResourceGroup)
-	if err != nil {
-		klog.Errorf("VirtualMachineScaleSetsClient.List for %v failed: %v", m.config.ResourceGroup, err)
-		return nil, err
-	}
-
-	for _, scaleSet := range result {
+	var nodeGroups []cloudprovider.NodeGroup
+	for _, scaleSet := range vmssList {
 		if len(filter) > 0 {
 			if scaleSet.Tags == nil || len(scaleSet.Tags) == 0 {
 				continue
@@ -379,47 +302,56 @@ func (m *AzureManager) listScaleSets(filter []cloudprovider.LabelAutoDiscoveryCo
 				continue
 			}
 		}
-
 		spec := &dynamic.NodeGroupSpec{
 			Name:               *scaleSet.Name,
 			MinSize:            1,
 			MaxSize:            -1,
 			SupportScaleToZero: scaleToZeroSupportedVMSS,
 		}
-		asg, _ := NewScaleSet(spec, m)
-		asgs = append(asgs, asg)
-	}
 
-	return asgs, nil
-}
-
-// listAgentPools gets a list of agent pools and instanceIDs.
-// Note: filter won't take effect for agent pools.
-func (m *AzureManager) listAgentPools(filter []cloudprovider.LabelAutoDiscoveryConfig) (asgs []cloudprovider.NodeGroup, err error) {
-	ctx, cancel := getContextWithCancel()
-	defer cancel()
-	deploy, err := m.azClient.deploymentsClient.Get(ctx, m.config.ResourceGroup, m.config.Deployment)
-	if err != nil {
-		klog.Errorf("deploymentsClient.Get(%s, %s) failed: %v", m.config.ResourceGroup, m.config.Deployment, err)
-		return nil, err
-	}
-
-	parameters := deploy.Properties.Parameters.(map[string]interface{})
-	for k := range parameters {
-		if k == "masterVMSize" || !strings.HasSuffix(k, "VMSize") {
+		if val, ok := scaleSet.Tags["min"]; ok {
+			if minSize, err := strconv.Atoi(*val); err == nil {
+				spec.MinSize = minSize
+			} else {
+				klog.Warningf("ignoring vmss %q because of invalid minimum size specified for vmss: %s", *scaleSet.Name, err)
+				continue
+			}
+		} else {
+			klog.Warningf("ignoring vmss %q because of no minimum size specified for vmss", *scaleSet.Name)
+			continue
+		}
+		if spec.MinSize < 0 {
+			klog.Warningf("ignoring vmss %q because of minimum size must be a non-negative number of nodes", *scaleSet.Name)
+			continue
+		}
+		if val, ok := scaleSet.Tags["max"]; ok {
+			if maxSize, err := strconv.Atoi(*val); err == nil {
+				spec.MaxSize = maxSize
+			} else {
+				klog.Warningf("ignoring vmss %q because of invalid maximum size specified for vmss: %s", *scaleSet.Name, err)
+				continue
+			}
+		} else {
+			klog.Warningf("ignoring vmss %q because of no maximum size specified for vmss", *scaleSet.Name)
+			continue
+		}
+		if spec.MaxSize < spec.MinSize {
+			klog.Warningf("ignoring vmss %q because of maximum size must be greater than minimum size: max=%d < min=%d", *scaleSet.Name, spec.MaxSize, spec.MinSize)
 			continue
 		}
 
-		poolName := strings.TrimRight(k, "VMSize")
-		spec := &dynamic.NodeGroupSpec{
-			Name:               poolName,
-			MinSize:            1,
-			MaxSize:            -1,
-			SupportScaleToZero: scaleToZeroSupportedStandard,
+		curSize := int64(-1)
+		if scaleSet.Sku != nil && scaleSet.Sku.Capacity != nil {
+			curSize = *scaleSet.Sku.Capacity
 		}
-		asg, _ := NewAgentPool(spec, m)
-		asgs = append(asgs, asg)
+
+		vmss, err := NewScaleSet(spec, m, curSize)
+		if err != nil {
+			klog.Warningf("ignoring vmss %q %s", *scaleSet.Name, err)
+			continue
+		}
+		nodeGroups = append(nodeGroups, vmss)
 	}
 
-	return asgs, nil
+	return nodeGroups, nil
 }

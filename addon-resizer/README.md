@@ -5,11 +5,11 @@ vertically scales the dependent container up and down. Currently the only
 option is to scale it linearly based on the number of nodes, and it only works
 for a singleton.
 
-Currently recommended version is 1.8, on addon-resizer-release-1.8 branch. The latest version and Docker images are 2.1 pushed to:
+Currently recommended version is 1.8, on addon-resizer-release-1.8 branch. The latest version and Docker images are 2.3 pushed to:
 
-* gcr.io/google-containers/addon-resizer-amd64:2.1
-* gcr.io/google-containers/addon-resizer-arm64:2.1
-* gcr.io/google-containers/addon-resizer-arm:2.1
+* gcr.io/google-containers/addon-resizer-amd64:2.3
+* gcr.io/google-containers/addon-resizer-arm64:2.3
+* gcr.io/google-containers/addon-resizer-arm:2.3
 
 ## Nanny program and arguments
 
@@ -44,80 +44,7 @@ Usage of ./pod_nanny:
 
 ## Example deployment file
 
-The following yaml is an example deployment where the nanny watches and resizes itself.
-
-```yaml
-# Config map for resource configuration.
-# Specify 'cpu', 'extra-cpu', 'memory' and 'extra-memory'
-# to overwrite resource requirements.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: nanny-config
-  namespace: default
-data:
-  NannyConfiguration: |-
-    apiVersion: nannyconfig/v1alpha1
-    kind: NannyConfiguration
----
-apiVersion: extensions/v1beta1
-kind: Deployment
-metadata:
-  name: nanny-v1
-  namespace: default
-  labels:
-    k8s-app: nanny
-    version: v1
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      k8s-app: nanny
-      version: v1
-  template:
-    metadata:
-      labels:
-        k8s-app: nanny
-        version: v1
-        kubernetes.io/cluster-service: "true"
-    spec:
-      containers:
-        - image: gcr.io/google-containers/addon-resizer-amd64:2.1
-          imagePullPolicy: Always
-          name: pod-nanny
-          resources:
-            limits:
-              cpu: 300m
-              memory: 200Mi
-            requests:
-              cpu: 300m
-              memory: 200Mi
-          env:
-            - name: MY_POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: MY_POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-          volumeMounts:
-          - name: nanny-config-volume
-            mountPath: /etc/config
-          command:
-            - /pod_nanny
-            - --config-dir=/etc/config
-            - --cpu=300m
-            - --extra-cpu=20m
-            - --memory=200Mi
-            - --extra-memory=10Mi
-            - --threshold=5
-            - --deployment=nanny-v1
-      volumes:
-      - name: nanny-config-volume
-        configMap:
-          name: nanny-config
-```
+You can take a look at an [example deployment](./deploy/example.yaml) where the nanny watches and resizes itself.
 
 ## Addon resizer configuration
 

@@ -7,9 +7,10 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/opencontainers/runtime-spec/specs-go"
-
 	"github.com/sirupsen/logrus"
+
+	"github.com/opencontainers/runc/libcontainer/devices"
+	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 type Rlimit struct {
@@ -30,9 +31,12 @@ type IDMap struct {
 // for syscalls. Additional architectures can be added by specifying them in
 // Architectures.
 type Seccomp struct {
-	DefaultAction Action     `json:"default_action"`
-	Architectures []string   `json:"architectures"`
-	Syscalls      []*Syscall `json:"syscalls"`
+	DefaultAction    Action     `json:"default_action"`
+	Architectures    []string   `json:"architectures"`
+	Syscalls         []*Syscall `json:"syscalls"`
+	DefaultErrnoRet  *uint      `json:"default_errno_ret"`
+	ListenerPath     string     `json:"listener_path,omitempty"`
+	ListenerMetadata string     `json:"listener_metadata,omitempty"`
 }
 
 // Action is taken upon rule match in Seccomp
@@ -44,6 +48,10 @@ const (
 	Trap
 	Allow
 	Trace
+	Log
+	Notify
+	KillThread
+	KillProcess
 )
 
 // Operator is a comparison operator to be used when matching syscall arguments in Seccomp
@@ -69,9 +77,10 @@ type Arg struct {
 
 // Syscall is a rule to match a syscall in Seccomp
 type Syscall struct {
-	Name   string `json:"name"`
-	Action Action `json:"action"`
-	Args   []*Arg `json:"args"`
+	Name     string `json:"name"`
+	Action   Action `json:"action"`
+	ErrnoRet *uint  `json:"errnoRet"`
+	Args     []*Arg `json:"args"`
 }
 
 // TODO Windows. Many of these fields should be factored out into those parts
@@ -90,6 +99,9 @@ type Config struct {
 	// Path to a directory containing the container's root filesystem.
 	Rootfs string `json:"rootfs"`
 
+	// Umask is the umask to use inside of the container.
+	Umask *uint32 `json:"umask"`
+
 	// Readonlyfs will remount the container's rootfs as readonly where only externally mounted
 	// bind mounts are writtable.
 	Readonlyfs bool `json:"readonlyfs"`
@@ -102,7 +114,7 @@ type Config struct {
 	Mounts []*Mount `json:"mounts"`
 
 	// The device nodes that should be automatically created within the container upon container start.  Note, make sure that the node is marked as allowed in the cgroup as well!
-	Devices []*Device `json:"devices"`
+	Devices []*devices.Device `json:"devices"`
 
 	MountLabel string `json:"mount_label"`
 
@@ -174,7 +186,7 @@ type Config struct {
 
 	// Hooks are a collection of actions to perform at various container lifecycle events.
 	// CommandHooks are serialized to JSON, but other hooks are not.
-	Hooks *Hooks
+	Hooks Hooks
 
 	// Version is the version of opencontainer specification that is supported.
 	Version string `json:"version"`
@@ -201,16 +213,55 @@ type Config struct {
 	RootlessCgroups bool `json:"rootless_cgroups,omitempty"`
 }
 
-type Hooks struct {
+type (
+	HookName string
+	HookList []Hook
+	Hooks    map[HookName]HookList
+)
+
+const (
 	// Prestart commands are executed after the container namespaces are created,
 	// but before the user supplied command is executed from init.
-	Prestart []Hook
+	// Note: This hook is now deprecated
+	// Prestart commands are called in the Runtime namespace.
+	Prestart HookName = "prestart"
+
+	// CreateRuntime commands MUST be called as part of the create operation after
+	// the runtime environment has been created but before the pivot_root has been executed.
+	// CreateRuntime is called immediately after the deprecated Prestart hook.
+	// CreateRuntime commands are called in the Runtime Namespace.
+	CreateRuntime HookName = "createRuntime"
+
+	// CreateContainer commands MUST be called as part of the create operation after
+	// the runtime environment has been created but before the pivot_root has been executed.
+	// CreateContainer commands are called in the Container namespace.
+	CreateContainer HookName = "createContainer"
+
+	// StartContainer commands MUST be called as part of the start operation and before
+	// the container process is started.
+	// StartContainer commands are called in the Container namespace.
+	StartContainer HookName = "startContainer"
 
 	// Poststart commands are executed after the container init process starts.
-	Poststart []Hook
+	// Poststart commands are called in the Runtime Namespace.
+	Poststart HookName = "poststart"
 
 	// Poststop commands are executed after the container init process exits.
-	Poststop []Hook
+	// Poststop commands are called in the Runtime Namespace.
+	Poststop HookName = "poststop"
+)
+
+// KnownHookNames returns the known hook names.
+// Used by `runc features`.
+func KnownHookNames() []string {
+	return []string{
+		string(Prestart), // deprecated
+		string(CreateRuntime),
+		string(CreateContainer),
+		string(StartContainer),
+		string(Poststart),
+		string(Poststop),
+	}
 }
 
 type Capabilities struct {
@@ -226,32 +277,39 @@ type Capabilities struct {
 	Ambient []string
 }
 
-func (hooks *Hooks) UnmarshalJSON(b []byte) error {
-	var state struct {
-		Prestart  []CommandHook
-		Poststart []CommandHook
-		Poststop  []CommandHook
+func (hooks HookList) RunHooks(state *specs.State) error {
+	for i, h := range hooks {
+		if err := h.Run(state); err != nil {
+			return fmt.Errorf("error running hook #%d: %w", i, err)
+		}
 	}
+
+	return nil
+}
+
+func (hooks *Hooks) UnmarshalJSON(b []byte) error {
+	var state map[HookName][]CommandHook
 
 	if err := json.Unmarshal(b, &state); err != nil {
 		return err
 	}
 
-	deserialize := func(shooks []CommandHook) (hooks []Hook) {
-		for _, shook := range shooks {
-			hooks = append(hooks, shook)
+	*hooks = Hooks{}
+	for n, commandHooks := range state {
+		if len(commandHooks) == 0 {
+			continue
 		}
 
-		return hooks
+		(*hooks)[n] = HookList{}
+		for _, h := range commandHooks {
+			(*hooks)[n] = append((*hooks)[n], h)
+		}
 	}
 
-	hooks.Prestart = deserialize(state.Prestart)
-	hooks.Poststart = deserialize(state.Poststart)
-	hooks.Poststop = deserialize(state.Poststop)
 	return nil
 }
 
-func (hooks Hooks) MarshalJSON() ([]byte, error) {
+func (hooks *Hooks) MarshalJSON() ([]byte, error) {
 	serialize := func(hooks []Hook) (serializableHooks []CommandHook) {
 		for _, hook := range hooks {
 			switch chook := hook.(type) {
@@ -266,32 +324,32 @@ func (hooks Hooks) MarshalJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(map[string]interface{}{
-		"prestart":  serialize(hooks.Prestart),
-		"poststart": serialize(hooks.Poststart),
-		"poststop":  serialize(hooks.Poststop),
+		"prestart":        serialize((*hooks)[Prestart]),
+		"createRuntime":   serialize((*hooks)[CreateRuntime]),
+		"createContainer": serialize((*hooks)[CreateContainer]),
+		"startContainer":  serialize((*hooks)[StartContainer]),
+		"poststart":       serialize((*hooks)[Poststart]),
+		"poststop":        serialize((*hooks)[Poststop]),
 	})
 }
 
-// HookState is the payload provided to a hook on execution.
-type HookState specs.State
-
 type Hook interface {
 	// Run executes the hook with the provided state.
-	Run(HookState) error
+	Run(*specs.State) error
 }
 
 // NewFunctionHook will call the provided function when the hook is run.
-func NewFunctionHook(f func(HookState) error) FuncHook {
+func NewFunctionHook(f func(*specs.State) error) FuncHook {
 	return FuncHook{
 		run: f,
 	}
 }
 
 type FuncHook struct {
-	run func(HookState) error
+	run func(*specs.State) error
 }
 
-func (f FuncHook) Run(s HookState) error {
+func (f FuncHook) Run(s *specs.State) error {
 	return f.run(s)
 }
 
@@ -314,7 +372,7 @@ type CommandHook struct {
 	Command
 }
 
-func (c Command) Run(s HookState) error {
+func (c Command) Run(s *specs.State) error {
 	b, err := json.Marshal(s)
 	if err != nil {
 		return err
@@ -335,7 +393,7 @@ func (c Command) Run(s HookState) error {
 	go func() {
 		err := cmd.Wait()
 		if err != nil {
-			err = fmt.Errorf("error running hook: %v, stdout: %s, stderr: %s", err, stdout.String(), stderr.String())
+			err = fmt.Errorf("error running hook: %w, stdout: %s, stderr: %s", err, stdout.String(), stderr.String())
 		}
 		errC <- err
 	}()
@@ -349,8 +407,8 @@ func (c Command) Run(s HookState) error {
 	case err := <-errC:
 		return err
 	case <-timerCh:
-		cmd.Process.Kill()
-		cmd.Wait()
+		_ = cmd.Process.Kill()
+		<-errC
 		return fmt.Errorf("hook ran past specified timeout of %.1fs", c.Timeout.Seconds())
 	}
 }

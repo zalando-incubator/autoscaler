@@ -20,14 +20,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/object"
-	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // IsNotFound return true if err is NotFoundError or DefaultNotFoundError
@@ -152,7 +152,7 @@ func GetDatastorePathObjFromVMDiskPath(vmDiskPath string) (*object.DatastorePath
 	isSuccess := datastorePathObj.FromString(vmDiskPath)
 	if !isSuccess {
 		klog.Errorf("Failed to parse volPath: %s", vmDiskPath)
-		return nil, fmt.Errorf("Failed to parse volPath: %s", vmDiskPath)
+		return nil, fmt.Errorf("failed to parse volPath: %s", vmDiskPath)
 	}
 	return datastorePathObj, nil
 }
@@ -181,14 +181,6 @@ func IsInvalidCredentialsError(err error) bool {
 	return isInvalidCredentialsError
 }
 
-// VerifyVolumePathsForVM verifies if the volume paths (volPaths) are attached to VM.
-func VerifyVolumePathsForVM(vmMo mo.VirtualMachine, volPaths []string, nodeName string, nodeVolumeMap map[string]map[string]bool) {
-	// Verify if the volume paths are present on the VM backing virtual disk devices
-	vmDevices := object.VirtualDeviceList(vmMo.Config.Hardware.Device)
-	VerifyVolumePathsForVMDevices(vmDevices, volPaths, nodeName, nodeVolumeMap)
-
-}
-
 // VerifyVolumePathsForVMDevices verifies if the volume paths (volPaths) are attached to VM.
 func VerifyVolumePathsForVMDevices(vmDevices object.VirtualDeviceList, volPaths []string, nodeName string, nodeVolumeMap map[string]map[string]bool) {
 	volPathsMap := make(map[string]bool)
@@ -207,4 +199,85 @@ func VerifyVolumePathsForVMDevices(vmDevices object.VirtualDeviceList, volPaths 
 		}
 	}
 
+}
+
+// isvCenterDeprecated takes vCenter version and vCenter API version as input and return true if vCenter is deprecated
+func isvCenterDeprecated(vCenterVersion string, vCenterAPIVersion string) (bool, error) {
+	var vcversion, vcapiversion, minvcversion vcVersion
+	var err error
+	err = vcversion.parse(vCenterVersion)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse vCenter version: %s. err: %+v", vCenterVersion, err)
+	}
+	err = vcapiversion.parse(vCenterAPIVersion)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse vCenter API version: %s. err: %+v", vCenterAPIVersion, err)
+	}
+	err = minvcversion.parse(MinvCenterVersion)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse minimum vCenter version: %s. err: %+v", MinvCenterVersion, err)
+	}
+	if vcversion.isLessThan(minvcversion) && vcapiversion.isLessThan(minvcversion) {
+		return true, nil
+	}
+	return false, nil
+}
+
+// vcVersion represents a VC version
+type vcVersion struct {
+	Major    int64
+	Minor    int64
+	Revision int64
+	Build    int64
+}
+
+// parse helps parse version string to VCVersion
+// returns error when parse fail
+func (v *vcVersion) parse(version string) error {
+	for index, value := range strings.Split(version, ".") {
+		var err error
+		if index == 0 {
+			v.Major, err = strconv.ParseInt(value, 10, 64)
+		} else if index == 1 {
+			v.Minor, err = strconv.ParseInt(value, 10, 64)
+		} else if index == 2 {
+			v.Revision, err = strconv.ParseInt(value, 10, 64)
+		} else if index == 3 {
+			v.Build, err = strconv.ParseInt(value, 10, 64)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to parse version: %q, err: %v", version, err)
+		}
+	}
+	return nil
+}
+
+// isLessThan compares VCVersion v to o and returns
+// true if v is less than o
+func (v *vcVersion) isLessThan(o vcVersion) bool {
+	if v.Major != o.Major {
+		if v.Major > o.Major {
+			return false
+		}
+		return true
+	}
+	if v.Minor != o.Minor {
+		if v.Minor > o.Minor {
+			return false
+		}
+		return true
+	}
+	if v.Revision != o.Revision {
+		if v.Revision > o.Revision {
+			return false
+		}
+		return true
+	}
+	if v.Build != o.Build {
+		if v.Build > o.Build {
+			return false
+		}
+		return true
+	}
+	return false
 }

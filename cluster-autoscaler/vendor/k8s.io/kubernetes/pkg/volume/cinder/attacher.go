@@ -1,3 +1,6 @@
+//go:build !providerless
+// +build !providerless
+
 /*
 Copyright 2016 The Kubernetes Authors.
 
@@ -24,11 +27,12 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog"
-	"k8s.io/kubernetes/pkg/util/mount"
+	"k8s.io/klog/v2"
+	"k8s.io/mount-utils"
+
 	"k8s.io/kubernetes/pkg/volume"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
 )
@@ -99,7 +103,7 @@ func (attacher *cinderDiskAttacher) waitOperationFinished(volumeID string) error
 	})
 
 	if err == wait.ErrWaitTimeout {
-		err = fmt.Errorf("Volume %q is %s, can't finish within the alloted time", volumeID, volumeStatus)
+		err = fmt.Errorf("volume %q is %s, can't finish within the alloted time", volumeID, volumeStatus)
 	}
 
 	return err
@@ -121,7 +125,7 @@ func (attacher *cinderDiskAttacher) waitDiskAttached(instanceID, volumeID string
 	})
 
 	if err == wait.ErrWaitTimeout {
-		err = fmt.Errorf("Volume %q failed to be attached within the alloted time", volumeID)
+		err = fmt.Errorf("volume %q failed to be attached within the alloted time", volumeID)
 	}
 
 	return err
@@ -265,7 +269,7 @@ func (attacher *cinderDiskAttacher) GetDeviceMountPath(
 }
 
 // FIXME: this method can be further pruned.
-func (attacher *cinderDiskAttacher) MountDevice(spec *volume.Spec, devicePath string, deviceMountPath string) error {
+func (attacher *cinderDiskAttacher) MountDevice(spec *volume.Spec, devicePath string, deviceMountPath string, _ volume.DeviceMounterArgs) error {
 	mounter := attacher.host.GetMounter(cinderVolumePluginName)
 	notMnt, err := mounter.IsLikelyNotMountPoint(deviceMountPath)
 	if err != nil {
@@ -343,7 +347,7 @@ func (detacher *cinderDiskDetacher) waitOperationFinished(volumeID string) error
 	})
 
 	if err == wait.ErrWaitTimeout {
-		err = fmt.Errorf("Volume %q is %s, can't finish within the alloted time", volumeID, volumeStatus)
+		err = fmt.Errorf("volume %q is %s, can't finish within the alloted time", volumeID, volumeStatus)
 	}
 
 	return err
@@ -365,7 +369,7 @@ func (detacher *cinderDiskDetacher) waitDiskDetached(instanceID, volumeID string
 	})
 
 	if err == wait.ErrWaitTimeout {
-		err = fmt.Errorf("Volume %q failed to detach within the alloted time", volumeID)
+		err = fmt.Errorf("volume %q failed to detach within the alloted time", volumeID)
 	}
 
 	return err

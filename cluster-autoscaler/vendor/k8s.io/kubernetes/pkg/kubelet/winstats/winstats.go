@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 /*
@@ -55,6 +56,7 @@ type winNodeStatsClient interface {
 
 type nodeMetrics struct {
 	cpuUsageCoreNanoSeconds   uint64
+	cpuUsageNanoCores         uint64
 	memoryPrivWorkingSetBytes uint64
 	memoryCommittedBytes      uint64
 	timeStamp                 time.Time
@@ -67,6 +69,11 @@ type nodeInfo struct {
 	osImageVersion              string
 	// startTime is the time when the node was started
 	startTime time.Time
+}
+
+type cpuUsageCoreNanoSecondsCache struct {
+	latestValue   uint64
+	previousValue uint64
 }
 
 // newClient constructs a Client.
@@ -120,6 +127,11 @@ func (c *StatsClient) createRootContainerInfo() (*cadvisorapiv2.ContainerInfo, e
 		Cpu: &cadvisorapi.CpuStats{
 			Usage: cadvisorapi.CpuUsage{
 				Total: nodeMetrics.cpuUsageCoreNanoSeconds,
+			},
+		},
+		CpuInst: &cadvisorapiv2.CpuInstStats{
+			Usage: cadvisorapiv2.CpuInstUsage{
+				Total: nodeMetrics.cpuUsageNanoCores,
 			},
 		},
 		Memory: &cadvisorapi.MemoryStats{

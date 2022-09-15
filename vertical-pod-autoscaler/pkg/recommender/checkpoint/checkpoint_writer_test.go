@@ -23,7 +23,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
 
 	"github.com/stretchr/testify/assert"
@@ -31,16 +31,27 @@ import (
 
 // TODO: Extract these constants to a common test module.
 var (
-	testPodID1       = model.PodID{"namespace-1", "pod-1"}
-	testContainerID1 = model.ContainerID{testPodID1, "container-1"}
-	testVpaID1       = model.VpaID{"namespace-1", "vpa-1"}
-	testLabels       = map[string]string{"label-1": "value-1"}
-	testSelectorStr  = "label-1 = value-1"
-	testRequest      = model.Resources{
+	testPodID1 = model.PodID{
+		Namespace: "namespace-1",
+		PodName:   "pod-1",
+	}
+	testContainerID1 = model.ContainerID{
+		PodID:         testPodID1,
+		ContainerName: "container-1",
+	}
+	testVpaID1 = model.VpaID{
+		Namespace: "namespace-1",
+		VpaName:   "vpa-1",
+	}
+	testLabels      = map[string]string{"label-1": "value-1"}
+	testSelectorStr = "label-1 = value-1"
+	testRequest     = model.Resources{
 		model.ResourceCPU:    model.CPUAmountFromCores(3.14),
 		model.ResourceMemory: model.MemoryAmountFromBytes(3.14e9),
 	}
 )
+
+const testGcPeriod = time.Minute
 
 func addVpa(t *testing.T, cluster *model.ClusterState, vpaID model.VpaID, selector string) *model.Vpa {
 	var apiObject vpa_types.VerticalPodAutoscaler
@@ -56,14 +67,18 @@ func addVpa(t *testing.T, cluster *model.ClusterState, vpaID model.VpaID, select
 }
 
 func TestMergeContainerStateForCheckpointDropsRecentMemoryPeak(t *testing.T) {
-	cluster := model.NewClusterState()
+	cluster := model.NewClusterState(testGcPeriod)
 	cluster.AddOrUpdatePod(testPodID1, testLabels, v1.PodRunning)
 	assert.NoError(t, cluster.AddOrUpdateContainer(testContainerID1, testRequest))
 	container := cluster.GetContainer(testContainerID1)
 
 	timeNow := time.Unix(1, 0)
 	container.AddSample(&model.ContainerUsageSample{
-		timeNow, model.MemoryAmountFromBytes(1024 * 1024 * 1024), testRequest[model.ResourceMemory], model.ResourceMemory})
+		MeasureStart: timeNow,
+		Usage:        model.MemoryAmountFromBytes(1024 * 1024 * 1024),
+		Request:      testRequest[model.ResourceMemory],
+		Resource:     model.ResourceMemory,
+	})
 	vpa := addVpa(t, cluster, testVpaID1, testSelectorStr)
 
 	// Verify that the current peak is excluded from the aggregation.
@@ -73,7 +88,7 @@ func TestMergeContainerStateForCheckpointDropsRecentMemoryPeak(t *testing.T) {
 			"Current peak was not excluded from the aggregation.")
 	}
 	// Verify that an old peak is not excluded from the aggregation.
-	timeNow = timeNow.Add(model.MemoryAggregationInterval)
+	timeNow = timeNow.Add(model.GetAggregationsConfig().MemoryAggregationInterval)
 	aggregateContainerStateMap = buildAggregateContainerStateMap(vpa, cluster, timeNow)
 	if assert.Contains(t, aggregateContainerStateMap, "container-1") {
 		assert.False(t, aggregateContainerStateMap["container-1"].AggregateMemoryPeaks.IsEmpty(),

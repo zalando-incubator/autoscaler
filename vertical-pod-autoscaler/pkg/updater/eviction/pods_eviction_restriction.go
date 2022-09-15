@@ -17,6 +17,7 @@ limitations under the License.
 package eviction
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -24,14 +25,14 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	metrics_updater "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/updater"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/oomkill"
 	appsinformer "k8s.io/client-go/informers/apps/v1"
 	coreinformer "k8s.io/client-go/informers/core/v1"
 	kube_client "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -66,8 +67,9 @@ type singleGroupStats struct {
 
 // PodsEvictionRestrictionFactory creates PodsEvictionRestriction
 type PodsEvictionRestrictionFactory interface {
-	// NewPodsEvictionRestriction creates PodsEvictionRestriction for given set of pods.
-	NewPodsEvictionRestriction(pods []*apiv1.Pod) PodsEvictionRestriction
+	// NewPodsEvictionRestriction creates PodsEvictionRestriction for given set of pods,
+	// controlled by a single VPA object.
+	NewPodsEvictionRestriction(pods []*apiv1.Pod, vpa *vpa_types.VerticalPodAutoscaler) PodsEvictionRestriction
 }
 
 type podsEvictionRestrictionFactoryImpl struct {
@@ -130,7 +132,7 @@ func (e *podsEvictionRestrictionImpl) Evict(podToEvict *apiv1.Pod, eventRecorder
 	}
 
 	if oomkill.HasQuickOomKill(quickOOMWindow, podToEvict) {
-		err := e.client.CoreV1().Pods(podToEvict.Namespace).Delete(podToEvict.Name, &metav1.DeleteOptions{})
+		err := e.client.CoreV1().Pods(podToEvict.Namespace).Delete(context.TODO(), podToEvict.Name, metav1.DeleteOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to delete pod %s/%s: %v", podToEvict.Namespace, podToEvict.Name, err)
 		}
@@ -147,14 +149,13 @@ func (e *podsEvictionRestrictionImpl) Evict(podToEvict *apiv1.Pod, eventRecorder
 			Name:      podToEvict.Name,
 		},
 	}
-	err := e.client.CoreV1().Pods(podToEvict.Namespace).Evict(eviction)
+	err := e.client.CoreV1().Pods(podToEvict.Namespace).Evict(context.TODO(), eviction)
 	if err != nil {
 		klog.Errorf("failed to evict pod %s/%s, error: %v", podToEvict.Namespace, podToEvict.Name, err)
 		return err
 	}
 	eventRecorder.Event(podToEvict, apiv1.EventTypeNormal, "EvictedByVPA",
 		"Pod was evicted by VPA Updater to apply resource recommendation.")
-	metrics_updater.AddEvictedPod()
 
 	if podToEvict.Status.Phase != apiv1.PodPending {
 		singleGroupStats, present := e.creatorToSingleGroupStatsMap[cr]
@@ -192,8 +193,9 @@ func NewPodsEvictionRestrictionFactory(client kube_client.Interface, minReplicas
 		evictionToleranceFraction: evictionToleranceFraction}, nil
 }
 
-// NewPodsEvictionRestriction creates PodsEvictionRestriction for a given set of pods.
-func (f *podsEvictionRestrictionFactoryImpl) NewPodsEvictionRestriction(pods []*apiv1.Pod) PodsEvictionRestriction {
+// NewPodsEvictionRestriction creates PodsEvictionRestriction for a given set of pods,
+// controlled by a single VPA object.
+func (f *podsEvictionRestrictionFactoryImpl) NewPodsEvictionRestriction(pods []*apiv1.Pod, vpa *vpa_types.VerticalPodAutoscaler) PodsEvictionRestriction {
 	// We can evict pod only if it is a part of replica set
 	// For each replica set we can evict only a fraction of pods.
 	// Evictions may be later limited by pod disruption budget if configured.
@@ -216,11 +218,19 @@ func (f *podsEvictionRestrictionFactoryImpl) NewPodsEvictionRestriction(pods []*
 	podToReplicaCreatorMap := make(map[string]podReplicaCreator)
 	creatorToSingleGroupStatsMap := make(map[podReplicaCreator]singleGroupStats)
 
+	// Use per-VPA minReplicas if present, fall back to the global setting.
+	required := f.minReplicas
+	if vpa.Spec.UpdatePolicy != nil && vpa.Spec.UpdatePolicy.MinReplicas != nil {
+		required = int(*vpa.Spec.UpdatePolicy.MinReplicas)
+		klog.V(3).Infof("overriding minReplicas from global %v to per-VPA %v for VPA %v/%v",
+			f.minReplicas, required, vpa.Namespace, vpa.Name)
+	}
+
 	for creator, replicas := range livePods {
 		actual := len(replicas)
-		if actual < f.minReplicas {
-			klog.V(2).Infof("too few replicas for %v %v/%v. Found %v live pods",
-				creator.Kind, creator.Namespace, creator.Name, actual)
+		if actual < required {
+			klog.V(2).Infof("too few replicas for %v %v/%v. Found %v live pods, needs %v (global %v)",
+				creator.Kind, creator.Namespace, creator.Name, actual, required, f.minReplicas)
 			continue
 		}
 

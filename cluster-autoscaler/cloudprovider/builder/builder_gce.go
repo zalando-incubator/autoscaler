@@ -1,3 +1,4 @@
+//go:build gce
 // +build gce
 
 /*
@@ -26,15 +27,15 @@ import (
 
 // AvailableCloudProviders supported by the cloud provider builder.
 var AvailableCloudProviders = []string{
-	gce.ProviderNameGCE,
+	cloudprovider.GceProviderName,
 }
 
 // DefaultCloudProvider is GCE.
-const DefaultCloudProvider = gce.ProviderNameGCE
+const DefaultCloudProvider = cloudprovider.GceProviderName
 
 func buildCloudProvider(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
 	switch opts.CloudProviderName {
-	case gce.ProviderNameGCE:
+	case cloudprovider.GceProviderName:
 		return gce.BuildGCE(opts, do, rl)
 	}
 

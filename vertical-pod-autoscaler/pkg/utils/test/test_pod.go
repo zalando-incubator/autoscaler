@@ -29,6 +29,7 @@ type PodBuilder interface {
 	AddContainer(container apiv1.Container) PodBuilder
 	WithCreator(creatorObjectMeta *metav1.ObjectMeta, creatorTypeMeta *metav1.TypeMeta) PodBuilder
 	WithLabels(labels map[string]string) PodBuilder
+	WithAnnotations(annotations map[string]string) PodBuilder
 	WithPhase(phase apiv1.PodPhase) PodBuilder
 	WithOomKill(containerName string, killDuration time.Duration) PodBuilder
 	Get() *apiv1.Pod
@@ -47,6 +48,7 @@ type podBuilderImpl struct {
 	creatorObjectMeta *metav1.ObjectMeta
 	creatorTypeMeta   *metav1.TypeMeta
 	labels            map[string]string
+	annotations       map[string]string
 	phase             apiv1.PodPhase
 	status            []apiv1.ContainerStatus
 }
@@ -78,6 +80,12 @@ func (pb *podBuilderImpl) WithLabels(labels map[string]string) PodBuilder {
 	return &r
 }
 
+func (pb *podBuilderImpl) WithAnnotations(annotations map[string]string) PodBuilder {
+	r := *pb
+	r.annotations = annotations
+	return &r
+}
+
 func (pb *podBuilderImpl) WithName(name string) PodBuilder {
 	r := *pb
 	r.name = name
@@ -104,7 +112,9 @@ func (pb *podBuilderImpl) WithPhase(phase apiv1.PodPhase) PodBuilder {
 }
 
 func (pb *podBuilderImpl) Get() *apiv1.Pod {
-	startTime := metav1.Time{testTimestamp}
+	startTime := metav1.Time{
+		Time: testTimestamp,
+	}
 	pod := &apiv1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "default",
@@ -120,6 +130,10 @@ func (pb *podBuilderImpl) Get() *apiv1.Pod {
 
 	if pb.labels != nil {
 		pod.ObjectMeta.Labels = pb.labels
+	}
+
+	if pb.annotations != nil {
+		pod.ObjectMeta.Annotations = pb.annotations
 	}
 
 	if pb.creatorObjectMeta != nil && pb.creatorTypeMeta != nil {

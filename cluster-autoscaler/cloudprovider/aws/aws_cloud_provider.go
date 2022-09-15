@@ -28,14 +28,11 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
-	"k8s.io/klog"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	klog "k8s.io/klog/v2"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 const (
-	// ProviderName is the cloud provider name for AWS
-	ProviderName = "aws"
-
 	// GPULabel is the label added to nodes with GPU resource.
 	GPULabel = "k8s.amazonaws.com/accelerator"
 )
@@ -45,6 +42,8 @@ var (
 		"nvidia-tesla-k80":  {},
 		"nvidia-tesla-p100": {},
 		"nvidia-tesla-v100": {},
+		"nvidia-tesla-t4":   {},
+		"nvidia-tesla-a100": {},
 	}
 )
 
@@ -71,7 +70,7 @@ func (aws *awsCloudProvider) Cleanup() error {
 
 // Name returns name of the cloud provider.
 func (aws *awsCloudProvider) Name() string {
-	return ProviderName
+	return cloudprovider.AwsProviderName
 }
 
 // GPULabel returns the label added to nodes with GPU resource.
@@ -87,12 +86,12 @@ func (aws *awsCloudProvider) GetAvailableGPUTypes() map[string]struct{} {
 // NodeGroups returns all node groups configured for this cloud provider.
 func (aws *awsCloudProvider) NodeGroups() []cloudprovider.NodeGroup {
 	asgs := aws.awsManager.getAsgs()
-	ngs := make([]cloudprovider.NodeGroup, len(asgs))
-	for i, asg := range asgs {
-		ngs[i] = &AwsNodeGroup{
+	ngs := make([]cloudprovider.NodeGroup, 0, len(asgs))
+	for _, asg := range asgs {
+		ngs = append(ngs, &AwsNodeGroup{
 			asg:        asg,
 			awsManager: aws.awsManager,
-		}
+		})
 	}
 
 	return ngs
@@ -159,9 +158,9 @@ type AwsInstanceRef struct {
 	Name       string
 }
 
-var validAwsRefIdRegex = regexp.MustCompile(`^aws\:\/\/\/[-0-9a-z]*\/[-0-9a-z]*$`)
+var validAwsRefIdRegex = regexp.MustCompile(fmt.Sprintf(`^aws\:\/\/\/[-0-9a-z]*\/[-0-9a-z]*(\/[-0-9a-z\.]*)?$|aws\:\/\/\/[-0-9a-z]*\/%s.*$`, placeholderInstanceNamePrefix))
 
-// AwsRefFromProviderId creates InstanceConfig object from provider id which
+// AwsRefFromProviderId creates AwsInstanceRef object from provider id which
 // must be in format: aws:///zone/name
 func AwsRefFromProviderId(id string) (*AwsInstanceRef, error) {
 	if validAwsRefIdRegex.FindStringSubmatch(id) == nil {
@@ -216,6 +215,15 @@ func (ng *AwsNodeGroup) Autoprovisioned() bool {
 // This will be executed only for autoprovisioned node groups, once their size drops to 0.
 func (ng *AwsNodeGroup) Delete() error {
 	return cloudprovider.ErrNotImplemented
+}
+
+// GetOptions returns NodeGroupAutoscalingOptions that should be used for this particular
+// NodeGroup. Returning a nil will result in using default options.
+func (ng *AwsNodeGroup) GetOptions(defaults config.NodeGroupAutoscalingOptions) (*config.NodeGroupAutoscalingOptions, error) {
+	if ng.asg == nil || ng.asg.Tags == nil || len(ng.asg.Tags) == 0 {
+		return &defaults, nil
+	}
+	return ng.awsManager.GetAsgOptions(*ng.asg, defaults), nil
 }
 
 // IncreaseSize increases Asg size
@@ -280,7 +288,7 @@ func (ng *AwsNodeGroup) DeleteNodes(nodes []*apiv1.Node) error {
 		if err != nil {
 			return err
 		}
-		if belongs != true {
+		if !belongs {
 			return fmt.Errorf("%s belongs to a different asg than %s", node.Name, ng.Id())
 		}
 		awsref, err := AwsRefFromProviderId(node.Spec.ProviderID)
@@ -312,13 +320,30 @@ func (ng *AwsNodeGroup) Nodes() ([]cloudprovider.Instance, error) {
 	instances := make([]cloudprovider.Instance, len(asgNodes))
 
 	for i, asgNode := range asgNodes {
-		instances[i] = cloudprovider.Instance{Id: asgNode.ProviderID}
+		var status *cloudprovider.InstanceStatus
+		instanceStatusString, err := ng.awsManager.GetInstanceStatus(asgNode)
+		if err != nil {
+			klog.V(4).Infof("Could not get instance status, continuing anyways: %v", err)
+		} else if instanceStatusString != nil && *instanceStatusString == placeholderUnfulfillableStatus {
+			status = &cloudprovider.InstanceStatus{
+				State: cloudprovider.InstanceCreating,
+				ErrorInfo: &cloudprovider.InstanceErrorInfo{
+					ErrorClass:   cloudprovider.OutOfResourcesErrorClass,
+					ErrorCode:    placeholderUnfulfillableStatus,
+					ErrorMessage: "AWS cannot provision any more instances for this node group",
+				},
+			}
+		}
+		instances[i] = cloudprovider.Instance{
+			Id:     asgNode.ProviderID,
+			Status: status,
+		}
 	}
 	return instances, nil
 }
 
 // TemplateNodeInfo returns a node template for this node group.
-func (ng *AwsNodeGroup) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (ng *AwsNodeGroup) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	template, err := ng.awsManager.getAsgTemplate(ng.asg)
 	if err != nil {
 		return nil, err
@@ -329,7 +354,7 @@ func (ng *AwsNodeGroup) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) 
 		return nil, err
 	}
 
-	nodeInfo := schedulernodeinfo.NewNodeInfo(cloudprovider.BuildKubeProxy(ng.asg.Name))
+	nodeInfo := schedulerframework.NewNodeInfo(cloudprovider.BuildKubeProxy(ng.asg.Name))
 	nodeInfo.SetNode(node)
 	return nodeInfo, nil
 }
@@ -346,7 +371,41 @@ func BuildAWS(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscover
 		defer config.Close()
 	}
 
-	manager, err := CreateAwsManager(config, do)
+	// Generate EC2 list
+	instanceTypes, lastUpdateTime := GetStaticEC2InstanceTypes()
+	if opts.AWSUseStaticInstanceList {
+		klog.Warningf("Using static EC2 Instance Types, this list could be outdated. Last update time: %s", lastUpdateTime)
+	} else {
+		region, err := GetCurrentAwsRegion()
+		if err != nil {
+			klog.Fatalf("Failed to get AWS Region: %v", err)
+		}
+
+		generatedInstanceTypes, err := GenerateEC2InstanceTypes(region)
+		if err != nil {
+			klog.Fatalf("Failed to generate AWS EC2 Instance Types: %v", err)
+		}
+		// fallback on the static list if we miss any instance types in the generated output
+		// credits to: https://github.com/lyft/cni-ipvlan-vpc-k8s/pull/80
+		for k, v := range instanceTypes {
+			_, ok := generatedInstanceTypes[k]
+			if ok {
+				continue
+			}
+			klog.Infof("Using static instance type %s", k)
+			generatedInstanceTypes[k] = v
+		}
+		instanceTypes = generatedInstanceTypes
+
+		keys := make([]string, 0, len(instanceTypes))
+		for key := range instanceTypes {
+			keys = append(keys, key)
+		}
+
+		klog.Infof("Successfully load %d EC2 Instance Types %s", len(keys), keys)
+	}
+
+	manager, err := CreateAwsManager(config, do, instanceTypes)
 	if err != nil {
 		klog.Fatalf("Failed to create AWS Manager: %v", err)
 	}
@@ -355,5 +414,6 @@ func BuildAWS(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscover
 	if err != nil {
 		klog.Fatalf("Failed to create AWS cloud provider: %v", err)
 	}
+	RegisterMetrics()
 	return provider
 }

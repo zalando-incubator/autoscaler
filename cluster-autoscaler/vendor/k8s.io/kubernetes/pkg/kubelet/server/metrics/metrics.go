@@ -20,7 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
+	"k8s.io/component-base/metrics"
+	"k8s.io/component-base/metrics/legacyregistry"
 )
 
 const (
@@ -29,11 +30,12 @@ const (
 
 var (
 	// HTTPRequests tracks the number of the http requests received since the server started.
-	HTTPRequests = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Subsystem: kubeletSubsystem,
-			Name:      "http_requests_total",
-			Help:      "Number of the http requests received since the server started",
+	HTTPRequests = metrics.NewCounterVec(
+		&metrics.CounterOpts{
+			Subsystem:      kubeletSubsystem,
+			Name:           "http_requests_total",
+			Help:           "Number of the http requests received since the server started",
+			StabilityLevel: metrics.ALPHA,
 		},
 		// server_type aims to differentiate the readonly server and the readwrite server.
 		// long_running marks whether the request is long-running or not.
@@ -41,24 +43,38 @@ var (
 		[]string{"method", "path", "server_type", "long_running"},
 	)
 	// HTTPRequestsDuration tracks the duration in seconds to serve http requests.
-	HTTPRequestsDuration = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
+	HTTPRequestsDuration = metrics.NewHistogramVec(
+		&metrics.HistogramOpts{
 			Subsystem: kubeletSubsystem,
 			Name:      "http_requests_duration_seconds",
 			Help:      "Duration in seconds to serve http requests",
 			// Use DefBuckets for now, will customize the buckets if necessary.
-			Buckets: prometheus.DefBuckets,
+			Buckets:        metrics.DefBuckets,
+			StabilityLevel: metrics.ALPHA,
 		},
 		[]string{"method", "path", "server_type", "long_running"},
 	)
 	// HTTPInflightRequests tracks the number of the inflight http requests.
-	HTTPInflightRequests = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Subsystem: kubeletSubsystem,
-			Name:      "http_inflight_requests",
-			Help:      "Number of the inflight http requests",
+	HTTPInflightRequests = metrics.NewGaugeVec(
+		&metrics.GaugeOpts{
+			Subsystem:      kubeletSubsystem,
+			Name:           "http_inflight_requests",
+			Help:           "Number of the inflight http requests",
+			StabilityLevel: metrics.ALPHA,
 		},
 		[]string{"method", "path", "server_type", "long_running"},
+	)
+	// VolumeStatCalDuration tracks the duration in seconds to calculate volume stats.
+	// this metric is mainly for comparison between fsquota monitoring and `du` for disk usage.
+	VolumeStatCalDuration = metrics.NewHistogramVec(
+		&metrics.HistogramOpts{
+			Subsystem:      kubeletSubsystem,
+			Name:           "volume_metric_collection_duration_seconds",
+			Help:           "Duration in seconds to calculate volume stats",
+			Buckets:        metrics.DefBuckets,
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"metric_source"},
 	)
 )
 
@@ -67,13 +83,19 @@ var registerMetrics sync.Once
 // Register all metrics.
 func Register() {
 	registerMetrics.Do(func() {
-		prometheus.MustRegister(HTTPRequests)
-		prometheus.MustRegister(HTTPRequestsDuration)
-		prometheus.MustRegister(HTTPInflightRequests)
+		legacyregistry.MustRegister(HTTPRequests)
+		legacyregistry.MustRegister(HTTPRequestsDuration)
+		legacyregistry.MustRegister(HTTPInflightRequests)
+		legacyregistry.MustRegister(VolumeStatCalDuration)
 	})
 }
 
 // SinceInSeconds gets the time since the specified start in seconds.
 func SinceInSeconds(start time.Time) float64 {
 	return time.Since(start).Seconds()
+}
+
+// CollectVolumeStatCalDuration collects the duration in seconds to calculate volume stats.
+func CollectVolumeStatCalDuration(metricSource string, start time.Time) {
+	VolumeStatCalDuration.WithLabelValues(metricSource).Observe(SinceInSeconds(start))
 }

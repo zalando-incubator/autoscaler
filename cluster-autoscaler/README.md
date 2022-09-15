@@ -1,10 +1,11 @@
+<!--TODO: Remove "previously referred to as master" references from this doc once this terminology is fully removed from k8s-->
 # Cluster Autoscaler
 
 # Introduction
 
 Cluster Autoscaler is a tool that automatically adjusts the size of the Kubernetes cluster when one of the following conditions is true:
 * there are pods that failed to run in the cluster due to insufficient
-  resources,
+  resources.
 * there are nodes in the cluster that have been underutilized for an extended period of time and their pods can be placed on other existing nodes.
 
 # FAQ/Documentation
@@ -16,15 +17,39 @@ You should also take a look at the notes and "gotchas" for your specific cloud p
 * [Azure](./cloudprovider/azure/README.md)
 * [AWS](./cloudprovider/aws/README.md)
 * [BaiduCloud](./cloudprovider/baiducloud/README.md)
+* [Brightbox](./cloudprovider/brightbox/README.md)
+* [CherryServers](./cloudprovider/cherryservers/README.md)
+* [CloudStack](./cloudprovider/cloudstack/README.md)
+* [HuaweiCloud](./cloudprovider/huaweicloud/README.md)
+* [External gRPC](./cloudprovider/externalgrpc/README.md)
+* [Hetzner](./cloudprovider/hetzner/README.md)
+* [Equinix Metal](./cloudprovider/packet/README.md#notes) 
+* [IonosCloud](./cloudprovider/ionoscloud/README.md)
+* [OVHcloud](./cloudprovider/ovhcloud/README.md)
+* [Linode](./cloudprovider/linode/README.md)
+* [OracleCloud](./cloudprovider/oci/README.md)
+* [ClusterAPI](./cloudprovider/clusterapi/README.md)
+* [BizflyCloud](./cloudprovider/bizflycloud/README.md)
+* [Vultr](./cloudprovider/vultr/README.md)
+* [TencentCloud](./cloudprovider/tencentcloud/README.md)
 
 # Releases
 
-We recommend using Cluster Autoscaler with the Kubernetes master version for which it was meant. The below combinations have been tested on GCP. We don't do cross version testing or compatibility testing in other environments. Some user reports indicate successful use of a newer version of Cluster Autoscaler with older clusters, however, there is always a chance that it won't work as expected.
+We recommend using Cluster Autoscaler with the Kubernetes control plane (previously referred to as master) version for which it was meant. The below combinations have been tested on GCP. We don't do cross version testing or compatibility testing in other environments. Some user reports indicate successful use of a newer version of Cluster Autoscaler with older clusters, however, there is always a chance that it won't work as expected.
 
 Starting from Kubernetes 1.12, versioning scheme was changed to match Kubernetes minor releases exactly.
 
 | Kubernetes Version  | CA Version   |
 |--------|--------|
+| 1.22.X | 1.22.X  |
+| 1.21.X | 1.21.X  |
+| 1.20.X | 1.20.X  |
+| 1.19.X | 1.19.X  |
+| 1.18.X | 1.18.X  |
+| 1.17.X | 1.17.X  |
+| 1.16.X | 1.16.X  |
+| 1.15.X | 1.15.X  |
+| 1.14.X | 1.14.X  |
 | 1.13.X | 1.13.X  |
 | 1.12.X | 1.12.X  |
 | 1.11.X | 1.3.X  |
@@ -44,7 +69,7 @@ For CA 1.1.2 and later, please check [release
 notes.](https://github.com/kubernetes/autoscaler/releases)
 
 CA version 1.1.1:
-* Fixes around metrics in the multi-master configuration.
+* Fixes around metrics in the multiple kube apiserver configuration.
 * Fixes for unready nodes issues when quota is overrun.
 
 CA version 1.1.0:
@@ -123,7 +148,7 @@ CA Version 0.3:
 
 # Deployment
 
-Cluster Autoscaler is designed to run on Kubernetes master node. This is the
+Cluster Autoscaler is designed to run on Kubernetes control plane (previously referred to as master) node. This is the
 default deployment strategy on GCP.
 It is possible to run a customized deployment of Cluster Autoscaler on worker nodes, but extra care needs
 to be taken to ensure that Cluster Autoscaler remains up and running. Users can put it into kube-system
@@ -137,3 +162,18 @@ Supported cloud providers:
 * AWS https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/aws/README.md
 * Azure https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/azure/README.md
 * Alibaba Cloud https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/alicloud/README.md
+* Brightbox https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/brightbox/README.md
+* CherryServers https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/cherryservers/README.md
+* OpenStack Magnum https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/magnum/README.md
+* DigitalOcean https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/digitalocean/README.md
+* CloudStack https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/cloudstack/README.md
+* Exoscale https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/exoscale/README.md
+* Equinix Metal https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/packet/README.md
+* External gRPC https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/externalgrpc/README.md
+* OVHcloud https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/ovhcloud/README.md
+* Linode https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/linode/README.md
+* OCI https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/oci/README.md
+* Hetzner https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/hetzner/README.md
+* Cluster API https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/clusterapi/README.md
+* Vultr https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/vultr/README.md
+* TencentCloud https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/cloudprovider/tencentcloud/README.md

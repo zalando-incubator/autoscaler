@@ -18,16 +18,18 @@ package input
 
 import (
 	"fmt"
-	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input/controller_fetcher"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 
-	"k8s.io/api/autoscaling/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	controllerfetcher "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input/controller_fetcher"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input/history"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input/spec"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
 	target_mock "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target/mock"
@@ -39,7 +41,7 @@ type fakeControllerFetcher struct {
 	err error
 }
 
-func (f *fakeControllerFetcher) FindTopLevel(controller *controllerfetcher.ControllerKeyWithAPIVersion) (*controllerfetcher.ControllerKeyWithAPIVersion, error) {
+func (f *fakeControllerFetcher) FindTopMostWellKnownOrScalable(controller *controllerfetcher.ControllerKeyWithAPIVersion) (*controllerfetcher.ControllerKeyWithAPIVersion, error) {
 	return f.key, f.err
 }
 
@@ -50,42 +52,39 @@ func parseLabelSelector(selector string) labels.Selector {
 }
 
 var (
-	unsupportedConditionNoLongerSupported = "Label selector is no longer supported, please migrate to targetRef"
-	unsupportedConditionTextFromFetcher   = "Cannot read targetRef. Reason: targetRef not defined"
-	unsupportedConditionNoExtraText       = "Cannot read targetRef"
-	unsupportedConditionBothDefined       = "Both targetRef and label selector defined. Please remove label selector"
-	unsupportedConditionNoTargetRef       = "Cannot read targetRef"
-	unsupportedConditionMudaMudaMuda      = "Error checking if target is a top level controller: muda muda muda"
-	unsupportedTargetRefHasParent         = "The targetRef controller has a parent but it should point to a top-level controller"
+	unsupportedConditionTextFromFetcher = "Cannot read targetRef. Reason: targetRef not defined"
+	unsupportedConditionNoExtraText     = "Cannot read targetRef"
+	unsupportedConditionNoTargetRef     = "Cannot read targetRef"
+	unsupportedConditionMudaMudaMuda    = "Error checking if target is a topmost well-known or scalable controller: muda muda muda"
+	unsupportedTargetRefHasParent       = "The targetRef controller has a parent but it should point to a topmost well-known or scalable controller"
 )
 
 const (
-	kind       = "dodokind"
-	name1      = "dotaro"
-	name2      = "doseph"
-	namespace  = "testNamespace"
-	apiVersion = "stardust"
+	kind         = "dodokind"
+	name1        = "dotaro"
+	name2        = "doseph"
+	namespace    = "testNamespace"
+	apiVersion   = "stardust"
+	testGcPeriod = time.Minute
 )
 
-func TestLegacySelector(t *testing.T) {
+func TestLoadPods(t *testing.T) {
 
 	type testCase struct {
-		name                      string
-		legacySelector            labels.Selector
-		selector                  labels.Selector
-		fetchSelectorError        error
-		targetRef                 *v1.CrossVersionObjectReference
-		topLevelKey               *controllerfetcher.ControllerKeyWithAPIVersion
-		findTopLevelError         error
-		expectedSelector          labels.Selector
-		expectedConfigUnsupported *string
-		expectedConfigDeprecated  *string
+		name                                string
+		selector                            labels.Selector
+		fetchSelectorError                  error
+		targetRef                           *autoscalingv1.CrossVersionObjectReference
+		topMostWellKnownOrScalableKey       *controllerfetcher.ControllerKeyWithAPIVersion
+		findTopMostWellKnownOrScalableError error
+		expectedSelector                    labels.Selector
+		expectedConfigUnsupported           *string
+		expectedConfigDeprecated            *string
 	}
 
 	testCases := []testCase{
 		{
 			name:                      "no selector",
-			legacySelector:            nil,
 			selector:                  nil,
 			fetchSelectorError:        fmt.Errorf("targetRef not defined"),
 			expectedSelector:          labels.Nothing(),
@@ -94,7 +93,6 @@ func TestLegacySelector(t *testing.T) {
 		},
 		{
 			name:                      "also no selector but no error",
-			legacySelector:            nil,
 			selector:                  nil,
 			fetchSelectorError:        nil,
 			expectedSelector:          labels.Nothing(),
@@ -102,25 +100,15 @@ func TestLegacySelector(t *testing.T) {
 			expectedConfigDeprecated:  nil,
 		},
 		{
-			name:                      "legacy selector no ref",
-			legacySelector:            parseLabelSelector("app = test"),
-			selector:                  nil,
-			fetchSelectorError:        fmt.Errorf("targetRef not defined"),
-			expectedSelector:          labels.Nothing(),
-			expectedConfigUnsupported: &unsupportedConditionNoLongerSupported,
-			expectedConfigDeprecated:  nil,
-		}, {
-			name: "targetRef selector",
-			// the only valid option since v1beta1 removal
-			legacySelector:     nil,
+			name:               "targetRef selector",
 			selector:           parseLabelSelector("app = test"),
 			fetchSelectorError: nil,
-			targetRef: &v1.CrossVersionObjectReference{
+			targetRef: &autoscalingv1.CrossVersionObjectReference{
 				Kind:       kind,
 				Name:       name1,
 				APIVersion: apiVersion,
 			},
-			topLevelKey: &controllerfetcher.ControllerKeyWithAPIVersion{
+			topMostWellKnownOrScalableKey: &controllerfetcher.ControllerKeyWithAPIVersion{
 				ControllerKey: controllerfetcher.ControllerKey{
 					Kind:      kind,
 					Name:      name1,
@@ -131,22 +119,21 @@ func TestLegacySelector(t *testing.T) {
 			expectedSelector:          parseLabelSelector("app = test"),
 			expectedConfigUnsupported: nil,
 			expectedConfigDeprecated:  nil,
-		}, {
-			name:                      "new and legacy selector",
-			legacySelector:            parseLabelSelector("app = test1"),
-			selector:                  parseLabelSelector("app = test2"),
+		},
+		{
+			name:                      "no targetRef",
+			selector:                  parseLabelSelector("app = test"),
 			fetchSelectorError:        nil,
 			expectedSelector:          labels.Nothing(),
-			expectedConfigUnsupported: &unsupportedConditionBothDefined,
+			expectedConfigUnsupported: nil,
 			expectedConfigDeprecated:  nil,
 		},
 		{
 			name:               "can't decide if top-level-ref",
-			legacySelector:     nil,
 			selector:           nil,
 			fetchSelectorError: nil,
 			expectedSelector:   labels.Nothing(),
-			targetRef: &v1.CrossVersionObjectReference{
+			targetRef: &autoscalingv1.CrossVersionObjectReference{
 				Kind:       kind,
 				Name:       name1,
 				APIVersion: apiVersion,
@@ -155,16 +142,15 @@ func TestLegacySelector(t *testing.T) {
 		},
 		{
 			name:               "non-top-level targetRef",
-			legacySelector:     nil,
 			selector:           parseLabelSelector("app = test"),
 			fetchSelectorError: nil,
 			expectedSelector:   labels.Nothing(),
-			targetRef: &v1.CrossVersionObjectReference{
+			targetRef: &autoscalingv1.CrossVersionObjectReference{
 				Kind:       kind,
 				Name:       name1,
 				APIVersion: apiVersion,
 			},
-			topLevelKey: &controllerfetcher.ControllerKeyWithAPIVersion{
+			topMostWellKnownOrScalableKey: &controllerfetcher.ControllerKeyWithAPIVersion{
 				ControllerKey: controllerfetcher.ControllerKey{
 					Kind:      kind,
 					Name:      name2,
@@ -176,30 +162,28 @@ func TestLegacySelector(t *testing.T) {
 		},
 		{
 			name:               "error checking if top-level-ref",
-			legacySelector:     nil,
 			selector:           parseLabelSelector("app = test"),
 			fetchSelectorError: nil,
 			expectedSelector:   labels.Nothing(),
-			targetRef: &v1.CrossVersionObjectReference{
+			targetRef: &autoscalingv1.CrossVersionObjectReference{
 				Kind:       "doestar",
 				Name:       "doseph-doestar",
 				APIVersion: "taxonomy",
 			},
-			expectedConfigUnsupported: &unsupportedConditionMudaMudaMuda,
-			findTopLevelError:         fmt.Errorf("muda muda muda"),
+			expectedConfigUnsupported:           &unsupportedConditionMudaMudaMuda,
+			findTopMostWellKnownOrScalableError: fmt.Errorf("muda muda muda"),
 		},
 		{
 			name:               "top-level target ref",
-			legacySelector:     nil,
 			selector:           parseLabelSelector("app = test"),
 			fetchSelectorError: nil,
 			expectedSelector:   parseLabelSelector("app = test"),
-			targetRef: &v1.CrossVersionObjectReference{
+			targetRef: &autoscalingv1.CrossVersionObjectReference{
 				Kind:       kind,
 				Name:       name1,
 				APIVersion: apiVersion,
 			},
-			topLevelKey: &controllerfetcher.ControllerKeyWithAPIVersion{
+			topMostWellKnownOrScalableKey: &controllerfetcher.ControllerKeyWithAPIVersion{
 				ControllerKey: controllerfetcher.ControllerKey{
 					Kind:      kind,
 					Name:      name1,
@@ -221,26 +205,19 @@ func TestLegacySelector(t *testing.T) {
 			vpaLister := &test.VerticalPodAutoscalerListerMock{}
 			vpaLister.On("List").Return([]*vpa_types.VerticalPodAutoscaler{vpa}, nil)
 
-			legacyTargetSelectorFetcher := target_mock.NewMockVpaTargetSelectorFetcher(ctrl)
 			targetSelectorFetcher := target_mock.NewMockVpaTargetSelectorFetcher(ctrl)
-
-			clusterState := model.NewClusterState()
+			clusterState := model.NewClusterState(testGcPeriod)
 
 			clusterStateFeeder := clusterStateFeeder{
-				vpaLister:             vpaLister,
-				clusterState:          clusterState,
-				legacySelectorFetcher: legacyTargetSelectorFetcher,
-				selectorFetcher:       targetSelectorFetcher,
+				vpaLister:       vpaLister,
+				clusterState:    clusterState,
+				selectorFetcher: targetSelectorFetcher,
 				controllerFetcher: &fakeControllerFetcher{
-					key: tc.topLevelKey,
-					err: tc.findTopLevelError,
+					key: tc.topMostWellKnownOrScalableKey,
+					err: tc.findTopMostWellKnownOrScalableError,
 				},
 			}
 
-			// legacyTargetSelectorFetcher is called twice:
-			// - one time to determine ultimate selector
-			// - one time to check if object uses deprecated API
-			legacyTargetSelectorFetcher.EXPECT().Fetch(vpa).Times(2).Return(tc.legacySelector, nil)
 			targetSelectorFetcher.EXPECT().Fetch(vpa).Return(tc.selector, tc.fetchSelectorError)
 			clusterStateFeeder.LoadVPAs()
 
@@ -344,7 +321,7 @@ func TestClusterStateFeeder_LoadPods(t *testing.T) {
 		},
 	} {
 		t.Run(tc.Name, func(t *testing.T) {
-			clusterState := model.NewClusterState()
+			clusterState := model.NewClusterState(testGcPeriod)
 			for i, selector := range tc.VPALabelSelectors {
 				vpaLabel, err := labels.Parse(selector)
 				assert.NoError(t, err)
@@ -372,4 +349,77 @@ func TestClusterStateFeeder_LoadPods(t *testing.T) {
 			assert.Len(t, feeder.clusterState.Pods, len(tc.PodLabels), "number of pods is not %d", len(tc.PodLabels))
 		})
 	}
+}
+
+type fakeHistoryProvider struct {
+	history map[model.PodID]*history.PodHistory
+	err     error
+}
+
+func (fhp *fakeHistoryProvider) GetClusterHistory() (map[model.PodID]*history.PodHistory, error) {
+	return fhp.history, fhp.err
+}
+
+func TestClusterStateFeeder_InitFromHistoryProvider(t *testing.T) {
+	pod1 := model.PodID{
+		Namespace: "ns",
+		PodName:   "a-pod",
+	}
+	memAmount := model.ResourceAmount(128 * 1024 * 1024)
+	t0 := time.Date(2021, time.August, 30, 10, 21, 0, 0, time.UTC)
+	containerCpu := "containerCpu"
+	containerMem := "containerMem"
+	pod1History := history.PodHistory{
+		LastLabels: map[string]string{},
+		LastSeen:   t0,
+		Samples: map[string][]model.ContainerUsageSample{
+			containerCpu: {
+				{
+					MeasureStart: t0,
+					Usage:        10,
+					Request:      101,
+					Resource:     model.ResourceCPU,
+				},
+			},
+			containerMem: {
+				{
+					MeasureStart: t0,
+					Usage:        memAmount,
+					Request:      1024 * 1024 * 1024,
+					Resource:     model.ResourceMemory,
+				},
+			},
+		},
+	}
+	provider := fakeHistoryProvider{
+		history: map[model.PodID]*history.PodHistory{
+			pod1: &pod1History,
+		},
+	}
+
+	clusterState := model.NewClusterState(testGcPeriod)
+	feeder := clusterStateFeeder{
+		clusterState: clusterState,
+	}
+	feeder.InitFromHistoryProvider(&provider)
+	if !assert.Contains(t, feeder.clusterState.Pods, pod1) {
+		return
+	}
+	pod1State := feeder.clusterState.Pods[pod1]
+	if !assert.Contains(t, pod1State.Containers, containerCpu) {
+		return
+	}
+	containerState := pod1State.Containers[containerCpu]
+	if !assert.NotNil(t, containerState) {
+		return
+	}
+	assert.Equal(t, t0, containerState.LastCPUSampleStart)
+	if !assert.Contains(t, pod1State.Containers, containerMem) {
+		return
+	}
+	containerState = pod1State.Containers[containerMem]
+	if !assert.NotNil(t, containerState) {
+		return
+	}
+	assert.Equal(t, memAmount, containerState.GetMaxMemoryPeak())
 }

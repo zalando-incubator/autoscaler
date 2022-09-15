@@ -8,16 +8,15 @@ pipeline:
       image: cdp-runtime/base
     working_dir: /go/src/k8s.io/autoscaler
     env:
-      VERSION: "v0.6.1-internal"
-      DOWNSTREAM: "registry-write.opensource.zalan.do/teapot/kube-cluster-autoscaler"
+      VERSION: "v0.11.0-internal"
     commands:
       - desc: "Installing dependencies"
         cmd: |
           apt-get update
           apt-get install libseccomp-dev python -qq
 
-          curl https://dl.google.com/go/go1.11.13.linux-amd64.tar.gz -o go1.11.13.linux-amd64.tar.gz
-          rm -rf /usr/local/go && tar -C /usr/local -xzf go1.11.13.linux-amd64.tar.gz
+          curl https://dl.google.com/go/go1.17.5.linux-amd64.tar.gz -o go1.17.5.linux-amd64.tar.gz
+          rm -rf /usr/local/go && tar -C /usr/local -xzf go1.17.5.linux-amd64.tar.gz
           tee -a  ~/.profile << END
           export GOROOT=/usr/local/go
           export GOPATH=/go
@@ -26,11 +25,13 @@ pipeline:
           source ~/.profile
           go version
 
+          export GO111MODULE=auto
           hack/install-verify-tools.sh
       - desc: "Verify"
         cmd: |
           rm .zappr.yaml
           export EXCLUDE=verify-golint.sh
+          export GO111MODULE=auto
           hack/verify-all.sh -v
       - desc: "Build and release"
         cmd: |
@@ -40,14 +41,13 @@ pipeline:
             export TAG="${VERSION}.${CDP_TARGET_BRANCH_COUNTER}"
           fi
 
-          export REGISTRY=registry-write.opensource.zalan.do/teapot
-          
+          export ALL_ARCHITECTURES="amd64 arm64"
+          docker buildx create --config /etc/cdp-buildkitd.toml --driver-opt network=host --use
           for COMPONENT in admission-controller recommender updater; do
             (
               cd vertical-pod-autoscaler/pkg/$COMPONENT
               make test-unit
-              make release
-              docker buildx create --config /etc/cdp-buildkitd.toml --driver-opt network=host --use
+              make build-in-docker
               docker buildx build --rm -t container-registry-test.zalando.net/teapot/vpa-${COMPONENT}:${TAG} --platform linux/amd64,linux/arm64 --push .
               cdp-promote-image container-registry-test.zalando.net/teapot/vpa-${COMPONENT}:${TAG}
             )

@@ -22,7 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metrics_quality "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/quality"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -137,8 +137,10 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 		klog.V(3).Infof("addMemorySample isOOM=%v", isOOM)
 	}
 	ts := sample.MeasureStart
-	if !sample.isValid(ResourceMemory) || (!isOOM && ts.Before(container.lastMemorySampleStart)) {
-		return false // Discard invalid or outdated samples. OOMs are always recorded as long as they're valid.
+	// We always process OOM samples.
+	if !sample.isValid(ResourceMemory) ||
+		(!isOOM && ts.Before(container.lastMemorySampleStart)) {
+		return false // Discard invalid or outdated samples.
 	}
 	container.lastMemorySampleStart = ts
 	if container.WindowEnd.IsZero() { // This is the first sample.
@@ -178,7 +180,8 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 			klog.V(3).Infof("addMemorySample isOOM=%v no oomPeak detected: %v", isOOM, container.WindowEnd)
 		}
 		// Shift the memory aggregation window to the next interval.
-		shift := truncate(ts.Sub(container.WindowEnd), MemoryAggregationInterval) + MemoryAggregationInterval
+		memoryAggregationInterval := GetAggregationsConfig().MemoryAggregationInterval
+		shift := truncate(ts.Sub(container.WindowEnd), memoryAggregationInterval) + memoryAggregationInterval
 		container.WindowEnd = container.WindowEnd.Add(shift)
 		container.memoryPeak = 0
 		container.oomPeak = 0
@@ -208,7 +211,7 @@ func (container *ContainerState) addMemorySample(sample *ContainerUsageSample, i
 // RecordOOM adds info regarding OOM event in the model as an artificial memory sample.
 func (container *ContainerState) RecordOOM(timestamp time.Time, requestedMemory ResourceAmount) error {
 	// Discard old OOM
-	if timestamp.Before(container.WindowEnd.Add(-1 * MemoryAggregationInterval)) {
+	if timestamp.Before(container.WindowEnd.Add(-1 * GetAggregationsConfig().MemoryAggregationInterval)) {
 		return fmt.Errorf("OOM event will be discarded - it is too old (%v)", timestamp)
 	}
 	// Get max of the request and the recent usage-based memory peak.

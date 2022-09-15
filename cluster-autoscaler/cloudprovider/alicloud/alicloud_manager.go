@@ -26,8 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/alicloud/alibaba-cloud-sdk-go/services/ess"
-	"k8s.io/klog"
-	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
+	klog "k8s.io/klog/v2"
 	"math/rand"
 	"time"
 )
@@ -148,7 +147,7 @@ func (m *AliCloudManager) DeleteInstances(instanceIds []string) error {
 
 		resp, err := m.aService.RemoveInstances(req)
 		if err != nil {
-			fmt.Errorf("failed to remove instance from scaling group %s,because of %s", commonAsg.id, err.Error())
+			klog.Errorf("failed to remove instance from scaling group %s,because of %s", commonAsg.id, err.Error())
 			continue
 		}
 		klog.Infof("remove instances successfully with response: %s", resp.GetHttpContentString())
@@ -237,13 +236,13 @@ func (m *AliCloudManager) buildNodeFromTemplate(sg *Asg, template *sgTemplate) (
 
 func buildGenericLabels(template *sgTemplate, nodeName string) map[string]string {
 	result := make(map[string]string)
-	result[kubeletapis.LabelArch] = cloudprovider.DefaultArch
-	result[kubeletapis.LabelOS] = cloudprovider.DefaultOS
+	result[apiv1.LabelArchStable] = cloudprovider.DefaultArch
+	result[apiv1.LabelOSStable] = cloudprovider.DefaultOS
 
-	result[apiv1.LabelInstanceType] = template.InstanceType.instanceTypeID
+	result[apiv1.LabelInstanceTypeStable] = template.InstanceType.instanceTypeID
 
-	result[apiv1.LabelZoneRegion] = template.Region
-	result[apiv1.LabelZoneFailureDomain] = template.Zone
+	result[apiv1.LabelTopologyRegion] = template.Region
+	result[apiv1.LabelTopologyZone] = template.Zone
 	result[apiv1.LabelHostname] = nodeName
 
 	// append custom node labels

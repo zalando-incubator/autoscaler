@@ -1,4 +1,5 @@
-// +build windows
+//go:build !providerless && windows
+// +build !providerless,windows
 
 /*
 Copyright 2018 The Kubernetes Authors.

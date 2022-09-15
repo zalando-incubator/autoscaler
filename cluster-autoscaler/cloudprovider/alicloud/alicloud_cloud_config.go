@@ -18,14 +18,14 @@ package alicloud
 
 import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/alicloud/metadata"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 	"os"
 )
 
 const (
-	accessKeyId    = "ACCESS_KEY_ID"
-	accessKeyScret = "ACCESS_KEY_SECRET"
-	regionId       = "REGION_ID"
+	accessKeyId     = "ACCESS_KEY_ID"
+	accessKeySecret = "ACCESS_KEY_SECRET"
+	regionId        = "REGION_ID"
 )
 
 type cloudConfig struct {
@@ -41,7 +41,7 @@ func (cc *cloudConfig) isValid() bool {
 	}
 
 	if cc.AccessKeySecret == "" {
-		cc.AccessKeySecret = os.Getenv(accessKeyScret)
+		cc.AccessKeySecret = os.Getenv(accessKeySecret)
 	}
 
 	if cc.RegionId == "" {

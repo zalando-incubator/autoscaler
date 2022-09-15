@@ -36,13 +36,14 @@ var (
 // Verifies that the PercentileEstimator returns requested percentiles of CPU
 // and memory peaks distributions.
 func TestPercentileEstimator(t *testing.T) {
+	config := model.GetAggregationsConfig()
 	// Create a sample CPU histogram.
-	cpuHistogram := util.NewHistogram(model.CPUHistogramOptions)
+	cpuHistogram := util.NewHistogram(config.CPUHistogramOptions)
 	cpuHistogram.AddSample(1.0, 1.0, anyTime)
 	cpuHistogram.AddSample(2.0, 1.0, anyTime)
 	cpuHistogram.AddSample(3.0, 1.0, anyTime)
 	// Create a sample memory histogram.
-	memoryPeaksHistogram := util.NewHistogram(model.MemoryHistogramOptions)
+	memoryPeaksHistogram := util.NewHistogram(config.MemoryHistogramOptions)
 	memoryPeaksHistogram.AddSample(1e9, 1.0, anyTime)
 	memoryPeaksHistogram.AddSample(2e9, 1.0, anyTime)
 	memoryPeaksHistogram.AddSample(3e9, 1.0, anyTime)
@@ -70,14 +71,22 @@ func TestConfidenceMultiplier(t *testing.T) {
 		model.ResourceCPU:    model.CPUAmountFromCores(3.14),
 		model.ResourceMemory: model.MemoryAmountFromBytes(3.14e9),
 	})
-	testedEstimator := &confidenceMultiplier{0.1, 2.0, baseEstimator}
+	testedEstimator := &confidenceMultiplier{
+		multiplier:    0.1,
+		exponent:      2.0,
+		baseEstimator: baseEstimator,
+	}
 
 	s := model.NewAggregateContainerState()
 	// Add 9 CPU samples at the frequency of 1/(2 mins).
 	timestamp := anyTime
 	for i := 1; i <= 9; i++ {
 		s.AddSample(&model.ContainerUsageSample{
-			timestamp, model.CPUAmountFromCores(1.0), testRequest[model.ResourceCPU], model.ResourceCPU})
+			MeasureStart: timestamp,
+			Usage:        model.CPUAmountFromCores(1.0),
+			Request:      testRequest[model.ResourceCPU],
+			Resource:     model.ResourceCPU,
+		})
 		timestamp = timestamp.Add(time.Minute * 2)
 	}
 

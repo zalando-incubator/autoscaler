@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM k8s.gcr.io/debian-base:1.0.0
+FROM gcr.io/distroless/static:latest
 MAINTAINER Krzysztof Grygiel "kgrygiel@google.com"
 
-ARG TARGETARCH=amd64
-ADD build/${TARGETARCH}/recommender recommender
+ARG TARGETARCH
+COPY recommender-$TARGETARCH /recommender
 
-ENTRYPOINT ./recommender --v=4 --stderrthreshold=info --prometheus-address=http://prometheus.monitoring.svc
+ENTRYPOINT ["/recommender"]
+CMD ["--v=4", "--stderrthreshold=info", "--prometheus-address=http://prometheus.monitoring.svc"]

@@ -17,6 +17,7 @@ limitations under the License.
 package aws
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,18 +25,22 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/ec2metadata"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
+	"k8s.io/autoscaler/cluster-autoscaler/config"
 	provider_aws "k8s.io/legacy-cloud-providers/aws"
 )
 
@@ -56,32 +61,51 @@ func TestGetRegion(t *testing.T) {
 	expected1 := "the-shire-1"
 	os.Setenv(key, expected1)
 	assert.Equal(t, expected1, getRegion())
-	// Ensure without environment variable, EC2 Metadata used... and it merely
-	// chops the last character off the Availability Zone.
+	// Ensure without environment variable, EC2 Metadata is used.
 	expected2 := "mordor-2"
-	expected2a := expected2 + "a"
+	expectedjson := ec2metadata.EC2InstanceIdentityDocument{Region: expected2}
+	js, _ := json.Marshal(expectedjson)
 	os.Unsetenv(key)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(expected2a))
+		w.Write(js)
 	}))
 	cfg := aws.NewConfig().WithEndpoint(server.URL)
 	assert.Equal(t, expected2, getRegion(cfg))
 }
 
+func TestJoinNodeLabelsChoosingUserValuesOverAPIValues(t *testing.T) {
+	extractedLabels := make(map[string]string)
+	mngLabels := make(map[string]string)
+
+	extractedLabels["key1"] = "value1extracted"
+	extractedLabels["key2"] = "value2extracted"
+
+	mngLabels["key3"] = "value3mng"
+	mngLabels["key2"] = "value2mng"
+
+	result := joinNodeLabelsChoosingUserValuesOverAPIValues(extractedLabels, mngLabels)
+
+	// Make sure any duplicate keys keep the extractedLabels value
+	assert.Equal(t, result["key1"], "value1extracted")
+	assert.Equal(t, result["key2"], "value2mng")
+	assert.Equal(t, result["key3"], "value3mng")
+}
+
 func TestBuildGenericLabels(t *testing.T) {
 	labels := buildGenericLabels(&asgTemplate{
-		InstanceType: &instanceType{
+		InstanceType: &InstanceType{
 			InstanceType: "c4.large",
 			VCPU:         2,
 			MemoryMb:     3840,
+			Architecture: cloudprovider.DefaultArch,
 		},
 		Region: "us-east-1",
 	}, "sillyname")
-	assert.Equal(t, "us-east-1", labels[apiv1.LabelZoneRegion])
+	assert.Equal(t, "us-east-1", labels[apiv1.LabelZoneRegionStable])
 	assert.Equal(t, "sillyname", labels[apiv1.LabelHostname])
-	assert.Equal(t, "c4.large", labels[apiv1.LabelInstanceType])
-	assert.Equal(t, cloudprovider.DefaultArch, labels[kubeletapis.LabelArch])
-	assert.Equal(t, cloudprovider.DefaultOS, labels[kubeletapis.LabelOS])
+	assert.Equal(t, "c4.large", labels[apiv1.LabelInstanceTypeStable])
+	assert.Equal(t, cloudprovider.DefaultArch, labels[apiv1.LabelArchStable])
+	assert.Equal(t, cloudprovider.DefaultOS, labels[apiv1.LabelOSStable])
 }
 
 func TestExtractAllocatableResourcesFromAsg(t *testing.T) {
@@ -109,11 +133,356 @@ func TestExtractAllocatableResourcesFromAsg(t *testing.T) {
 	assert.Equal(t, (&expectedEphemeralStorage).String(), labels["ephemeral-storage"].String())
 }
 
+func TestGetAsgOptions(t *testing.T) {
+	defaultOptions := config.NodeGroupAutoscalingOptions{
+		ScaleDownUtilizationThreshold:    0.1,
+		ScaleDownGpuUtilizationThreshold: 0.2,
+		ScaleDownUnneededTime:            time.Second,
+		ScaleDownUnreadyTime:             time.Minute,
+	}
+
+	tests := []struct {
+		description string
+		tags        map[string]string
+		expected    *config.NodeGroupAutoscalingOptions
+	}{
+		{
+			description: "use defaults on unspecified tags",
+			tags:        make(map[string]string),
+			expected:    &defaultOptions,
+		},
+		{
+			description: "keep defaults on invalid tags values",
+			tags: map[string]string{
+				"scaledownutilizationthreshold": "not-a-float",
+				"scaledownunneededtime":         "not-a-duration",
+				"ScaleDownUnreadyTime":          "",
+			},
+			expected: &defaultOptions,
+		},
+		{
+			description: "use provided tags and fill missing with defaults",
+			tags: map[string]string{
+				"scaledownutilizationthreshold": "0.42",
+				"scaledownunneededtime":         "1h",
+			},
+			expected: &config.NodeGroupAutoscalingOptions{
+				ScaleDownUtilizationThreshold:    0.42,
+				ScaleDownGpuUtilizationThreshold: defaultOptions.ScaleDownGpuUtilizationThreshold,
+				ScaleDownUnneededTime:            time.Hour,
+				ScaleDownUnreadyTime:             defaultOptions.ScaleDownUnreadyTime,
+			},
+		},
+		{
+			description: "ignore unknown tags",
+			tags: map[string]string{
+				"scaledownutilizationthreshold":    "0.6",
+				"scaledowngpuutilizationthreshold": "0.7",
+				"scaledownunneededtime":            "1m",
+				"scaledownunreadytime":             "1h",
+				"notyetspecified":                  "42",
+			},
+			expected: &config.NodeGroupAutoscalingOptions{
+				ScaleDownUtilizationThreshold:    0.6,
+				ScaleDownGpuUtilizationThreshold: 0.7,
+				ScaleDownUnneededTime:            time.Minute,
+				ScaleDownUnreadyTime:             time.Hour,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			testAsg := asg{AwsRef: AwsRef{Name: "testAsg"}}
+			cache, _ := newASGCache(nil, []string{}, []asgAutoDiscoveryConfig{})
+			cache.autoscalingOptions[testAsg.AwsRef] = tt.tags
+			awsManager := &AwsManager{asgCache: cache}
+
+			actual := awsManager.GetAsgOptions(testAsg, defaultOptions)
+			assert.Equal(t, tt.expected, actual)
+		})
+	}
+}
+
+func TestBuildNodeFromTemplateWithManagedNodegroup(t *testing.T) {
+	mngCache := newManagedNodeGroupCache(nil)
+	awsManager := &AwsManager{managedNodegroupCache: mngCache}
+	asg := &asg{AwsRef: AwsRef{Name: "test-auto-scaling-group"}}
+	c5Instance := &InstanceType{
+		InstanceType: "c5.xlarge",
+		VCPU:         4,
+		MemoryMb:     8192,
+		GPU:          0,
+	}
+
+	ngNameLabelValue := "nodegroup-1"
+	clusterNameLabelValue := "cluster-1"
+
+	labelKey1 := "labelKey 1"
+	labelKey2 := "labelKey 2"
+	labelValue1 := "testValue 1"
+	labelValue2 := "testValue 2"
+	labelValue3 := "testValue 3"
+
+	taintEffect1 := "effect 1"
+	taintKey1 := "key 1"
+	taintValue1 := "value 1"
+	taint1 := apiv1.Taint{
+		Effect: apiv1.TaintEffect(taintEffect1),
+		Key:    taintKey1,
+		Value:  taintValue1,
+	}
+
+	taintEffect2 := "effect 2"
+	taintKey2 := "key 2"
+	taintValue2 := "value 2"
+	taint2 := apiv1.Taint{
+		Effect: apiv1.TaintEffect(taintEffect2),
+		Key:    taintKey2,
+		Value:  taintValue2,
+	}
+
+	err := mngCache.Add(managedNodegroupCachedObject{
+		name:        ngNameLabelValue,
+		clusterName: clusterNameLabelValue,
+		taints:      []apiv1.Taint{taint1, taint2},
+		labels:      map[string]string{labelKey1: labelValue1, labelKey2: labelValue2},
+	})
+	require.NoError(t, err)
+
+	// Node with EKS labels
+	observedNode, observedErr := awsManager.buildNodeFromTemplate(asg, &asgTemplate{
+		InstanceType: c5Instance,
+		Tags: []*autoscaling.TagDescription{
+			{
+				Key:   aws.String("eks:nodegroup-name"),
+				Value: aws.String(ngNameLabelValue),
+			},
+			{
+				Key:   aws.String("eks:cluster-name"),
+				Value: aws.String(clusterNameLabelValue),
+			},
+			{
+				Key:   aws.String("k8s.io/cluster-autoscaler/node-template/label/" + labelKey2),
+				Value: aws.String(labelValue3),
+			},
+		},
+	})
+	assert.NoError(t, observedErr)
+	assert.GreaterOrEqual(t, len(observedNode.Labels), 4)
+	ngNameValue, ngLabelExist := observedNode.Labels["nodegroup-name"]
+	assert.True(t, ngLabelExist)
+	assert.Equal(t, ngNameLabelValue, ngNameValue)
+	clusterNameValue, clusterLabelExist := observedNode.Labels["cluster-name"]
+	assert.True(t, clusterLabelExist)
+	assert.Equal(t, clusterNameValue, clusterNameLabelValue)
+	labelKeyValue1, labelKeyExist1 := observedNode.Labels[labelKey1]
+	assert.True(t, labelKeyExist1)
+	assert.Equal(t, labelKeyValue1, labelValue1)
+	labelKeyValue2, labelKeyExist2 := observedNode.Labels[labelKey2]
+	assert.True(t, labelKeyExist2)
+	// Check the value specified in the ASG tag is kept, instead of the EKS API value
+	assert.Equal(t, labelKeyValue2, labelValue2)
+	assert.Equal(t, len(observedNode.Spec.Taints), 2)
+	assert.Equal(t, observedNode.Spec.Taints[0].Effect, apiv1.TaintEffect(taintEffect1))
+	assert.Equal(t, observedNode.Spec.Taints[0].Key, taintKey1)
+	assert.Equal(t, observedNode.Spec.Taints[0].Value, taintValue1)
+	assert.Equal(t, observedNode.Spec.Taints[1].Effect, apiv1.TaintEffect(taintEffect2))
+	assert.Equal(t, observedNode.Spec.Taints[1].Key, taintKey2)
+	assert.Equal(t, observedNode.Spec.Taints[1].Value, taintValue2)
+}
+
+func TestBuildNodeFromTemplateWithManagedNodegroupNoLabelsOrTaints(t *testing.T) {
+	mngCache := newManagedNodeGroupCache(nil)
+	awsManager := &AwsManager{managedNodegroupCache: mngCache}
+	asg := &asg{AwsRef: AwsRef{Name: "test-auto-scaling-group"}}
+	c5Instance := &InstanceType{
+		InstanceType: "c5.xlarge",
+		VCPU:         4,
+		MemoryMb:     8192,
+		GPU:          0,
+	}
+
+	ngNameLabelValue := "nodegroup-1"
+	clusterNameLabelValue := "cluster-1"
+
+	err := mngCache.Add(managedNodegroupCachedObject{
+		name:        ngNameLabelValue,
+		clusterName: clusterNameLabelValue,
+		taints:      make([]apiv1.Taint, 0),
+		labels:      make(map[string]string),
+	})
+	require.NoError(t, err)
+
+	// Node with EKS labels
+	observedNode, observedErr := awsManager.buildNodeFromTemplate(asg, &asgTemplate{
+		InstanceType: c5Instance,
+		Tags: []*autoscaling.TagDescription{
+			{
+				Key:   aws.String("eks:nodegroup-name"),
+				Value: aws.String(ngNameLabelValue),
+			},
+			{
+				Key:   aws.String("eks:cluster-name"),
+				Value: aws.String(clusterNameLabelValue),
+			},
+		},
+	})
+	assert.NoError(t, observedErr)
+	assert.GreaterOrEqual(t, len(observedNode.Labels), 2)
+	ngNameValue, ngLabelExist := observedNode.Labels["nodegroup-name"]
+	assert.True(t, ngLabelExist)
+	assert.Equal(t, ngNameLabelValue, ngNameValue)
+	clusterNameValue, clusterLabelExist := observedNode.Labels["cluster-name"]
+	assert.True(t, clusterLabelExist)
+	assert.Equal(t, clusterNameValue, clusterNameLabelValue)
+	assert.Equal(t, len(observedNode.Spec.Taints), 0)
+}
+
+func TestBuildNodeFromTemplateWithManagedNodegroupNilLabelsOrTaints(t *testing.T) {
+	mngCache := newManagedNodeGroupCache(nil)
+	awsManager := &AwsManager{managedNodegroupCache: mngCache}
+	asg := &asg{AwsRef: AwsRef{Name: "test-auto-scaling-group"}}
+	c5Instance := &InstanceType{
+		InstanceType: "c5.xlarge",
+		VCPU:         4,
+		MemoryMb:     8192,
+		GPU:          0,
+	}
+
+	ngNameLabelValue := "nodegroup-1"
+	clusterNameLabelValue := "cluster-1"
+
+	err := mngCache.Add(managedNodegroupCachedObject{
+		name:        ngNameLabelValue,
+		clusterName: clusterNameLabelValue,
+		taints:      nil,
+		labels:      nil,
+	})
+	require.NoError(t, err)
+
+	// Node with EKS labels
+	observedNode, observedErr := awsManager.buildNodeFromTemplate(asg, &asgTemplate{
+		InstanceType: c5Instance,
+		Tags: []*autoscaling.TagDescription{
+			{
+				Key:   aws.String("eks:nodegroup-name"),
+				Value: aws.String(ngNameLabelValue),
+			},
+			{
+				Key:   aws.String("eks:cluster-name"),
+				Value: aws.String(clusterNameLabelValue),
+			},
+		},
+	})
+	assert.NoError(t, observedErr)
+	assert.GreaterOrEqual(t, len(observedNode.Labels), 2)
+	ngNameValue, ngLabelExist := observedNode.Labels["nodegroup-name"]
+	assert.True(t, ngLabelExist)
+	assert.Equal(t, ngNameLabelValue, ngNameValue)
+	clusterNameValue, clusterLabelExist := observedNode.Labels["cluster-name"]
+	assert.True(t, clusterLabelExist)
+	assert.Equal(t, clusterNameValue, clusterNameLabelValue)
+	assert.Equal(t, len(observedNode.Spec.Taints), 0)
+}
+
+func TestBuildNodeFromTemplate(t *testing.T) {
+	awsManager := &AwsManager{}
+	asg := &asg{AwsRef: AwsRef{Name: "test-auto-scaling-group"}}
+	c5Instance := &InstanceType{
+		InstanceType: "c5.xlarge",
+		VCPU:         4,
+		MemoryMb:     8192,
+		GPU:          0,
+	}
+
+	// Node with custom resource
+	ephemeralStorageKey := "ephemeral-storage"
+	ephemeralStorageValue := int64(20)
+	vpcIPKey := "vpc.amazonaws.com/PrivateIPv4Address"
+	observedNode, observedErr := awsManager.buildNodeFromTemplate(asg, &asgTemplate{
+		InstanceType: c5Instance,
+		Tags: []*autoscaling.TagDescription{
+			{
+				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/resources/%s", ephemeralStorageKey)),
+				Value: aws.String(strconv.FormatInt(ephemeralStorageValue, 10)),
+			},
+		},
+	})
+	assert.NoError(t, observedErr)
+	esValue, esExist := observedNode.Status.Capacity[apiv1.ResourceName(ephemeralStorageKey)]
+	assert.True(t, esExist)
+	assert.Equal(t, int64(20), esValue.Value())
+	_, ipExist := observedNode.Status.Capacity[apiv1.ResourceName(vpcIPKey)]
+	assert.False(t, ipExist)
+
+	// Node with labels
+	GPULabelValue := "nvidia-telsa-v100"
+	observedNode, observedErr = awsManager.buildNodeFromTemplate(asg, &asgTemplate{
+		InstanceType: c5Instance,
+		Tags: []*autoscaling.TagDescription{
+			{
+				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/label/%s", GPULabel)),
+				Value: aws.String(GPULabelValue),
+			},
+		},
+	})
+	assert.NoError(t, observedErr)
+	gpuValue, gpuLabelExist := observedNode.Labels[GPULabel]
+	assert.True(t, gpuLabelExist)
+	assert.Equal(t, GPULabelValue, gpuValue)
+
+	// Node with EKS labels
+	ngNameLabelValue := "nodegroup-1"
+	observedNode, observedErr = awsManager.buildNodeFromTemplate(asg, &asgTemplate{
+		InstanceType: c5Instance,
+		Tags: []*autoscaling.TagDescription{
+			{
+				Key:   aws.String("eks:nodegroup-name"),
+				Value: aws.String(ngNameLabelValue),
+			},
+		},
+	})
+	assert.NoError(t, observedErr)
+	ngNameValue, ngLabelExist := observedNode.Labels["nodegroup-name"]
+	assert.True(t, ngLabelExist)
+	assert.Equal(t, ngNameLabelValue, ngNameValue)
+
+	// Node with taints
+	gpuTaint := apiv1.Taint{
+		Key:    "nvidia.com/gpu",
+		Value:  "present",
+		Effect: "NoSchedule",
+	}
+	observedNode, observedErr = awsManager.buildNodeFromTemplate(asg, &asgTemplate{
+		InstanceType: c5Instance,
+		Tags: []*autoscaling.TagDescription{
+			{
+				Key:   aws.String(fmt.Sprintf("k8s.io/cluster-autoscaler/node-template/taint/%s", gpuTaint.Key)),
+				Value: aws.String(fmt.Sprintf("%s:%s", gpuTaint.Value, gpuTaint.Effect)),
+			},
+		},
+	})
+
+	assert.NoError(t, observedErr)
+	observedTaints := observedNode.Spec.Taints
+	assert.Equal(t, 1, len(observedTaints))
+	assert.Equal(t, gpuTaint, observedTaints[0])
+}
+
 func TestExtractLabelsFromAsg(t *testing.T) {
 	tags := []*autoscaling.TagDescription{
 		{
 			Key:   aws.String("k8s.io/cluster-autoscaler/node-template/label/foo"),
 			Value: aws.String("bar"),
+		},
+		{
+			Key:   aws.String("eks:nodegroup-name"),
+			Value: aws.String("bar2"),
+		},
+		{
+			Key:   aws.String("eks:cluster-name"),
+			Value: aws.String("bar4"),
 		},
 		{
 			Key:   aws.String("bar"),
@@ -123,8 +492,10 @@ func TestExtractLabelsFromAsg(t *testing.T) {
 
 	labels := extractLabelsFromAsg(tags)
 
-	assert.Equal(t, 1, len(labels))
+	assert.Equal(t, 3, len(labels))
 	assert.Equal(t, "bar", labels["foo"])
+	assert.Equal(t, "bar2", labels["nodegroup-name"])
+	assert.Equal(t, "bar4", labels["cluster-name"])
 }
 
 func TestExtractTaintsFromAsg(t *testing.T) {
@@ -188,9 +559,10 @@ func makeTaintSet(taints []apiv1.Taint) map[apiv1.Taint]bool {
 
 func TestFetchExplicitAsgs(t *testing.T) {
 	min, max, groupname := 1, 10, "coolasg"
+	asgRef := AwsRef{Name: groupname}
 
-	s := &AutoScalingMock{}
-	s.On("DescribeAutoScalingGroups", &autoscaling.DescribeAutoScalingGroupsInput{
+	a := &autoScalingMock{}
+	a.On("DescribeAutoScalingGroups", &autoscaling.DescribeAutoScalingGroupsInput{
 		AutoScalingGroupNames: []*string{aws.String(groupname)},
 		MaxRecords:            aws.Int64(1),
 	}).Return(&autoscaling.DescribeAutoScalingGroupsOutput{
@@ -199,7 +571,7 @@ func TestFetchExplicitAsgs(t *testing.T) {
 		},
 	})
 
-	s.On("DescribeAutoScalingGroupsPages",
+	a.On("DescribeAutoScalingGroupsPages",
 		&autoscaling.DescribeAutoScalingGroupsInput{
 			AutoScalingGroupNames: aws.StringSlice([]string{groupname}),
 			MaxRecords:            aws.Int64(maxRecordsReturnedByAPI),
@@ -207,11 +579,24 @@ func TestFetchExplicitAsgs(t *testing.T) {
 		mock.AnythingOfType("func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool"),
 	).Run(func(args mock.Arguments) {
 		fn := args.Get(1).(func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool)
+		zone := "test-1a"
 		fn(&autoscaling.DescribeAutoScalingGroupsOutput{
 			AutoScalingGroups: []*autoscaling.Group{
-				{AutoScalingGroupName: aws.String(groupname)},
+				{
+					AvailabilityZones:    []*string{&zone},
+					AutoScalingGroupName: aws.String(groupname),
+					MinSize:              aws.Int64(int64(min)),
+					MaxSize:              aws.Int64(int64(max)),
+					DesiredCapacity:      aws.Int64(int64(min)),
+				},
 			}}, false)
 	}).Return(nil)
+
+	a.On("DescribeScalingActivities",
+		&autoscaling.DescribeScalingActivitiesInput{
+			AutoScalingGroupName: aws.String("coolasg"),
+		},
+	).Return(&autoscaling.DescribeScalingActivitiesOutput{}, nil)
 
 	do := cloudprovider.NodeGroupDiscoveryOptions{
 		// Register the same node group twice with different max nodes.
@@ -225,57 +610,26 @@ func TestFetchExplicitAsgs(t *testing.T) {
 	// #1449 Without AWS_REGION getRegion() lookup runs till timeout during tests.
 	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
 	os.Setenv("AWS_REGION", "fanghorn")
-	// fetchExplicitASGs is called at manager creation time.
-	m, err := createAWSManagerInternal(nil, do, &autoScalingWrapper{s, map[string]string{}}, nil)
+	instanceTypes, _ := GetStaticEC2InstanceTypes()
+	m, err := createAWSManagerInternal(nil, do, &awsWrapper{a, nil, nil}, instanceTypes)
 	assert.NoError(t, err)
 
 	asgs := m.asgCache.Get()
 	assert.Equal(t, 1, len(asgs))
-	validateAsg(t, asgs[0], groupname, min, max)
-}
-
-func TestBuildInstanceType(t *testing.T) {
-	ltName, ltVersion, instanceType := "launcher", "1", "t2.large"
-
-	s := &EC2Mock{}
-	s.On("DescribeLaunchTemplateVersions", &ec2.DescribeLaunchTemplateVersionsInput{
-		LaunchTemplateName: aws.String(ltName),
-		Versions:           []*string{aws.String(ltVersion)},
-	}).Return(&ec2.DescribeLaunchTemplateVersionsOutput{
-		LaunchTemplateVersions: []*ec2.LaunchTemplateVersion{
-			{
-				LaunchTemplateData: &ec2.ResponseLaunchTemplateData{
-					InstanceType: aws.String(instanceType),
-				},
-			},
-		},
-	})
-
-	// #1449 Without AWS_REGION getRegion() lookup runs till timeout during tests.
-	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
-	os.Setenv("AWS_REGION", "fanghorn")
-	m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, &ec2Wrapper{s})
-	assert.NoError(t, err)
-
-	asg := asg{
-		LaunchTemplateName:    ltName,
-		LaunchTemplateVersion: ltVersion,
-	}
-
-	builtInstanceType, err := m.buildInstanceType(&asg)
-
-	assert.NoError(t, err)
-	assert.Equal(t, instanceType, builtInstanceType)
+	validateAsg(t, asgs[asgRef], groupname, min, max)
 }
 
 func TestGetASGTemplate(t *testing.T) {
 	const (
+		asgName           = "sample"
 		knownInstanceType = "t3.micro"
 		region            = "us-east-1"
 		az                = region + "a"
 		ltName            = "launcher"
 		ltVersion         = "1"
 	)
+
+	asgRef := AwsRef{Name: asgName}
 
 	tags := []*autoscaling.TagDescription{
 		{
@@ -302,8 +656,8 @@ func TestGetASGTemplate(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.description, func(t *testing.T) {
-			s := &EC2Mock{}
-			s.On("DescribeLaunchTemplateVersions", &ec2.DescribeLaunchTemplateVersionsInput{
+			e := &ec2Mock{}
+			e.On("DescribeLaunchTemplateVersions", &ec2.DescribeLaunchTemplateVersionsInput{
 				LaunchTemplateName: aws.String(ltName),
 				Versions:           []*string{aws.String(ltVersion)},
 			}).Return(&ec2.DescribeLaunchTemplateVersionsOutput{
@@ -319,15 +673,24 @@ func TestGetASGTemplate(t *testing.T) {
 			// #1449 Without AWS_REGION getRegion() lookup runs till timeout during tests.
 			defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
 			os.Setenv("AWS_REGION", "fanghorn")
-			m, err := createAWSManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, nil, &ec2Wrapper{s})
+			instanceTypes, _ := GetStaticEC2InstanceTypes()
+			do := cloudprovider.NodeGroupDiscoveryOptions{}
+
+			m, err := createAWSManagerInternal(nil, do, &awsWrapper{nil, e, nil}, instanceTypes)
+			origGetInstanceTypeFunc := getInstanceTypeForAsg
+			defer func() { getInstanceTypeForAsg = origGetInstanceTypeFunc }()
+			getInstanceTypeForAsg = func(m *asgCache, asg *asg) (string, error) {
+				return test.instanceType, nil
+			}
 			assert.NoError(t, err)
 
 			asg := &asg{
-				AwsRef:                AwsRef{Name: "sample"},
-				AvailabilityZones:     test.availabilityZones,
-				LaunchTemplateName:    ltName,
-				LaunchTemplateVersion: ltVersion,
-				Tags:                  tags,
+				AwsRef:            asgRef,
+				AvailabilityZones: test.availabilityZones,
+				LaunchTemplate: &launchTemplate{
+					name:    ltName,
+					version: ltVersion},
+				Tags: tags,
 			}
 
 			template, err := m.getAsgTemplate(asg)
@@ -349,8 +712,9 @@ func TestGetASGTemplate(t *testing.T) {
 func TestFetchAutoAsgs(t *testing.T) {
 	min, max := 1, 10
 	groupname, tags := "coolasg", []string{"tag", "anothertag"}
+	asgRef := AwsRef{Name: groupname}
 
-	s := &AutoScalingMock{}
+	a := &autoScalingMock{}
 	// Lookup groups associated with tags
 	expectedTagsInput := &autoscaling.DescribeTagsInput{
 		Filters: []*autoscaling.Filter{
@@ -360,7 +724,7 @@ func TestFetchAutoAsgs(t *testing.T) {
 		MaxRecords: aws.Int64(maxRecordsReturnedByAPI),
 	}
 	// Use MatchedBy pattern to avoid list order issue https://github.com/kubernetes/autoscaler/issues/1346
-	s.On("DescribeTagsPages", mock.MatchedBy(tagsMatcher(expectedTagsInput)),
+	a.On("DescribeTagsPages", mock.MatchedBy(tagsMatcher(expectedTagsInput)),
 		mock.AnythingOfType("func(*autoscaling.DescribeTagsOutput, bool) bool"),
 	).Run(func(args mock.Arguments) {
 		fn := args.Get(1).(func(*autoscaling.DescribeTagsOutput, bool) bool)
@@ -373,7 +737,7 @@ func TestFetchAutoAsgs(t *testing.T) {
 
 	// Describe the group to register it, then again to generate the instance
 	// cache.
-	s.On("DescribeAutoScalingGroupsPages",
+	a.On("DescribeAutoScalingGroupsPages",
 		&autoscaling.DescribeAutoScalingGroupsInput{
 			AutoScalingGroupNames: aws.StringSlice([]string{groupname}),
 			MaxRecords:            aws.Int64(maxRecordsReturnedByAPI),
@@ -381,13 +745,22 @@ func TestFetchAutoAsgs(t *testing.T) {
 		mock.AnythingOfType("func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool"),
 	).Run(func(args mock.Arguments) {
 		fn := args.Get(1).(func(*autoscaling.DescribeAutoScalingGroupsOutput, bool) bool)
+		zone := "test-1a"
 		fn(&autoscaling.DescribeAutoScalingGroupsOutput{
 			AutoScalingGroups: []*autoscaling.Group{{
+				AvailabilityZones:    []*string{&zone},
 				AutoScalingGroupName: aws.String(groupname),
 				MinSize:              aws.Int64(int64(min)),
 				MaxSize:              aws.Int64(int64(max)),
+				DesiredCapacity:      aws.Int64(int64(min)),
 			}}}, false)
 	}).Return(nil).Twice()
+
+	a.On("DescribeScalingActivities",
+		&autoscaling.DescribeScalingActivitiesInput{
+			AutoScalingGroupName: aws.String("coolasg"),
+		},
+	).Return(&autoscaling.DescribeScalingActivitiesOutput{}, nil)
 
 	do := cloudprovider.NodeGroupDiscoveryOptions{
 		NodeGroupAutoDiscoverySpecs: []string{fmt.Sprintf("asg:tag=%s", strings.Join(tags, ","))},
@@ -397,15 +770,16 @@ func TestFetchAutoAsgs(t *testing.T) {
 	defer resetAWSRegion(os.LookupEnv("AWS_REGION"))
 	os.Setenv("AWS_REGION", "fanghorn")
 	// fetchAutoASGs is called at manager creation time, via forceRefresh
-	m, err := createAWSManagerInternal(nil, do, &autoScalingWrapper{s, map[string]string{}}, nil)
+	instanceTypes, _ := GetStaticEC2InstanceTypes()
+	m, err := createAWSManagerInternal(nil, do, &awsWrapper{a, nil, nil}, instanceTypes)
 	assert.NoError(t, err)
 
 	asgs := m.asgCache.Get()
 	assert.Equal(t, 1, len(asgs))
-	validateAsg(t, asgs[0], groupname, min, max)
+	validateAsg(t, asgs[asgRef], groupname, min, max)
 
 	// Simulate the previously discovered ASG disappearing
-	s.On("DescribeTagsPages", mock.MatchedBy(tagsMatcher(expectedTagsInput)),
+	a.On("DescribeTagsPages", mock.MatchedBy(tagsMatcher(expectedTagsInput)),
 		mock.AnythingOfType("func(*autoscaling.DescribeTagsOutput, bool) bool"),
 	).Run(func(args mock.Arguments) {
 		fn := args.Get(1).(func(*autoscaling.DescribeTagsOutput, bool) bool)
@@ -706,4 +1080,67 @@ func flatTagSlice(filters []*autoscaling.Filter) []string {
 	// Sort slice for compare
 	sort.Strings(tags)
 	return tags
+}
+
+func TestParseASGAutoDiscoverySpecs(t *testing.T) {
+	cases := []struct {
+		name    string
+		specs   []string
+		want    []asgAutoDiscoveryConfig
+		wantErr bool
+	}{
+		{
+			name: "GoodSpecs",
+			specs: []string{
+				"asg:tag=tag,anothertag",
+				"asg:tag=cooltag,anothertag",
+				"asg:tag=label=value,anothertag",
+				"asg:tag=my:label=value,my:otherlabel=othervalue",
+			},
+			want: []asgAutoDiscoveryConfig{
+				{Tags: map[string]string{"tag": "", "anothertag": ""}},
+				{Tags: map[string]string{"cooltag": "", "anothertag": ""}},
+				{Tags: map[string]string{"label": "value", "anothertag": ""}},
+				{Tags: map[string]string{"my:label": "value", "my:otherlabel": "othervalue"}},
+			},
+		},
+		{
+			name:    "MissingASGType",
+			specs:   []string{"tag=tag,anothertag"},
+			wantErr: true,
+		},
+		{
+			name:    "WrongType",
+			specs:   []string{"mig:tag=tag,anothertag"},
+			wantErr: true,
+		},
+		{
+			name:    "KeyMissingValue",
+			specs:   []string{"asg:tag="},
+			wantErr: true,
+		},
+		{
+			name:    "ValueMissingKey",
+			specs:   []string{"asg:=tag"},
+			wantErr: true,
+		},
+		{
+			name:    "KeyMissingSeparator",
+			specs:   []string{"asg:tag"},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			do := cloudprovider.NodeGroupDiscoveryOptions{NodeGroupAutoDiscoverySpecs: tc.specs}
+			got, err := parseASGAutoDiscoverySpecs(do)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.True(t, assert.ObjectsAreEqualValues(tc.want, got), "\ngot: %#v\nwant: %#v", got, tc.want)
+		})
+	}
 }

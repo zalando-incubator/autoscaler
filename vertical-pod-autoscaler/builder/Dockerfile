@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM golang:1.11.1
+FROM golang:1.16.6
 LABEL maintainer="Beata Skiba	<bskiba@google.com>"
 
 ENV GOPATH /gopath/
 ENV PATH $GOPATH/bin:$PATH
+
+ARG GOARCH
+ARG LDFLAGS
 
 RUN go version
 RUN go get github.com/tools/godep

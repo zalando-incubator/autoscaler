@@ -20,9 +20,8 @@ import (
 
 type Context struct {
 	// docker root directory.
-	Docker  DockerContext
-	RktPath string
-	Crio    CrioContext
+	Docker DockerContext
+	Crio   CrioContext
 }
 
 type DockerContext struct {
@@ -65,6 +64,8 @@ type Fs struct {
 }
 
 type DiskStats struct {
+	MajorNum        uint64
+	MinorNum        uint64
 	ReadsCompleted  uint64
 	ReadsMerged     uint64
 	SectorsRead     uint64
@@ -76,6 +77,8 @@ type DiskStats struct {
 	IoInProgress    uint64
 	IoTime          uint64
 	WeightedIoTime  uint64
+	Major           uint64
+	Minor           uint64
 }
 
 type UsageInfo struct {
@@ -83,8 +86,13 @@ type UsageInfo struct {
 	Inodes uint64
 }
 
-// ErrNoSuchDevice is the error indicating the requested device does not exist.
-var ErrNoSuchDevice = errors.New("cadvisor: no such device")
+var (
+	// ErrNoSuchDevice is the error indicating the requested device does not exist.
+	ErrNoSuchDevice = errors.New("cadvisor: no such device")
+
+	// ErrDeviceNotInPartitionsMap is the error resulting if a device could not be found in the partitions map.
+	ErrDeviceNotInPartitionsMap = errors.New("could not find device in cached partitions map")
+)
 
 type FsInfo interface {
 	// Returns capacity and free space, in bytes, of all the ext2, ext3, ext4 filesystems on the host.

@@ -19,12 +19,12 @@ package expander
 import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 var (
 	// AvailableExpanders is a list of available expander options
-	AvailableExpanders = []string{RandomExpanderName, MostPodsExpanderName, LeastWasteExpanderName, PriceBasedExpanderName, PriorityBasedExpanderName}
+	AvailableExpanders = []string{RandomExpanderName, MostPodsExpanderName, LeastWasteExpanderName, PriceBasedExpanderName, PriorityBasedExpanderName, GRPCExpanderName}
 	// RandomExpanderName selects a node group at random
 	RandomExpanderName = "random"
 	// MostPodsExpanderName selects a node group that fits the most pods
@@ -36,6 +36,8 @@ var (
 	PriceBasedExpanderName = "price"
 	// PriorityBasedExpanderName selects a node group based on a user-configured priorities assigned to group names
 	PriorityBasedExpanderName = "priority"
+	// GRPCExpanderName uses the gRPC client expander to call to an external gRPC server to select a node group for scale up
+	GRPCExpanderName = "grpc"
 )
 
 // Option describes an option to expand the cluster.
@@ -48,5 +50,10 @@ type Option struct {
 
 // Strategy describes an interface for selecting the best option when scaling up
 type Strategy interface {
-	BestOption(options []Option, nodeInfo map[string]*schedulernodeinfo.NodeInfo) *Option
+	BestOption(options []Option, nodeInfo map[string]*schedulerframework.NodeInfo) *Option
+}
+
+// Filter describes an interface for filtering to equally good options according to some criteria
+type Filter interface {
+	BestOptions(options []Option, nodeInfo map[string]*schedulerframework.NodeInfo) []Option
 }

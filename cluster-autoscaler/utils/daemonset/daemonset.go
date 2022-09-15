@@ -24,25 +24,54 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	apiv1 "k8s.io/api/core/v1"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	"k8s.io/kubernetes/pkg/controller/daemon"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
+)
+
+const (
+	// EnableDsEvictionKey is the name of annotation controlling whether a
+	// certain DaemonSet pod should be evicted.
+	EnableDsEvictionKey = "cluster-autoscaler.kubernetes.io/enable-ds-eviction"
 )
 
 // GetDaemonSetPodsForNode returns daemonset nodes for the given pod.
-func GetDaemonSetPodsForNode(nodeInfo *schedulernodeinfo.NodeInfo, daemonsets []*appsv1.DaemonSet, predicateChecker *simulator.PredicateChecker) []*apiv1.Pod {
+func GetDaemonSetPodsForNode(nodeInfo *schedulerframework.NodeInfo, daemonsets []*appsv1.DaemonSet, predicateChecker simulator.PredicateChecker) ([]*apiv1.Pod, error) {
 	result := make([]*apiv1.Pod, 0)
+
+	// here we can use empty snapshot
+	clusterSnapshot := simulator.NewBasicClusterSnapshot()
+
+	// add a node with pods - node info is created by cloud provider,
+	// we don't know whether it'll have pods or not.
+	var pods []*apiv1.Pod
+	for _, podInfo := range nodeInfo.Pods {
+		pods = append(pods, podInfo.Pod)
+	}
+	if err := clusterSnapshot.AddNodeWithPods(nodeInfo.Node(), pods); err != nil {
+		return nil, err
+	}
+
 	for _, ds := range daemonsets {
-		pod := newPod(ds, nodeInfo.Node().Name)
-		if err := predicateChecker.CheckPredicates(pod, nil, nodeInfo); err == nil {
+		shouldRun, _ := daemon.NodeShouldRunDaemonPod(nodeInfo.Node(), ds)
+		if shouldRun {
+			pod := daemon.NewPod(ds, nodeInfo.Node().Name)
+			pod.Name = fmt.Sprintf("%s-pod-%d", ds.Name, rand.Int63())
 			result = append(result, pod)
 		}
 	}
-	return result
+	return result, nil
 }
 
-func newPod(ds *appsv1.DaemonSet, nodeName string) *apiv1.Pod {
-	newPod := &apiv1.Pod{Spec: ds.Spec.Template.Spec, ObjectMeta: ds.Spec.Template.ObjectMeta}
-	newPod.Namespace = ds.Namespace
-	newPod.Name = fmt.Sprintf("%s-pod-%d", ds.Name, rand.Int63())
-	newPod.Spec.NodeName = nodeName
-	return newPod
+// PodsToEvict returns a list of DaemonSet pods that should be evicted during scale down.
+func PodsToEvict(pods []*apiv1.Pod, evictByDefault bool) (evictable []*apiv1.Pod) {
+	for _, pod := range pods {
+		if a, ok := pod.Annotations[EnableDsEvictionKey]; ok {
+			if a == "true" {
+				evictable = append(evictable, pod)
+			}
+		} else if evictByDefault {
+			evictable = append(evictable, pod)
+		}
+	}
+	return
 }

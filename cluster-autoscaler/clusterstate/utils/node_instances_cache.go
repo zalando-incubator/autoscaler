@@ -23,7 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (
@@ -102,8 +102,9 @@ func (cache *CloudProviderNodeInstancesCache) GetCloudProviderNodeInstances() (m
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, err := cache.fetchCloudProviderNodeInstancesForNodeGroup(nodeGroup)
-				klog.Errorf("Failed to fetch cloud provider node instances for %v, error %v", nodeGroup.Id(), err)
+				if _, err := cache.fetchCloudProviderNodeInstancesForNodeGroup(nodeGroup); err != nil {
+					klog.Errorf("Failed to fetch cloud provider node instances for %v, error %v", nodeGroup.Id(), err)
+				}
 			}()
 		}
 	}

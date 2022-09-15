@@ -21,22 +21,29 @@ import (
 	"flag"
 	"time"
 
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	vpa_clientset "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned"
-	vpa_api "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned/typed/autoscaling.k8s.io/v1beta2"
+	vpa_api "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned/typed/autoscaling.k8s.io/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/checkpoint"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input"
+	controllerfetcher "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/input/controller_fetcher"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/logic"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
 	metrics_recommender "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/recommender"
 	vpa_utils "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
+	"k8s.io/client-go/informers"
+	kube_client "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (
 	// AggregateContainerStateGCInterval defines how often expired AggregateContainerStates are garbage collected.
-	AggregateContainerStateGCInterval = 1 * time.Hour
+	AggregateContainerStateGCInterval               = 1 * time.Hour
+	scaleCacheEntryLifetime           time.Duration = time.Hour
+	scaleCacheEntryFreshnessTime      time.Duration = 10 * time.Minute
+	scaleCacheEntryJitterFactor       float64       = 1.
+	defaultResyncPeriod               time.Duration = 10 * time.Minute
 )
 
 var (
@@ -59,8 +66,6 @@ type Recommender interface {
 	// MaintainCheckpoints writes at least minCheckpoints if there are more checkpoints to write.
 	// Checkpoints are written until ctx permits or all checkpoints are written.
 	MaintainCheckpoints(ctx context.Context, minCheckpoints int)
-	// GarbageCollect removes old AggregateCollectionStates
-	GarbageCollect()
 }
 
 type recommender struct {
@@ -68,6 +73,7 @@ type recommender struct {
 	clusterStateFeeder            input.ClusterStateFeeder
 	checkpointWriter              checkpoint.CheckpointWriter
 	checkpointsGCInterval         time.Duration
+	controllerFetcher             controllerfetcher.ControllerFetcher
 	lastCheckpointGC              time.Time
 	vpaClient                     vpa_api.VerticalPodAutoscalersGetter
 	podResourceRecommender        logic.PodResourceRecommender
@@ -91,7 +97,8 @@ func (r *recommender) UpdateVPAs() {
 	for _, observedVpa := range r.clusterState.ObservedVpas {
 		key := model.VpaID{
 			Namespace: observedVpa.Namespace,
-			VpaName:   observedVpa.Name}
+			VpaName:   observedVpa.Name,
+		}
 
 		vpa, found := r.clusterState.Vpas[key]
 		if !found {
@@ -108,17 +115,20 @@ func (r *recommender) UpdateVPAs() {
 		if vpa.HasRecommendation() && !had {
 			metrics_recommender.ObserveRecommendationLatency(vpa.Created)
 		}
-		hasMatchingPods := r.clusterState.VpasWithMatchingPods[vpa.ID]
+		hasMatchingPods := vpa.PodCount > 0
 		vpa.UpdateConditions(hasMatchingPods)
 		if err := r.clusterState.RecordRecommendation(vpa, time.Now()); err != nil {
 			klog.Warningf("%v", err)
-			klog.V(4).Infof("VPA dump")
-			klog.V(4).Infof("%+v", vpa)
-			klog.V(4).Infof("HasMatchingPods: %v", hasMatchingPods)
-			pods := r.clusterState.GetMatchingPods(vpa)
-			klog.V(4).Infof("MatchingPods: %+v", pods)
-			if len(pods) > 0 != hasMatchingPods {
-				klog.Errorf("Aggregated states and matching pods disagree for vpa %v/%v", vpa.ID.Namespace, vpa.ID.VpaName)
+			if klog.V(4).Enabled() {
+				klog.Infof("VPA dump")
+				klog.Infof("%+v", vpa)
+				klog.Infof("HasMatchingPods: %v", hasMatchingPods)
+				klog.Infof("PodCount: %v", vpa.PodCount)
+				pods := r.clusterState.GetMatchingPods(vpa)
+				klog.Infof("MatchingPods: %+v", pods)
+				if len(pods) != vpa.PodCount {
+					klog.Errorf("ClusterState pod count and matching pods disagree for vpa %v/%v", vpa.ID.Namespace, vpa.ID.VpaName)
+				}
 			}
 		}
 		cnt.Add(vpa)
@@ -148,7 +158,9 @@ func getCappedRecommendation(vpaID model.VpaID, resources logic.RecommendedPodRe
 			UncappedTarget: model.ResourcesAsResourceList(res.Target),
 		})
 	}
-	recommendation := &vpa_types.RecommendedPodResources{containerResources}
+	recommendation := &vpa_types.RecommendedPodResources{
+		ContainerRecommendations: containerResources,
+	}
 	cappedRecommendation, err := vpa_utils.ApplyVPAPolicy(recommendation, policy)
 	if err != nil {
 		klog.Errorf("Failed to apply policy for VPA %v/%v: %v", vpaID.Namespace, vpaID.VpaName, err)
@@ -160,23 +172,13 @@ func getCappedRecommendation(vpaID model.VpaID, resources logic.RecommendedPodRe
 func (r *recommender) MaintainCheckpoints(ctx context.Context, minCheckpointsPerRun int) {
 	now := time.Now()
 	if r.useCheckpoints {
-		err := r.checkpointWriter.StoreCheckpoints(ctx, now, minCheckpointsPerRun)
-		if err != nil {
-			klog.Errorf("Unable to store checkpoints: %v", err)
+		if err := r.checkpointWriter.StoreCheckpoints(ctx, now, minCheckpointsPerRun); err != nil {
+			klog.Warningf("Failed to store checkpoints. Reason: %+v", err)
 		}
-		if time.Now().Sub(r.lastCheckpointGC) > r.checkpointsGCInterval {
+		if time.Since(r.lastCheckpointGC) > r.checkpointsGCInterval {
 			r.lastCheckpointGC = now
 			r.clusterStateFeeder.GarbageCollectCheckpoints()
 		}
-	}
-
-}
-
-func (r *recommender) GarbageCollect() {
-	gcTime := time.Now()
-	if gcTime.Sub(r.lastAggregateContainerStateGC) > AggregateContainerStateGCInterval {
-		r.clusterState.GarbageCollectAggregateCollectionStates(gcTime)
-		r.lastAggregateContainerStateGC = gcTime
 	}
 }
 
@@ -206,7 +208,7 @@ func (r *recommender) RunOnce() {
 	r.MaintainCheckpoints(ctx, *minCheckpointsPerRun)
 	timer.ObserveStep("MaintainCheckpoints")
 
-	r.GarbageCollect()
+	r.clusterState.RateLimitedGarbageCollectAggregateCollectionStates(time.Now(), r.controllerFetcher)
 	timer.ObserveStep("GarbageCollect")
 	klog.V(3).Infof("ClusterState is tracking %d aggregated container states", r.clusterState.StateMapSize())
 }
@@ -216,6 +218,7 @@ type RecommenderFactory struct {
 	ClusterState *model.ClusterState
 
 	ClusterStateFeeder     input.ClusterStateFeeder
+	ControllerFetcher      controllerfetcher.ControllerFetcher
 	CheckpointWriter       checkpoint.CheckpointWriter
 	PodResourceRecommender logic.PodResourceRecommender
 	VpaClient              vpa_api.VerticalPodAutoscalersGetter
@@ -232,6 +235,7 @@ func (c RecommenderFactory) Make() Recommender {
 		clusterStateFeeder:            c.ClusterStateFeeder,
 		checkpointWriter:              c.CheckpointWriter,
 		checkpointsGCInterval:         c.CheckpointsGCInterval,
+		controllerFetcher:             c.ControllerFetcher,
 		useCheckpoints:                c.UseCheckpoints,
 		vpaClient:                     c.VpaClient,
 		podResourceRecommender:        c.PodResourceRecommender,
@@ -245,13 +249,17 @@ func (c RecommenderFactory) Make() Recommender {
 // NewRecommender creates a new recommender instance.
 // Dependencies are created automatically.
 // Deprecated; use RecommenderFactory instead.
-func NewRecommender(config *rest.Config, checkpointsGCInterval time.Duration, useCheckpoints bool) Recommender {
-	clusterState := model.NewClusterState()
+func NewRecommender(config *rest.Config, checkpointsGCInterval time.Duration, useCheckpoints bool, namespace string) Recommender {
+	clusterState := model.NewClusterState(AggregateContainerStateGCInterval)
+	kubeClient := kube_client.NewForConfigOrDie(config)
+	factory := informers.NewSharedInformerFactoryWithOptions(kubeClient, defaultResyncPeriod, informers.WithNamespace(namespace))
+	controllerFetcher := controllerfetcher.NewControllerFetcher(config, kubeClient, factory, scaleCacheEntryFreshnessTime, scaleCacheEntryLifetime, scaleCacheEntryJitterFactor)
 	return RecommenderFactory{
 		ClusterState:           clusterState,
-		ClusterStateFeeder:     input.NewClusterStateFeeder(config, clusterState, *memorySaver),
-		CheckpointWriter:       checkpoint.NewCheckpointWriter(clusterState, vpa_clientset.NewForConfigOrDie(config).AutoscalingV1beta2()),
-		VpaClient:              vpa_clientset.NewForConfigOrDie(config).AutoscalingV1beta2(),
+		ClusterStateFeeder:     input.NewClusterStateFeeder(config, clusterState, *memorySaver, namespace),
+		ControllerFetcher:      controllerFetcher,
+		CheckpointWriter:       checkpoint.NewCheckpointWriter(clusterState, vpa_clientset.NewForConfigOrDie(config).AutoscalingV1()),
+		VpaClient:              vpa_clientset.NewForConfigOrDie(config).AutoscalingV1(),
 		PodResourceRecommender: logic.CreatePodResourceRecommender(),
 		CheckpointsGCInterval:  checkpointsGCInterval,
 		UseCheckpoints:         useCheckpoints,

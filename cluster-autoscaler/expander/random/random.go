@@ -20,10 +20,15 @@ import (
 	"math/rand"
 
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 type random struct {
+}
+
+// NewFilter returns an expansion filter that randomly picks between node groups
+func NewFilter() expander.Filter {
+	return &random{}
 }
 
 // NewStrategy returns an expansion strategy that randomly picks between node groups
@@ -31,8 +36,17 @@ func NewStrategy() expander.Strategy {
 	return &random{}
 }
 
-// RandomExpansion Selects from the expansion options at random
-func (r *random) BestOption(expansionOptions []expander.Option, nodeInfo map[string]*schedulernodeinfo.NodeInfo) *expander.Option {
+// BestOptions selects from the expansion options at random
+func (r *random) BestOptions(expansionOptions []expander.Option, nodeInfo map[string]*schedulerframework.NodeInfo) []expander.Option {
+	best := r.BestOption(expansionOptions, nodeInfo)
+	if best == nil {
+		return nil
+	}
+	return []expander.Option{*best}
+}
+
+// BestOption selects from the expansion options at random
+func (r *random) BestOption(expansionOptions []expander.Option, nodeInfo map[string]*schedulerframework.NodeInfo) *expander.Option {
 	if len(expansionOptions) <= 0 {
 		return nil
 	}

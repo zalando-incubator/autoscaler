@@ -1,8 +1,11 @@
 # Vertical Pod Autoscaler
 
 ## Contents
+- [Contents](#contents)
 - [Intro](#intro)
 - [Installation](#installation)
+  - [Compatibility](#compatibility)
+  - [Notice on removal of v1beta1 version (>=0.5.0)](#notice-on-removal-of-v1beta1-version-050)
   - [Prerequisites](#prerequisites)
   - [Install command](#install-command)
   - [Quick start](#quick-start)
@@ -11,23 +14,30 @@
   - [Troubleshooting](#troubleshooting)
   - [Components of VPA](#components-of-vpa)
   - [Tear down](#tear-down)
+- [Examples](#examples)
+  - [Keeping limit proportional to request](#keeping-limit-proportional-to-request)
+  - [Capping to Limit Range](#capping-to-limit-range)
+  - [Resource Policy Overriding Limit Range](#resource-policy-overriding-limit-range)
 - [Known limitations](#known-limitations)
-  - [Limitations of beta version](#limitations-of-beta-version)
-- [Related Links](#related-links)
+- [Related links](#related-links)
 
 # Intro
 
 Vertical Pod Autoscaler (VPA) frees the users from necessity of setting
-up-to-date resource requests for the containers in their pods.
-When configured, it will set the requests automatically based on usage and
-thus allow proper scheduling onto nodes so that appropriate resource amount is
-available for each pod.
+up-to-date resource limits and requests for the containers in their pods. When
+configured, it will set the requests automatically based on usage and thus
+allow proper scheduling onto nodes so that appropriate resource amount is
+available for each pod. It will also maintain ratios between limits and
+requests that were specified in initial containers configuration.
 
-It can both down-scale pods that are over-requesting resources, and also up-scale pods that are under-requesting resources based on their usage over time.
+It can both down-scale pods that are over-requesting resources, and also
+up-scale pods that are under-requesting resources based on their usage over
+time.
+
 
 Autoscaling is configured with a
 [Custom Resource Definition object](https://kubernetes.io/docs/concepts/api-extension/custom-resources/)
-called [VerticalPodAutoscaler](https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta2/types.go).
+called [VerticalPodAutoscaler](https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/types.go).
 It allows to specify which pods should be vertically autoscaled as well as if/how the
 resource recommendations are applied.
 
@@ -36,11 +46,16 @@ procedure described below.
 
 # Installation
 
-The current default version is Vertical Pod Autoscaler 0.5.0
+The current default version is Vertical Pod Autoscaler 0.9.2
 
-**NOTE:** since version 0.4 VPA requires at least Kubernetes 1.11 to work (needs certain
-Custom Resource Definition capabilities). With older Kubernetes versions we
-suggest using the [latest 0.3 version](https://github.com/kubernetes/autoscaler/blob/vpa-release-0.3/vertical-pod-autoscaler/README.md).
+### Compatibility
+
+| VPA version | Kubernetes version |
+| --- | --- |
+| 0.9+ | 1.16+ |
+| 0.8 | 1.13+ |
+| 0.4 to 0.7 | 1.11+ |
+| 0.3.X and lower | 1.7+ |
 
 ### Notice on removal of v1beta1 version (>=0.5.0)
 
@@ -54,7 +69,6 @@ This doc is for installing latest VPA. For instructions on migration from older 
 
 ### Prerequisites
 
-* VPA version 0.4+ requires Kubernetes 1.11. For older versions see [latest 0.3 version](https://github.com/kubernetes/autoscaler/blob/vpa-release-0.3/vertical-pod-autoscaler/README.md)
 * `kubectl` should be connected to the cluster you want to install VPA in.
 * The metrics server must be deployed in your cluster. Read more about [Metrics Server](https://github.com/kubernetes-incubator/metrics-server).
 * If you are using a GKE Kubernetes cluster, you will need to grant your current Google
@@ -85,12 +99,29 @@ and run the following command inside the `vertical-pod-autoscaler` directory:
 Note: the script currently reads environment variables: `$REGISTRY` and `$TAG`.
 Make sure you leave them unset unless you want to use a non-default version of VPA.
 
+
+Note: If you are seeing following error during this step:
+```
+unknown option -addext
+```
+please upgrade openssl to version 1.1.1 or higher (needs to support -addext option) or use ./hack/vpa-up.sh on the [0.8 release branch](https://github.com/kubernetes/autoscaler/tree/vpa-release-0.8).
+
 The script issues multiple `kubectl` commands to the
 cluster that insert the configuration and start all needed pods (see
 [architecture](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/autoscaling/vertical-pod-autoscaler.md#architecture-overview))
 in the `kube-system` namespace. It also generates
 and uploads a secret (a CA cert) used by VPA Admission Controller when communicating
 with the API server.
+
+To print YAML contents with all resources that would be understood by
+`kubectl diff|apply|...` commands, you can use
+
+```
+./hack/vpa-process-yamls.sh print
+```
+
+The output of that command won't include secret information generated by
+[pkg/admission-controller/gencerts.sh](pkg/admission-controller/gencerts.sh) script.
 
 ### Quick start
 
@@ -113,7 +144,7 @@ There are three modes in which *VPAs* operate:
   This mode should be used rarely, only if you need to ensure that the pods are restarted
   whenever the resource request changes. Otherwise prefer the `"Auto"` mode which may take
   advantage of restart free updates once they are available. **NOTE:** This feature of VPA
-  is experimental and may cause dowtime for your applications.
+  is experimental and may cause downtime for your applications.
 * `"Initial"`: VPA only assigns resource requests on pod creation and never changes them
   later.
 * `"Off"`: VPA does not automatically change resource requirements of the pods.
@@ -145,13 +176,13 @@ You may need to add more nodes or adjust examples/hamster.yaml to use less CPU.*
 ### Example VPA configuration
 
 ```
-apiVersion: autoscaling.k8s.io/v1beta2
+apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
 metadata:
   name: my-app-vpa
 spec:
   targetRef:
-    apiVersion: "extensions/v1beta1"
+    apiVersion: "apps/v1"
     kind:       Deployment
     name:       my-app
   updatePolicy:
@@ -212,16 +243,50 @@ kubectl delete clusterrolebinding myname-cluster-admin-binding
 ./hack/vpa-down.sh
 ```
 
-# Known limitations
+# Limits control
 
-## Limitations of beta version
+When setting limits VPA will conform to
+[resource policies](https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/types.go#L82).
+It will maintain limit to request ratio specified for all containers.
+
+VPA will try to cap recommendations between min and max of
+[limit ranges](https://kubernetes.io/docs/concepts/policy/limit-range/). If limit range conflicts
+and VPA resource policy conflict then VPA will follow VPA policy (and set values outside limit
+range).
+
+## Examples
+
+### Keeping limit proportional to request
+
+Container template specifies resource request for 500 milli CPU and 1 GB of RAM. The template also
+specifies resource limit of 2 GB RAM. VPA recommendation is 1000 milli CPU and 2 GB of RAM. When VPA
+applies the recommendation it will also set memory limit to 4 GB.
+
+### Capping to Limit Range
+
+Container template specifies resource request for 500 milli CPU and 1 GB of RAM. The template also
+specifies resource limit of 2 GB RAM. A limit range sets maximum limit to 3 GB RAM per container.
+VPA recommendation is 1000 milli CPU and 2 GB of RAM. When VPA applies the recommendation it will
+set memory limit to 3 GB (to keep it within the allowed limit range) and memory request to 1.5 GB (
+to maintain 2:1 limit/request ratio from the template).
+
+### Resource Policy Overriding Limit Range
+
+Container template specifies resource request for 500 milli CPU and 1 GB of RAM. The template also
+specifies resource limit of 2 GB RAM. A limit range sets maximum limit to 3 GB RAM per container.
+VPAs Container Resource Policy requires VPA to set containers request to at least 750 milli CPU and
+2 GB RAM. VPA recommendation is 1000 milli CPU and 2 GB of RAM. When applying the recommendation
+VPA will set RAM request to 2 GB (following the resource policy) and RAM limit to 4 GB (to maintain
+2:1 limit/request ratio from the template).
+
+# Known limitations
 
 * Updating running pods is an experimental feature of VPA. Whenever VPA updates
   the pod resources the pod is recreated, which causes all running containers to
   be restarted. The pod may be recreated on a different node.
 * VPA does not evict pods which are not run under a controller. For such pods
   `Auto` mode is currently equivalent to `Initial`.
-* Vertical Pod Autoscaler **should not be used with the [Horizontal Pod Autoscaler](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/) (HPA) on CPU or memory** at this moment. 
+* Vertical Pod Autoscaler **should not be used with the [Horizontal Pod Autoscaler](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/) (HPA) on CPU or memory** at this moment.
   However, you can use VPA with [HPA on custom and external metrics](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#support-for-custom-metrics).
 * The VPA admission controller is an admission webhook. If you add other admission webhooks
   to you cluster, it is important to analyze how they interact and whether they may conflict
@@ -229,12 +294,9 @@ kubectl delete clusterrolebinding myname-cluster-admin-binding
 * VPA reacts to most out-of-memory events, but not in all situations.
 * VPA performance has not been tested in large clusters.
 * VPA recommendation might exceed available resources (e.g. Node size, available
-  size, available quota) and cause **pods to go pending**. This can be partly 
+  size, available quota) and cause **pods to go pending**. This can be partly
   addressed by using VPA together with [Cluster Autoscaler](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/FAQ.md#basics).
 * Multiple VPA resources matching the same pod have undefined behavior.
-* VPA does not change resource limits. This implies that recommendations are
-  capped to limits during actuation.
-  **NOTE** This behaviour is likely to change so please don't rely on it.
 
 # Related links
 
@@ -242,4 +304,4 @@ kubectl delete clusterrolebinding myname-cluster-admin-binding
 * [Design
   proposal](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/autoscaling/vertical-pod-autoscaler.md)
 * [API
-  definition](pkg/apis/autoscaling.k8s.io/v1beta2/types.go)
+  definition](pkg/apis/autoscaling.k8s.io/v1/types.go)

@@ -17,30 +17,34 @@ limitations under the License.
 package scheduler
 
 import (
+	"fmt"
+	"strings"
+
 	apiv1 "k8s.io/api/core/v1"
-	"k8s.io/klog"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/uuid"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 // CreateNodeNameToInfoMap obtains a list of pods and pivots that list into a map where the keys are node names
 // and the values are the aggregated information for that node. Pods waiting lower priority pods preemption
 // (pod.Status.NominatedNodeName is set) are also added to list of pods for a node.
-func CreateNodeNameToInfoMap(pods []*apiv1.Pod, nodes []*apiv1.Node) map[string]*schedulernodeinfo.NodeInfo {
-	nodeNameToNodeInfo := make(map[string]*schedulernodeinfo.NodeInfo)
+func CreateNodeNameToInfoMap(pods []*apiv1.Pod, nodes []*apiv1.Node) map[string]*schedulerframework.NodeInfo {
+	nodeNameToNodeInfo := make(map[string]*schedulerframework.NodeInfo)
 	for _, pod := range pods {
 		nodeName := pod.Spec.NodeName
 		if nodeName == "" {
 			nodeName = pod.Status.NominatedNodeName
 		}
 		if _, ok := nodeNameToNodeInfo[nodeName]; !ok {
-			nodeNameToNodeInfo[nodeName] = schedulernodeinfo.NewNodeInfo()
+			nodeNameToNodeInfo[nodeName] = schedulerframework.NewNodeInfo()
 		}
 		nodeNameToNodeInfo[nodeName].AddPod(pod)
 	}
 
 	for _, node := range nodes {
 		if _, ok := nodeNameToNodeInfo[node.Name]; !ok {
-			nodeNameToNodeInfo[node.Name] = schedulernodeinfo.NewNodeInfo()
+			nodeNameToNodeInfo[node.Name] = schedulerframework.NewNodeInfo()
 		}
 		nodeNameToNodeInfo[node.Name].SetNode(node)
 	}
@@ -59,13 +63,46 @@ func CreateNodeNameToInfoMap(pods []*apiv1.Pod, nodes []*apiv1.Node) map[string]
 	return nodeNameToNodeInfo
 }
 
-// NodeWithPod function returns NodeInfo, which is a copy of nodeInfo argument with an additional pod scheduled on it.
-func NodeWithPod(nodeInfo *schedulernodeinfo.NodeInfo, pod *apiv1.Pod) *schedulernodeinfo.NodeInfo {
-	podsOnNode := nodeInfo.Pods()
-	podsOnNode = append(podsOnNode, pod)
-	newNodeInfo := schedulernodeinfo.NewNodeInfo(podsOnNode...)
-	if err := newNodeInfo.SetNode(nodeInfo.Node()); err != nil {
-		klog.Errorf("error setting node for NodeInfo %s, because of %s", nodeInfo.Node().Name, err.Error())
+func isHugePageResourceName(name apiv1.ResourceName) bool {
+	return strings.HasPrefix(string(name), apiv1.ResourceHugePagesPrefix)
+}
+
+// DeepCopyTemplateNode copies NodeInfo object used as a template. It changes
+// names of UIDs of both node and pods running on it, so that copies can be used
+// to represent multiple nodes.
+func DeepCopyTemplateNode(nodeTemplate *schedulerframework.NodeInfo, suffix string) *schedulerframework.NodeInfo {
+	node := nodeTemplate.Node().DeepCopy()
+	node.Name = fmt.Sprintf("%s-%s", node.Name, suffix)
+	node.UID = uuid.NewUUID()
+	if node.Labels == nil {
+		node.Labels = make(map[string]string)
 	}
-	return newNodeInfo
+	node.Labels["kubernetes.io/hostname"] = node.Name
+	nodeInfo := schedulerframework.NewNodeInfo()
+	nodeInfo.SetNode(node)
+	for _, podInfo := range nodeTemplate.Pods {
+		pod := podInfo.Pod.DeepCopy()
+		pod.Name = fmt.Sprintf("%s-%s", podInfo.Pod.Name, suffix)
+		pod.UID = uuid.NewUUID()
+		nodeInfo.AddPod(pod)
+	}
+	return nodeInfo
+}
+
+// ResourceToResourceList returns a resource list of the resource.
+func ResourceToResourceList(r *schedulerframework.Resource) apiv1.ResourceList {
+	result := apiv1.ResourceList{
+		apiv1.ResourceCPU:              *resource.NewMilliQuantity(r.MilliCPU, resource.DecimalSI),
+		apiv1.ResourceMemory:           *resource.NewQuantity(r.Memory, resource.BinarySI),
+		apiv1.ResourcePods:             *resource.NewQuantity(int64(r.AllowedPodNumber), resource.BinarySI),
+		apiv1.ResourceEphemeralStorage: *resource.NewQuantity(r.EphemeralStorage, resource.BinarySI),
+	}
+	for rName, rQuant := range r.ScalarResources {
+		if isHugePageResourceName(rName) {
+			result[rName] = *resource.NewQuantity(rQuant, resource.BinarySI)
+		} else {
+			result[rName] = *resource.NewQuantity(rQuant, resource.DecimalSI)
+		}
+	}
+	return result
 }

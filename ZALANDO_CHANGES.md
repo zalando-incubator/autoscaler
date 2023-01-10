@@ -21,4 +21,3 @@ changes around the OOMKill handling to improve this situation:
 ## Variuos small improvements
 
 * Fix logging for memory saver mode ([#18](https://github.com/zalando-incubator/autoscaler/pull/18))
-* Fix error logging for container metrics input ([#20](https://github.com/zalando-incubator/autoscaler/pull/20))

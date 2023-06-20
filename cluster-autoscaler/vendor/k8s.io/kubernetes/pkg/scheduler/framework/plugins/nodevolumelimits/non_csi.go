@@ -252,10 +252,13 @@ func (pl *nonCSILimits) Filter(ctx context.Context, _ *framework.CycleState, pod
 
 	numNewVolumes := len(newVolumes)
 	maxAttachLimit := pl.maxVolumeFunc(node)
-	volumeLimits := nodeInfo.VolumeLimits()
-	if maxAttachLimitFromAllocatable, ok := volumeLimits[pl.volumeLimitKey]; ok {
-		maxAttachLimit = int(maxAttachLimitFromAllocatable)
-	}
+	// after getting the maximum attachment limit via `maxVolumeFunc`, the following code amends this value
+	// by reading a field on the node object called `attachable-volumes-aws-ebs`. Since we don't want to
+	// rely on that value but cannot remove/change it at the moment, the easiest way is to comment out that code.
+	// volumeLimits := nodeInfo.VolumeLimits()
+	// if maxAttachLimitFromAllocatable, ok := volumeLimits[pl.volumeLimitKey]; ok {
+	// 	maxAttachLimit = int(maxAttachLimitFromAllocatable)
+	// }
 
 	if numExistingVolumes+numNewVolumes > maxAttachLimit {
 		// violates MaxEBSVolumeCount or MaxGCEPDVolumeCount

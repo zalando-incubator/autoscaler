@@ -23,8 +23,8 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	"k8s.io/klog"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	klog "k8s.io/klog/v2"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 )
 
 // packetNodeGroup implements NodeGroup interface from cluster-autoscaler/cloudprovider.
@@ -58,7 +58,7 @@ const (
 	waitForStatusTimeStep       = 30 * time.Second
 	waitForUpdateStatusTimeout  = 2 * time.Minute
 	waitForCompleteStatusTimout = 10 * time.Minute
-	scaleToZeroSupported        = false
+	scaleToZeroSupported        = true
 
 	// Time that the goroutine that first acquires clusterUpdateMutex
 	// in deleteNodes should wait for other synchronous calls to deleteNodes.
@@ -254,7 +254,7 @@ func (ng *packetNodeGroup) Nodes() ([]cloudprovider.Instance, error) {
 }
 
 // TemplateNodeInfo returns a node template for this node group.
-func (ng *packetNodeGroup) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (ng *packetNodeGroup) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	return ng.packetManager.templateNodeInfo(ng.id)
 }
 

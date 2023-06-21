@@ -31,7 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/deletetaint"
 	kube_client "k8s.io/client-go/kubernetes"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (
@@ -389,7 +389,7 @@ func TestDeleteTaintScaleUpDraining(t *testing.T) {
 		node, err := env.client.CoreV1().Nodes().Get(context.Background(), "i-1", metav1.GetOptions{})
 		require.NoError(t, err)
 
-		err = deletetaint.MarkToBeDeleted(node, env.client)
+		err = deletetaint.MarkToBeDeleted(node, env.client, false)
 		require.NoError(t, err)
 		env.StepOnce()
 
@@ -411,14 +411,14 @@ func TestDeleteTaintScaleUpDeleting(t *testing.T) {
 			StepOnce()
 
 		// Manually mark the node with the delete taint and the 'being deleted' taint (CA won't reset it)
-		for _, fn := range []func(*corev1.Node, kube_client.Interface) error{
+		for _, fn := range []func(*corev1.Node, kube_client.Interface, bool) error{
 			deletetaint.MarkToBeDeleted,
 			deletetaint.MarkBeingDeleted,
 		} {
 			node, err := env.client.CoreV1().Nodes().Get(context.Background(), "i-1", metav1.GetOptions{})
 			require.NoError(t, err)
 
-			err = fn(node, env.client)
+			err = fn(node, env.client, false)
 			require.NoError(t, err)
 		}
 

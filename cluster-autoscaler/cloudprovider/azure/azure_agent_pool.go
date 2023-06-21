@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-07-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-12-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2017-05-10/resources"
 	azStorage "github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/Azure/go-autorest/autorest/to"
@@ -33,8 +33,8 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
-	"k8s.io/klog"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	klog "k8s.io/klog/v2"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	"k8s.io/legacy-cloud-providers/azure/retry"
 )
 
@@ -529,7 +529,7 @@ func (as *AgentPool) Debug() string {
 }
 
 // TemplateNodeInfo returns a node template for this agent pool.
-func (as *AgentPool) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (as *AgentPool) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	return nil, cloudprovider.ErrNotImplemented
 }
 

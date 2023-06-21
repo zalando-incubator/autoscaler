@@ -37,7 +37,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 
 	apiv1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1beta1"
@@ -49,7 +49,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 	kube_client "k8s.io/client-go/kubernetes"
 	kube_record "k8s.io/client-go/tools/record"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (
@@ -398,7 +398,7 @@ func (sd *ScaleDown) CleanUpUnneededNodes() {
 	sd.unneededNodes = make(map[string]time.Time)
 }
 
-func (sd *ScaleDown) checkNodeUtilization(timestamp time.Time, node *apiv1.Node, nodeInfo *schedulernodeinfo.NodeInfo) (simulator.UnremovableReason, *simulator.UtilizationInfo) {
+func (sd *ScaleDown) checkNodeUtilization(timestamp time.Time, node *apiv1.Node, nodeInfo *schedulerframework.NodeInfo) (simulator.UnremovableReason, *simulator.UtilizationInfo) {
 	// Skip nodes that were recently checked.
 	if _, found := sd.unremovableNodes[node.Name]; found {
 		return simulator.RecentlyUnremovable, nil
@@ -418,7 +418,7 @@ func (sd *ScaleDown) checkNodeUtilization(timestamp time.Time, node *apiv1.Node,
 		return simulator.ScaleDownDisabledAnnotation, nil
 	}
 
-	utilInfo, err := simulator.CalculateUtilization(node, nodeInfo, sd.context.IgnoreDaemonSetsUtilization, sd.context.IgnoreMirrorPodsUtilization, sd.context.CloudProvider.GPULabel())
+	utilInfo, err := simulator.CalculateUtilization(node, nodeInfo, sd.context.IgnoreDaemonSetsUtilization, sd.context.IgnoreMirrorPodsUtilization, sd.context.CloudProvider.GPULabel(), timestamp)
 	if err != nil {
 		klog.Warningf("Failed to calculate utilization for %s: %v", node.Name, err)
 	}
@@ -491,7 +491,7 @@ func (sd *ScaleDown) UpdateUnneededNodes(
 		klog.V(1).Infof("Scale-down calculation: ignoring %v nodes unremovable in the last %v", skipped, sd.context.AutoscalingOptions.UnremovableNodeRecheckTimeout)
 	}
 
-	emptyNodesList := sd.getEmptyNodesNoResourceLimits(currentlyUnneededNodeNames, len(currentlyUnneededNodeNames))
+	emptyNodesList := sd.getEmptyNodesNoResourceLimits(currentlyUnneededNodeNames, len(currentlyUnneededNodeNames), timestamp)
 
 	emptyNodes := make(map[string]bool)
 	for _, node := range emptyNodesList {
@@ -876,7 +876,7 @@ func (sd *ScaleDown) TryToScaleDown(
 	// Trying to delete empty nodes in bulk. If there are no empty nodes then CA will
 	// try to delete not-so-empty nodes, possibly killing some pods and allowing them
 	// to recreate on other nodes.
-	emptyNodes := sd.getEmptyNodes(candidateNames, sd.context.MaxEmptyBulkDelete, scaleDownResourcesLeft)
+	emptyNodes := sd.getEmptyNodes(candidateNames, sd.context.MaxEmptyBulkDelete, scaleDownResourcesLeft, currentTime)
 	if len(emptyNodes) > 0 {
 		nodeDeletionStart := time.Now()
 		deletedNodes, err := sd.scheduleDeleteEmptyNodes(emptyNodes, sd.context.ClientSet, sd.context.Recorder, readinessMap, candidateNodeGroups)
@@ -993,16 +993,16 @@ func updateScaleDownMetrics(scaleDownStart time.Time, findNodesToRemoveDuration 
 	metrics.UpdateDuration(metrics.ScaleDownMiscOperations, miscDuration)
 }
 
-func (sd *ScaleDown) getEmptyNodesNoResourceLimits(candidates []string, maxEmptyBulkDelete int) []*apiv1.Node {
-	return sd.getEmptyNodes(candidates, maxEmptyBulkDelete, noScaleDownLimitsOnResources())
+func (sd *ScaleDown) getEmptyNodesNoResourceLimits(candidates []string, maxEmptyBulkDelete int, timestamp time.Time) []*apiv1.Node {
+	return sd.getEmptyNodes(candidates, maxEmptyBulkDelete, noScaleDownLimitsOnResources(), timestamp)
 }
 
 // This functions finds empty nodes among passed candidates and returns a list of empty nodes
 // that can be deleted at the same time.
 func (sd *ScaleDown) getEmptyNodes(candidates []string, maxEmptyBulkDelete int,
-	resourcesLimits scaleDownResourcesLimits) []*apiv1.Node {
+	resourcesLimits scaleDownResourcesLimits, timestamp time.Time) []*apiv1.Node {
 
-	emptyNodes := simulator.FindEmptyNodesToRemove(sd.context.ClusterSnapshot, candidates)
+	emptyNodes := simulator.FindEmptyNodesToRemove(sd.context.ClusterSnapshot, candidates, timestamp)
 	availabilityMap := make(map[string]int)
 	result := make([]*apiv1.Node, 0)
 	resourcesLimitsCopy := copyScaleDownResourcesLimits(resourcesLimits) // we do not want to modify input parameter
@@ -1073,7 +1073,7 @@ func (sd *ScaleDown) scheduleDeleteEmptyNodes(emptyNodes []*apiv1.Node, client k
 			return deletedNodes, errors.NewAutoscalerError(
 				errors.CloudProviderError, "failed to find node group for %s", node.Name)
 		}
-		taintErr := deletetaint.MarkToBeDeleted(node, client)
+		taintErr := deletetaint.MarkToBeDeleted(node, client, sd.context.CordonNodeBeforeTerminate)
 		if taintErr != nil {
 			recorder.Eventf(node, apiv1.EventTypeWarning, "ScaleDownFailed", "failed to mark the node as toBeDeleted/unschedulable: %v", taintErr)
 			return deletedNodes, errors.ToAutoscalerError(errors.ApiCallError, taintErr)
@@ -1091,7 +1091,7 @@ func (sd *ScaleDown) scheduleDeleteEmptyNodes(emptyNodes []*apiv1.Node, client k
 			// If we fail to delete the node we want to remove delete taint
 			defer func() {
 				if deleteErr != nil {
-					deletetaint.CleanToBeDeleted(nodeToDelete, client)
+					deletetaint.CleanToBeDeleted(nodeToDelete, client, sd.context.CordonNodeBeforeTerminate)
 					deletetaint.CleanBeingDeleted(nodeToDelete, client)
 					recorder.Eventf(nodeToDelete, apiv1.EventTypeWarning, "ScaleDownFailed", "failed to delete empty node: %v", deleteErr)
 				} else {
@@ -1113,7 +1113,7 @@ func (sd *ScaleDown) scheduleDeleteEmptyNodes(emptyNodes []*apiv1.Node, client k
 				return
 			}
 
-			taintErr := deletetaint.MarkBeingDeleted(nodeToDelete, client)
+			taintErr := deletetaint.MarkBeingDeleted(nodeToDelete, client, false)
 			if taintErr != nil {
 				klog.Errorf("Problem with empty node deletion: %v", taintErr)
 				deleteErr = errors.ToAutoscalerError(errors.ApiCallError, taintErr)
@@ -1149,7 +1149,7 @@ func (sd *ScaleDown) deleteNode(node *apiv1.Node, pods []*apiv1.Pod,
 	deleteSuccessful := false
 	drainSuccessful := false
 
-	if err := deletetaint.MarkToBeDeleted(node, sd.context.ClientSet); err != nil {
+	if err := deletetaint.MarkToBeDeleted(node, sd.context.ClientSet, sd.context.CordonNodeBeforeTerminate); err != nil {
 		sd.context.Recorder.Eventf(node, apiv1.EventTypeWarning, "ScaleDownFailed", "failed to mark the node as toBeDeleted/unschedulable: %v", err)
 		return status.NodeDeleteResult{ResultType: status.NodeDeleteErrorFailedToMarkToBeDeleted, Err: errors.ToAutoscalerError(errors.ApiCallError, err)}
 	}
@@ -1160,7 +1160,7 @@ func (sd *ScaleDown) deleteNode(node *apiv1.Node, pods []*apiv1.Pod,
 	// If we fail to evict all the pods from the node we want to remove delete taint
 	defer func() {
 		if !deleteSuccessful {
-			deletetaint.CleanToBeDeleted(node, sd.context.ClientSet)
+			deletetaint.CleanToBeDeleted(node, sd.context.ClientSet, sd.context.CordonNodeBeforeTerminate)
 			deletetaint.CleanBeingDeleted(node, sd.context.ClientSet)
 			if !drainSuccessful {
 				sd.context.Recorder.Eventf(node, apiv1.EventTypeWarning, "ScaleDownFailed", "failed to drain the node, aborting ScaleDown")
@@ -1185,7 +1185,7 @@ func (sd *ScaleDown) deleteNode(node *apiv1.Node, pods []*apiv1.Pod,
 
 	// attempt delete from cloud provider
 
-	if err := deletetaint.MarkBeingDeleted(node, sd.context.ClientSet); err != nil {
+	if err := deletetaint.MarkBeingDeleted(node, sd.context.ClientSet, false); err != nil {
 		sd.context.Recorder.Eventf(node, apiv1.EventTypeWarning, "ScaleDownFailed", "failed to mark the node as beingDeleted/unschedulable: %v", err)
 		return status.NodeDeleteResult{ResultType: status.NodeDeleteErrorFailedToMarkToBeDeleted, Err: errors.ToAutoscalerError(errors.ApiCallError, err)}
 	}
@@ -1386,16 +1386,16 @@ const (
 	apiServerLabelValue = "kube-apiserver"
 )
 
-func isMasterNode(nodeInfo *schedulernodeinfo.NodeInfo) bool {
-	for _, pod := range nodeInfo.Pods() {
-		if pod.Namespace == metav1.NamespaceSystem && pod.Labels[apiServerLabelKey] == apiServerLabelValue {
+func isMasterNode(nodeInfo *schedulerframework.NodeInfo) bool {
+	for _, podInfo := range nodeInfo.Pods {
+		if podInfo.Pod.Namespace == metav1.NamespaceSystem && podInfo.Pod.Labels[apiServerLabelKey] == apiServerLabelValue {
 			return true
 		}
 	}
 	return false
 }
 
-func filterOutMasters(nodeInfos []*schedulernodeinfo.NodeInfo) []*apiv1.Node {
+func filterOutMasters(nodeInfos []*schedulerframework.NodeInfo) []*apiv1.Node {
 	result := make([]*apiv1.Node, 0, len(nodeInfos))
 	for _, nodeInfo := range nodeInfos {
 		if !isMasterNode(nodeInfo) {

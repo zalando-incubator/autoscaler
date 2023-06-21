@@ -44,6 +44,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
 	ca_processors "k8s.io/autoscaler/cluster-autoscaler/processors"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
+	"k8s.io/autoscaler/cluster-autoscaler/simulator"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/backoff"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
@@ -56,9 +57,9 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	kube_flag "k8s.io/component-base/cli/flag"
 	componentbaseconfig "k8s.io/component-base/config"
+	"k8s.io/component-base/config/options"
 	"k8s.io/component-base/metrics/legacyregistry"
-	"k8s.io/klog"
-	"k8s.io/kubernetes/pkg/client/leaderelectionconfig"
+	klog "k8s.io/klog/v2"
 )
 
 // MultiStringFlag is a flag for passing multiple parameters using same flag
@@ -180,12 +181,15 @@ var (
 	emulatedTopologySpreadConstraintLabel = flag.String("emulated-topology-spread-constraint-label", "parent-resource-hash", "Emulate TopologySpreadConstraint using this label with a faster algorithm")
 	maxUnschedulablePodsConsidered        = flag.Int("max-unschedulable-pods-considered", 0, "Limit the scale-up evaluation to the first N pods only")
 
-	ignoreTaintsFlag         = multiStringFlag("ignore-taint", "Specifies a taint to ignore in node templates when considering to scale a node group")
-	awsUseStaticInstanceList = flag.Bool("aws-use-static-instance-list", false, "Should CA fetch instance types in runtime or use a static list. AWS only")
-	enableProfiling          = flag.Bool("profiling", false, "Is debug/pprof endpoint enabled")
-	nodePoolBackoffInitial   = flag.Duration("node-pool-backoff-initial", clusterstate.InitialNodeGroupBackoffDuration, "Duration of first backoff after a new node failed to start.")
-	nodePoolBackoffMax       = flag.Duration("node-pool-backoff-max", clusterstate.MaxNodeGroupBackoffDuration, "Maximum backoff duration after new nodes failed to start.")
-	nodePoolBackoffReset     = flag.Duration("node-pool-backoff-reset", clusterstate.NodeGroupBackoffResetTimeout, "Time after last failed scale-up when the backoff duration is reset.")
+	ignoreTaintsFlag                   = multiStringFlag("ignore-taint", "Specifies a taint to ignore in node templates when considering to scale a node group")
+	awsUseStaticInstanceList           = flag.Bool("aws-use-static-instance-list", false, "Should CA fetch instance types in runtime or use a static list. AWS only")
+	enableProfiling                    = flag.Bool("profiling", false, "Is debug/pprof endpoint enabled")
+	nodePoolBackoffInitial             = flag.Duration("node-pool-backoff-initial", clusterstate.InitialNodeGroupBackoffDuration, "Duration of first backoff after a new node failed to start.")
+	nodePoolBackoffMax                 = flag.Duration("node-pool-backoff-max", clusterstate.MaxNodeGroupBackoffDuration, "Maximum backoff duration after new nodes failed to start.")
+	nodePoolBackoffReset               = flag.Duration("node-pool-backoff-reset", clusterstate.NodeGroupBackoffResetTimeout, "Time after last failed scale-up when the backoff duration is reset.")
+	balancingIgnoreLabelsFlag          = multiStringFlag("balancing-ignore-label", "Specifies a label to ignore in addition to the basic and cloud-provider set of labels when comparing if two node groups are similar")
+	clusterAPICloudConfigAuthoritative = flag.Bool("clusterapi-cloud-config-authoritative", false, "Treat the cloud-config flag authoritatively (do not fallback to using kubeconfig flag). ClusterAPI only")
+	cordonNodeBeforeTerminate          = flag.Bool("cordon-node-before-terminating", false, "Should CA cordon nodes before terminating during downscale process")
 )
 
 func createAutoscalingOptions() config.AutoscalingOptions {
@@ -260,6 +264,9 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		DisableNodeInstancesCache:             *disableNodeInstancesCache,
 		EmulatedTopologySpreadConstraintLabel: *emulatedTopologySpreadConstraintLabel,
 		MaxUnschedulablePodsConsidered:        *maxUnschedulablePodsConsidered,
+		BalancingExtraIgnoredLabels:           *balancingIgnoreLabelsFlag,
+		ClusterAPICloudConfigAuthoritative:    *clusterAPICloudConfigAuthoritative,
+		CordonNodeBeforeTerminate:             *cordonNodeBeforeTerminate,
 	}
 }
 
@@ -319,22 +326,26 @@ func buildAutoscaler() (core.Autoscaler, error) {
 	kubeClient := createKubeClient(getKubeConfig())
 	eventsKubeClient := createKubeClient(getKubeConfig())
 
-	processors := ca_processors.DefaultProcessors()
-	processors.PodListProcessor = core.NewFilterOutSchedulablePodListProcessor(*schedulablePodsAllowScaleDown)
-	if autoscalingOptions.CloudProviderName == cloudprovider.AzureProviderName {
-		processors.NodeGroupSetProcessor = &nodegroupset.BalancingNodeGroupSetProcessor{
-			Comparator: nodegroupset.IsAzureNodeInfoSimilar}
-	} else if autoscalingOptions.CloudProviderName == cloudprovider.AwsProviderName {
-		processors.NodeGroupSetProcessor = &nodegroupset.BalancingNodeGroupSetProcessor{
-			Comparator: nodegroupset.IsAwsNodeInfoSimilar}
-	}
-
 	opts := core.AutoscalerOptions{
 		AutoscalingOptions: autoscalingOptions,
+		ClusterSnapshot:    simulator.NewDeltaClusterSnapshot(),
 		KubeClient:         kubeClient,
 		EventsKubeClient:   eventsKubeClient,
-		Processors:         processors,
 		Backoff:            createBackoff(autoscalingOptions),
+	}
+
+	opts.Processors = ca_processors.DefaultProcessors()
+	opts.Processors.PodListProcessor = core.NewFilterOutSchedulablePodListProcessor(*schedulablePodsAllowScaleDown)
+
+	nodeInfoComparatorBuilder := nodegroupset.CreateGenericNodeInfoComparator
+	if autoscalingOptions.CloudProviderName == cloudprovider.AzureProviderName {
+		nodeInfoComparatorBuilder = nodegroupset.CreateAzureNodeInfoComparator
+	} else if autoscalingOptions.CloudProviderName == cloudprovider.AwsProviderName {
+		nodeInfoComparatorBuilder = nodegroupset.CreateAwsNodeInfoComparator
+	}
+
+	opts.Processors.NodeGroupSetProcessor = &nodegroupset.BalancingNodeGroupSetProcessor{
+		Comparator: nodeInfoComparatorBuilder(autoscalingOptions.BalancingExtraIgnoredLabels),
 	}
 
 	// This metric should be published only once.
@@ -391,7 +402,7 @@ func main() {
 	leaderElection := defaultLeaderElectionConfiguration()
 	leaderElection.LeaderElect = true
 
-	leaderelectionconfig.BindFlags(&leaderElection, pflag.CommandLine)
+	options.BindLeaderElectionFlags(&leaderElection, pflag.CommandLine)
 	kube_flag.InitFlags()
 	healthCheck := metrics.NewHealthCheck(*maxInactivityTimeFlag, *maxFailingTimeFlag)
 

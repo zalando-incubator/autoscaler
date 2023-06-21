@@ -22,7 +22,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/drain"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 // ScaleDownStatus represents the state of scale down.
@@ -88,8 +88,6 @@ const (
 	ScaleDownNoUnneeded
 	// ScaleDownNoNodeDeleted - unneeded nodes present but not available for deletion.
 	ScaleDownNoNodeDeleted
-	// ScaleDownNodeDeleted - a node was deleted.
-	ScaleDownNodeDeleted
 	// ScaleDownNodeDeleteStarted - a node deletion process was started.
 	ScaleDownNodeDeleteStarted
 	// ScaleDownNotTried - the scale down wasn't even attempted, e.g. an autoscaling iteration was skipped, or

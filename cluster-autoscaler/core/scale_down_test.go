@@ -26,7 +26,7 @@ import (
 
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
 	autoscaler_errors "k8s.io/autoscaler/cluster-autoscaler/utils/errors"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -47,7 +47,7 @@ import (
 	kube_client "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	core "k8s.io/client-go/testing"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
@@ -1493,12 +1493,12 @@ func TestFilterOutMasters(t *testing.T) {
 		{"n6", 2000, 8000, 0, true, ""}, // same machine type, no node group, no api server
 		{"n7", 2000, 8000, 0, true, ""}, // real master
 	}
-	nodes := make([]*schedulernodeinfo.NodeInfo, len(nodeConfigs))
-	nodeMap := make(map[string]*schedulernodeinfo.NodeInfo, len(nodeConfigs))
+	nodes := make([]*schedulerframework.NodeInfo, len(nodeConfigs))
+	nodeMap := make(map[string]*schedulerframework.NodeInfo, len(nodeConfigs))
 	for i, n := range nodeConfigs {
 		node := BuildTestNode(n.name, n.cpu, n.memory)
 		SetNodeReadyState(node, n.ready, time.Now())
-		nodeInfo := schedulernodeinfo.NewNodeInfo()
+		nodeInfo := schedulerframework.NewNodeInfo()
 		err := nodeInfo.SetNode(node)
 		assert.NoError(t, err)
 		nodes[i] = nodeInfo

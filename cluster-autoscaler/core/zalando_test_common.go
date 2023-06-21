@@ -70,8 +70,8 @@ import (
 	"k8s.io/client-go/listers/policy/v1beta1"
 	clientgotesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	klog "k8s.io/klog/v2"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 )
 
 type zalandoTestEnvironmentCommandType string
@@ -261,7 +261,7 @@ type zalandoTestCloudProviderNodeGroup struct {
 	maxSize       int
 	targetSize    int
 	instances     sets.String
-	templateNode  *schedulernodeinfo.NodeInfo
+	templateNode  *schedulerframework.NodeInfo
 	handleCommand func(command zalandoTestEnvironmentCommand)
 	scaleUpError  string
 
@@ -356,7 +356,7 @@ func (g *zalandoTestCloudProviderNodeGroup) regenerateCachedInstances() {
 	g.cachedInstances = result
 }
 
-func (g *zalandoTestCloudProviderNodeGroup) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (g *zalandoTestCloudProviderNodeGroup) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	ensureSameGoroutine(g.expectedGID)
 
 	result := scheduler.CloneNodeInfo(g.templateNode)
@@ -381,7 +381,7 @@ func (g *zalandoTestCloudProviderNodeGroup) Autoprovisioned() bool {
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) setTemplateNode(cpu resource.Quantity, memory resource.Quantity, nodeLabels map[string]string) error {
-	templateNode := schedulernodeinfo.NewNodeInfo()
+	templateNode := schedulerframework.NewNodeInfo()
 	err := templateNode.SetNode(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: nodeLabels,
@@ -1143,7 +1143,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 	env.autoscaler.processors.PodListProcessor = NewFilterOutSchedulablePodListProcessor(true)
 	if options.BalanceSimilarNodeGroups {
 		env.autoscaler.processors.NodeGroupSetProcessor = &nodegroupset.BalancingNodeGroupSetProcessor{
-			Comparator: nodegroupset.IsAwsNodeInfoSimilar,
+			Comparator: nodegroupset.CreateAwsNodeInfoComparator(nil),
 		}
 	}
 

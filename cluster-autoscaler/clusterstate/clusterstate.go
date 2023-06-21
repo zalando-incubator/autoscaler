@@ -34,9 +34,9 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (
@@ -135,7 +135,7 @@ type ClusterStateRegistry struct {
 	scaleUpRequests                    map[string]*ScaleUpRequest // nodeGroupName -> ScaleUpRequest
 	scaleDownRequests                  []*ScaleDownRequest
 	nodes                              []*apiv1.Node
-	nodeInfosForGroups                 map[string]*schedulernodeinfo.NodeInfo
+	nodeInfosForGroups                 map[string]*schedulerframework.NodeInfo
 	cloudProvider                      cloudprovider.CloudProvider
 	perNodeGroupReadiness              map[string]Readiness
 	totalReadiness                     Readiness
@@ -307,7 +307,7 @@ func (csr *ClusterStateRegistry) registerFailedScaleUpNoLock(nodeGroup cloudprov
 }
 
 // UpdateNodes updates the state of the nodes in the ClusterStateRegistry and recalculates the stats
-func (csr *ClusterStateRegistry) UpdateNodes(nodes []*apiv1.Node, nodeInfosForGroups map[string]*schedulernodeinfo.NodeInfo, currentTime time.Time) error {
+func (csr *ClusterStateRegistry) UpdateNodes(nodes []*apiv1.Node, nodeInfosForGroups map[string]*schedulerframework.NodeInfo, currentTime time.Time) error {
 	csr.updateNodeGroupMetrics()
 	targetSizes, err := getTargetSizes(csr.cloudProvider)
 	if err != nil {
@@ -680,7 +680,7 @@ func (csr *ClusterStateRegistry) updateUnregisteredNodes(unregisteredNodes []Unr
 	csr.unregisteredNodes = result
 }
 
-//GetUnregisteredNodes returns a list of all unregistered nodes.
+// GetUnregisteredNodes returns a list of all unregistered nodes.
 func (csr *ClusterStateRegistry) GetUnregisteredNodes() []UnregisteredNode {
 	csr.Lock()
 	defer csr.Unlock()
@@ -1015,7 +1015,7 @@ func getNotRegisteredNodes(allNodes []*apiv1.Node, cloudProviderNodeInstances ma
 		for _, instance := range instances {
 			if !registered.Has(instance.Id) {
 				notRegistered = append(notRegistered, UnregisteredNode{
-					Node:              fakeNode(instance),
+					Node:              fakeNode(instance, cloudprovider.FakeNodeUnregistered),
 					UnregisteredSince: time,
 				})
 			}
@@ -1174,7 +1174,7 @@ func (csr *ClusterStateRegistry) GetCreatedNodesWithErrors() []*apiv1.Node {
 		_, _, instancesByErrorCode := csr.buildInstanceToErrorCodeMappings(nodeGroupInstances)
 		for _, instances := range instancesByErrorCode {
 			for _, instance := range instances {
-				nodesWithCreateErrors = append(nodesWithCreateErrors, fakeNode(instance))
+				nodesWithCreateErrors = append(nodesWithCreateErrors, fakeNode(instance, cloudprovider.FakeNodeCreateError))
 			}
 		}
 	}
@@ -1195,10 +1195,13 @@ func (csr *ClusterStateRegistry) InvalidateNodeInstancesCacheEntry(nodeGroup clo
 	}
 }
 
-func fakeNode(instance cloudprovider.Instance) *apiv1.Node {
+func fakeNode(instance cloudprovider.Instance, reason string) *apiv1.Node {
 	return &apiv1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: instance.Id,
+			Annotations: map[string]string{
+				cloudprovider.FakeNodeReasonAnnotation: reason,
+			},
 		},
 		Spec: apiv1.NodeSpec{
 			ProviderID: instance.Id,

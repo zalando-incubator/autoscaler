@@ -25,14 +25,14 @@ import (
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 )
 
 func TestPriorityBased(t *testing.T) {
 	provider := testprovider.NewTestCloudProvider(nil, nil)
 
 	groupOptions := make(map[string]expander.Option)
-	nodeInfos := make(map[string]*schedulernodeinfo.NodeInfo)
+	nodeInfos := make(map[string]*schedulerframework.NodeInfo)
 
 	for ngId, priority := range map[string]*int64{
 		"highPriority":      intPtr(200),
@@ -50,7 +50,7 @@ func TestPriorityBased(t *testing.T) {
 		provider.AddNode(ngId, node)
 
 		nodeGroup, _ := provider.NodeGroupForNode(node)
-		nodeInfo := schedulernodeinfo.NewNodeInfo()
+		nodeInfo := schedulerframework.NewNodeInfo()
 		_ = nodeInfo.SetNode(node)
 
 		groupOptions[ngId] = expander.Option{

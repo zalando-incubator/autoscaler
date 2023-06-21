@@ -23,7 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/util/slice"
 )
 

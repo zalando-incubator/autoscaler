@@ -18,28 +18,28 @@ package scheduler
 
 import (
 	apiv1 "k8s.io/api/core/v1"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 )
 
 // CreateNodeNameToInfoMap obtains a list of pods and pivots that list into a map where the keys are node names
 // and the values are the aggregated information for that node. Pods waiting lower priority pods preemption
 // (pod.Status.NominatedNodeName is set) are also added to list of pods for a node.
-func CreateNodeNameToInfoMap(pods []*apiv1.Pod, nodes []*apiv1.Node) map[string]*schedulernodeinfo.NodeInfo {
-	nodeNameToNodeInfo := make(map[string]*schedulernodeinfo.NodeInfo)
+func CreateNodeNameToInfoMap(pods []*apiv1.Pod, nodes []*apiv1.Node) map[string]*schedulerframework.NodeInfo {
+	nodeNameToNodeInfo := make(map[string]*schedulerframework.NodeInfo)
 	for _, pod := range pods {
 		nodeName := pod.Spec.NodeName
 		if nodeName == "" {
 			nodeName = pod.Status.NominatedNodeName
 		}
 		if _, ok := nodeNameToNodeInfo[nodeName]; !ok {
-			nodeNameToNodeInfo[nodeName] = schedulernodeinfo.NewNodeInfo()
+			nodeNameToNodeInfo[nodeName] = schedulerframework.NewNodeInfo()
 		}
 		nodeNameToNodeInfo[nodeName].AddPod(pod)
 	}
 
 	for _, node := range nodes {
 		if _, ok := nodeNameToNodeInfo[node.Name]; !ok {
-			nodeNameToNodeInfo[node.Name] = schedulernodeinfo.NewNodeInfo()
+			nodeNameToNodeInfo[node.Name] = schedulerframework.NewNodeInfo()
 		}
 		nodeNameToNodeInfo[node.Name].SetNode(node)
 	}
@@ -61,14 +61,9 @@ func CreateNodeNameToInfoMap(pods []*apiv1.Pod, nodes []*apiv1.Node) map[string]
 // CloneNodeInfo copies the provided schedulernodeinfo.NodeInfo __correctly__. The upstream version doesn't deep-copy
 // the underlying Node object, leading to potential corruption if someone modifies the Node directly. Note that it still
 // doesn't deep-copy the pods, but this should hopefully not create any issues.
-func CloneNodeInfo(nodeInfo *schedulernodeinfo.NodeInfo) *schedulernodeinfo.NodeInfo {
-	result := schedulernodeinfo.NewNodeInfo(nodeInfo.Pods()...)
-	// I have no idea why this can return an error (it doesn't even do this in the code). Multiple other places just
-	// ignore it, and I'm not sure if I want to modify the function signatures to propagate the error correctly. Let's
-	// just panic for now, because I'm not comfortable with ignoring it.
-	err := result.SetNode(nodeInfo.Node().DeepCopy())
-	if err != nil {
-		panic(err)
-	}
+func CloneNodeInfo(nodeInfo *schedulerframework.NodeInfo) *schedulerframework.NodeInfo {
+	node := nodeInfo.Node().DeepCopy()
+	result := schedulerframework.NewNodeInfo()
+	result.SetNode(node)
 	return result
 }

@@ -24,7 +24,7 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/uuid"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
@@ -45,7 +45,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/utils/taints"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/tpu"
 
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (
@@ -57,6 +57,9 @@ const (
 	unschedulablePodWithGpuTimeBuffer = 30 * time.Second
 	// How long should Cluster Autoscaler wait for nodes to become ready after start.
 	nodesNotReadyAfterStartTimeout = 10 * time.Minute
+
+	// NodeUpcomingAnnotation is an annotation CA adds to nodes which are upcoming.
+	NodeUpcomingAnnotation = "cluster-autoscaler.k8s.io/upcoming-node"
 )
 
 // StaticAutoscaler is an autoscaler which has all the core functionality of a CA but without the reconfiguration feature
@@ -74,7 +77,7 @@ type StaticAutoscaler struct {
 	processorCallbacks      *staticAutoscalerProcessorCallbacks
 	initialized             bool
 	// Caches nodeInfo computed for previously seen nodes
-	nodeInfoCache map[string]*schedulernodeinfo.NodeInfo
+	nodeInfoCache map[string]*schedulerframework.NodeInfo
 	ignoredTaints taints.TaintKeySet
 }
 
@@ -149,9 +152,9 @@ func NewStaticAutoscaler(
 	scaleDown := NewScaleDown(autoscalingContext, clusterStateRegistry)
 
 	// Disable node info cache since it'll produce worse results than our implementation
-	var nodeInfoCache map[string]*schedulernodeinfo.NodeInfo
+	var nodeInfoCache map[string]*schedulerframework.NodeInfo
 	if !autoscalingContext.ScaleUpTemplateFromCloudProvider {
-		nodeInfoCache = make(map[string]*schedulernodeinfo.NodeInfo)
+		nodeInfoCache = make(map[string]*schedulerframework.NodeInfo)
 	}
 
 	return &StaticAutoscaler{
@@ -187,7 +190,7 @@ func (a *StaticAutoscaler) cleanUpIfRequired() {
 		klog.Errorf("Failed to list ready nodes, not cleaning up taints: %v", err)
 	} else {
 		deletetaint.CleanAllToBeDeleted(readyNodes,
-			a.AutoscalingContext.ClientSet, a.Recorder)
+			a.AutoscalingContext.ClientSet, a.Recorder, a.CordonNodeBeforeTerminate)
 		deletetaint.CleanAllBeingDeleted(readyNodes,
 			a.AutoscalingContext.ClientSet, a.Recorder)
 		if a.AutoscalingContext.AutoscalingOptions.MaxBulkSoftTaintCount == 0 {
@@ -285,6 +288,12 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) errors.AutoscalerError
 	if autoscalerError != nil {
 		klog.Errorf("Failed to get node infos for groups: %v", autoscalerError)
 		return autoscalerError.AddPrefix("failed to build node infos for node groups: ")
+	}
+
+	nodeInfosForGroups, err = a.processors.NodeInfoProcessor.Process(autoscalingContext, nodeInfosForGroups)
+	if err != nil {
+		klog.Errorf("Failed to process nodeInfos: %v", err)
+		return errors.ToAutoscalerError(errors.InternalError, err)
 	}
 
 	if typedErr := a.updateClusterState(allNodes, nodeInfosForGroups, currentTime); typedErr != nil {
@@ -391,7 +400,11 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) errors.AutoscalerError
 	// add upcoming nodes to ClusterSnapshot
 	upcomingNodes := getUpcomingNodeInfos(a.clusterStateRegistry, nodeInfosForGroups, currentTime)
 	for _, upcomingNode := range upcomingNodes {
-		err = a.ClusterSnapshot.AddNodeWithPods(upcomingNode.Node(), upcomingNode.Pods())
+		var pods []*apiv1.Pod
+		for _, podInfo := range upcomingNode.Pods {
+			pods = append(pods, podInfo.Pod)
+		}
+		err = a.ClusterSnapshot.AddNodeWithPods(upcomingNode.Node(), pods)
 		if err != nil {
 			klog.Errorf("Failed to add upcoming node %s to cluster snapshot: %v", upcomingNode.Node().Name, err)
 			return errors.ToAutoscalerError(errors.InternalError, err)
@@ -493,7 +506,7 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) errors.AutoscalerError
 
 		metrics.UpdateDurationFromStart(metrics.FindUnneeded, unneededStart)
 
-		if klog.V(4) {
+		if klog.V(4).Enabled() {
 			for key, val := range scaleDown.unneededNodes {
 				klog.Infof("%s is unneeded since %s duration %s", key, val.String(), currentTime.Sub(val).String())
 			}
@@ -535,7 +548,7 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) errors.AutoscalerError
 
 			scaleDownStatus.RemovedNodeGroups = removedNodeGroups
 
-			if scaleDownStatus.Result == status.ScaleDownNodeDeleted {
+			if scaleDownStatus.Result == status.ScaleDownNodeDeleteStarted {
 				a.lastScaleDownDeleteTime = currentTime
 				a.clusterStateRegistry.Recalculate()
 			}
@@ -756,7 +769,7 @@ func (a *StaticAutoscaler) actOnEmptyCluster(allNodes, readyNodes []*apiv1.Node,
 	return false
 }
 
-func (a *StaticAutoscaler) updateClusterState(allNodes []*apiv1.Node, nodeInfosForGroups map[string]*schedulernodeinfo.NodeInfo, currentTime time.Time) errors.AutoscalerError {
+func (a *StaticAutoscaler) updateClusterState(allNodes []*apiv1.Node, nodeInfosForGroups map[string]*schedulerframework.NodeInfo, currentTime time.Time) errors.AutoscalerError {
 	err := a.clusterStateRegistry.UpdateNodes(allNodes, nodeInfosForGroups, currentTime)
 	if err != nil {
 		klog.Errorf("Failed to update node registry: %v", err)
@@ -790,29 +803,35 @@ func allPodsAreNew(pods []*apiv1.Pod, currentTime time.Time) bool {
 	return found && oldest.Add(unschedulablePodWithGpuTimeBuffer).After(currentTime)
 }
 
-func deepCopyNodeInfo(nodeTemplate *schedulernodeinfo.NodeInfo, index int) *schedulernodeinfo.NodeInfo {
+func deepCopyNodeInfo(nodeTemplate *schedulerframework.NodeInfo, index int) *schedulerframework.NodeInfo {
 	node := nodeTemplate.Node().DeepCopy()
 	node.Name = fmt.Sprintf("%s-%d", node.Name, index)
 	node.UID = uuid.NewUUID()
-	nodeInfo := schedulernodeinfo.NewNodeInfo()
+	nodeInfo := schedulerframework.NewNodeInfo()
 	nodeInfo.SetNode(node)
-	for _, podTemplate := range nodeTemplate.Pods() {
-		pod := podTemplate.DeepCopy()
-		pod.Name = fmt.Sprintf("%s-%d", podTemplate.Name, index)
+	for _, podInfo := range nodeTemplate.Pods {
+		pod := podInfo.Pod.DeepCopy()
+		pod.Name = fmt.Sprintf("%s-%d", podInfo.Pod.Name, index)
 		pod.UID = uuid.NewUUID()
 		nodeInfo.AddPod(pod)
 	}
 	return nodeInfo
 }
 
-func getUpcomingNodeInfos(registry *clusterstate.ClusterStateRegistry, nodeInfos map[string]*schedulernodeinfo.NodeInfo, currentTime time.Time) []*schedulernodeinfo.NodeInfo {
-	upcomingNodes := make([]*schedulernodeinfo.NodeInfo, 0)
+func getUpcomingNodeInfos(registry *clusterstate.ClusterStateRegistry, nodeInfos map[string]*schedulerframework.NodeInfo, currentTime time.Time) []*schedulerframework.NodeInfo {
+	upcomingNodes := make([]*schedulerframework.NodeInfo, 0)
 	for nodeGroup, numberOfNodes := range registry.GetUpcomingNodes(currentTime) {
 		nodeTemplate, found := nodeInfos[nodeGroup]
 		if !found {
 			klog.Warningf("Couldn't find template for node group %s", nodeGroup)
 			continue
 		}
+
+		if nodeTemplate.Node().Annotations == nil {
+			nodeTemplate.Node().Annotations = make(map[string]string)
+		}
+		nodeTemplate.Node().Annotations[NodeUpcomingAnnotation] = "true"
+
 		for i := 0; i < numberOfNodes; i++ {
 			// Ensure new nodes have different names because nodeName
 			// will be used as a map key. Also deep copy pods (daemonsets &

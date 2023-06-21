@@ -41,7 +41,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/core/utils"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 	provider_aws "k8s.io/legacy-cloud-providers/aws"
 )
@@ -50,7 +50,7 @@ const (
 	operationWaitTimeout    = 5 * time.Second
 	operationPollInterval   = 100 * time.Millisecond
 	maxRecordsReturnedByAPI = 100
-	maxAsgNamesPerDescribe  = 50
+	maxAsgNamesPerDescribe  = 100
 	refreshInterval         = 1 * time.Minute
 	autoDiscovererTypeASG   = "asg"
 	asgAutoDiscovererKeyTag = "tag"

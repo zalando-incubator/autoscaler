@@ -42,11 +42,11 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
-	"k8s.io/autoscaler/cluster-autoscaler/utils/glogx"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/klogx"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 type scaleUpResourcesLimits map[string]int64
@@ -58,7 +58,7 @@ const scaleUpLimitUnknown = math.MaxInt64
 func computeScaleUpResourcesLeftLimits(
 	cp cloudprovider.CloudProvider,
 	nodeGroups []cloudprovider.NodeGroup,
-	nodeInfos map[string]*schedulernodeinfo.NodeInfo,
+	nodeInfos map[string]*schedulerframework.NodeInfo,
 	nodesFromNotAutoscaledGroups []*apiv1.Node,
 	resourceLimiter *cloudprovider.ResourceLimiter) (scaleUpResourcesLimits, errors.AutoscalerError) {
 	totalCores, totalMem, errCoresMem := calculateScaleUpCoresMemoryTotal(nodeGroups, nodeInfos, nodesFromNotAutoscaledGroups)
@@ -112,7 +112,7 @@ func computeScaleUpResourcesLeftLimits(
 
 func calculateScaleUpCoresMemoryTotal(
 	nodeGroups []cloudprovider.NodeGroup,
-	nodeInfos map[string]*schedulernodeinfo.NodeInfo,
+	nodeInfos map[string]*schedulerframework.NodeInfo,
 	nodesFromNotAutoscaledGroups []*apiv1.Node) (int64, int64, errors.AutoscalerError) {
 	var coresTotal int64
 	var memoryTotal int64
@@ -145,7 +145,7 @@ func calculateScaleUpCoresMemoryTotal(
 func calculateScaleUpGpusTotal(
 	GPULabel string,
 	nodeGroups []cloudprovider.NodeGroup,
-	nodeInfos map[string]*schedulernodeinfo.NodeInfo,
+	nodeInfos map[string]*schedulerframework.NodeInfo,
 	nodesFromNotAutoscaledGroups []*apiv1.Node) (map[string]int64, errors.AutoscalerError) {
 
 	result := make(map[string]int64)
@@ -188,7 +188,7 @@ func computeBelowMax(total int64, max int64) int64 {
 	return 0
 }
 
-func computeScaleUpResourcesDelta(cp cloudprovider.CloudProvider, nodeInfo *schedulernodeinfo.NodeInfo, nodeGroup cloudprovider.NodeGroup, resourceLimiter *cloudprovider.ResourceLimiter) (scaleUpResourcesDelta, errors.AutoscalerError) {
+func computeScaleUpResourcesDelta(cp cloudprovider.CloudProvider, nodeInfo *schedulerframework.NodeInfo, nodeGroup cloudprovider.NodeGroup, resourceLimiter *cloudprovider.ResourceLimiter) (scaleUpResourcesDelta, errors.AutoscalerError) {
 	resultScaleUpDelta := make(scaleUpResourcesDelta)
 
 	nodeCPU, nodeMemory := getNodeInfoCoresAndMemory(nodeInfo)
@@ -232,7 +232,7 @@ func (limits *scaleUpResourcesLimits) checkScaleUpDeltaWithinLimits(delta scaleU
 	return scaleUpLimitsNotExceeded()
 }
 
-func getNodeInfoCoresAndMemory(nodeInfo *schedulernodeinfo.NodeInfo) (int64, int64) {
+func getNodeInfoCoresAndMemory(nodeInfo *schedulerframework.NodeInfo) (int64, int64) {
 	return utils.GetNodeCoresAndMemory(nodeInfo.Node())
 }
 
@@ -254,7 +254,7 @@ func maxResourceLimitReached(resources []string) *skippedReasons {
 	return &skippedReasons{[]string{fmt.Sprintf("max cluster %s limit reached", strings.Join(resources, ", "))}}
 }
 
-func computeExpansionOption(context *context.AutoscalingContext, podEquivalenceGroups []*podEquivalenceGroup, nodeGroup cloudprovider.NodeGroup, nodeInfo *schedulernodeinfo.NodeInfo, upcomingNodes []*schedulernodeinfo.NodeInfo) (expander.Option, error) {
+func computeExpansionOption(context *context.AutoscalingContext, podEquivalenceGroups []*podEquivalenceGroup, nodeGroup cloudprovider.NodeGroup, nodeInfo *schedulerframework.NodeInfo, upcomingNodes []*schedulerframework.NodeInfo) (expander.Option, error) {
 	option := expander.Option{
 		NodeGroup: nodeGroup,
 		Pods:      make([]*apiv1.Pod, 0),
@@ -266,7 +266,11 @@ func computeExpansionOption(context *context.AutoscalingContext, podEquivalenceG
 	}
 
 	// add test node to snapshot
-	if err := context.ClusterSnapshot.AddNodeWithPods(nodeInfo.Node(), nodeInfo.Pods()); err != nil {
+	var pods []*apiv1.Pod
+	for _, podInfo := range nodeInfo.Pods {
+		pods = append(pods, podInfo.Pod)
+	}
+	if err := context.ClusterSnapshot.AddNodeWithPods(nodeInfo.Node(), pods); err != nil {
 		klog.Errorf("Error while adding test Node; %v", err)
 		if err := context.ClusterSnapshot.Revert(); err != nil {
 			klog.Fatalf("Error while calling ClusterSnapshot.Revert; %v", err)
@@ -309,7 +313,7 @@ func computeExpansionOption(context *context.AutoscalingContext, podEquivalenceG
 // false if it didn't and error if an error occurred. Assumes that all nodes in the cluster are
 // ready and in sync with instance groups.
 func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.AutoscalingProcessors, clusterStateRegistry *clusterstate.ClusterStateRegistry, unschedulablePods []*apiv1.Pod,
-	nodes []*apiv1.Node, daemonSets []*appsv1.DaemonSet, nodeInfos map[string]*schedulernodeinfo.NodeInfo, ignoredTaints taints.TaintKeySet) (*status.ScaleUpStatus, errors.AutoscalerError) {
+	nodes []*apiv1.Node, daemonSets []*appsv1.DaemonSet, nodeInfos map[string]*schedulerframework.NodeInfo, ignoredTaints taints.TaintKeySet) (*status.ScaleUpStatus, errors.AutoscalerError) {
 	// From now on we only care about unschedulable pods that were marked after the newest
 	// node became available for the scheduler.
 	if len(unschedulablePods) == 0 {
@@ -319,12 +323,12 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 
 	currentTime := now()
 
-	loggingQuota := glogx.PodsLoggingQuota()
+	loggingQuota := klogx.PodsLoggingQuota()
 
 	for _, pod := range unschedulablePods {
-		glogx.V(1).UpTo(loggingQuota).Infof("Pod %s/%s is unschedulable", pod.Namespace, pod.Name)
+		klogx.V(1).UpTo(loggingQuota).Infof("Pod %s/%s is unschedulable", pod.Namespace, pod.Name)
 	}
-	glogx.V(1).Over(loggingQuota).Infof("%v other pods are also unschedulable", -loggingQuota.Left())
+	klogx.V(1).Over(loggingQuota).Infof("%v other pods are also unschedulable", -loggingQuota.Left())
 
 	unschedulablePods = limitUnschedulablePods(context, unschedulablePods)
 
@@ -349,7 +353,7 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 		return &status.ScaleUpStatus{Result: status.ScaleUpError}, errLimits.AddPrefix("Could not compute total resources: ")
 	}
 
-	upcomingNodes := make([]*schedulernodeinfo.NodeInfo, 0)
+	upcomingNodes := make([]*schedulerframework.NodeInfo, 0)
 	for nodeGroup, numberOfNodes := range clusterStateRegistry.GetUpcomingNodes(currentTime) {
 		nodeTemplate, found := nodeInfos[nodeGroup]
 		if !found {
@@ -465,6 +469,7 @@ func ScaleUp(context *context.AutoscalingContext, processors *ca_processors.Auto
 		if context.MaxNodesTotal > 0 && len(nodes)+newNodes+len(upcomingNodes) > context.MaxNodesTotal {
 			klog.V(1).Infof("Capping size to max cluster total size (%d)", context.MaxNodesTotal)
 			newNodes = context.MaxNodesTotal - len(nodes) - len(upcomingNodes)
+			context.LogRecorder.Eventf(apiv1.EventTypeWarning, "MaxNodesTotalReached", "Max total nodes in cluster reached: %v", context.MaxNodesTotal)
 			if newNodes < 1 {
 				return &status.ScaleUpStatus{Result: status.ScaleUpError}, errors.NewAutoscalerError(
 					errors.TransientError,
@@ -612,7 +617,7 @@ func limitUnschedulablePods(context *context.AutoscalingContext, pods []*apiv1.P
 	return pods[:context.MaxUnschedulablePodsConsidered]
 }
 
-func buildNodeInfoForNodeTemplate(nodeTemplate *schedulernodeinfo.NodeInfo, index int) *schedulernodeinfo.NodeInfo {
+func buildNodeInfoForNodeTemplate(nodeTemplate *schedulerframework.NodeInfo, index int) *schedulerframework.NodeInfo {
 	nodeInfo := scheduler.CloneNodeInfo(nodeTemplate)
 	node := nodeInfo.Node()
 	node.Name = fmt.Sprintf("%s-%d", node.Name, index)
@@ -706,7 +711,7 @@ func applyScaleUpResourcesLimits(
 	cp cloudprovider.CloudProvider,
 	newNodes int,
 	scaleUpResourcesLeft scaleUpResourcesLimits,
-	nodeInfo *schedulernodeinfo.NodeInfo,
+	nodeInfo *schedulerframework.NodeInfo,
 	nodeGroup cloudprovider.NodeGroup,
 	resourceLimiter *cloudprovider.ResourceLimiter) (int, errors.AutoscalerError) {
 

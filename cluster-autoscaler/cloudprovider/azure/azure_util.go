@@ -31,7 +31,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-07-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-12-01/compute"
 	azStorage "github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/to"
@@ -39,7 +39,7 @@ import (
 	"golang.org/x/crypto/pkcs12"
 
 	"k8s.io/autoscaler/cluster-autoscaler/version"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 	"k8s.io/legacy-cloud-providers/azure/retry"
 )
 
@@ -78,8 +78,9 @@ const (
 	k8sWindowsVMAgentOrchestratorNameIndex = 2
 	k8sWindowsVMAgentPoolInfoIndex         = 3
 
-	nodeLabelTagName = "k8s.io_cluster-autoscaler_node-template_label_"
-	nodeTaintTagName = "k8s.io_cluster-autoscaler_node-template_taint_"
+	nodeLabelTagName     = "k8s.io_cluster-autoscaler_node-template_label_"
+	nodeTaintTagName     = "k8s.io_cluster-autoscaler_node-template_taint_"
+	nodeResourcesTagName = "k8s.io_cluster-autoscaler_node-template_resources_"
 )
 
 var (
@@ -664,11 +665,16 @@ func convertResourceGroupNameToLower(resourceID string) (string, error) {
 	return strings.Replace(resourceID, resourceGroup, strings.ToLower(resourceGroup), 1), nil
 }
 
-// isAzureRequestsThrottled returns true when the err is http.StatusTooManyRequests (429).
+// isAzureRequestsThrottled returns true when the err is http.StatusTooManyRequests (429),
+// and when err shows the requests was not executed due to an ongoing throttling period.
 func isAzureRequestsThrottled(rerr *retry.Error) bool {
 	klog.V(6).Infof("isAzureRequestsThrottled: starts for error %v", rerr)
 	if rerr == nil {
 		return false
+	}
+
+	if rerr.HTTPStatusCode == 0 && rerr.RetryAfter.After(time.Now()) {
+		return true
 	}
 
 	return rerr.HTTPStatusCode == http.StatusTooManyRequests

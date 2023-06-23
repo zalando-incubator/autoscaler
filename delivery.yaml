@@ -22,7 +22,7 @@ pipeline:
   - desc: "Verify"
     cmd: |
       rm .zappr.yaml
-      hack/verify-all.sh -v
+      GO111MODULE=auto hack/verify-all.sh -v
   - desc: "Run the test suite"
     cmd: |
       cd cluster-autoscaler

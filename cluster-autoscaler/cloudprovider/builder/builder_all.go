@@ -1,3 +1,4 @@
+//go:build !gce && !aws && !azure && !kubemark && !alicloud && !magnum && !digitalocean && !clusterapi
 // +build !gce,!aws,!azure,!kubemark,!alicloud,!magnum,!digitalocean,!clusterapi
 
 /*

@@ -462,13 +462,13 @@ func TestDeleteInstances(t *testing.T) {
 	setupTestExtraPool(g, true)
 
 	// Get basename for defaultPool
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-default-pool").Return(buildDefaultInstanceGroupManagerResponse(zoneB)).Once()
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-default-pool").Return(buildDefaultInstanceGroupManagerResponse(zoneB)).Once()
 
 	// Regenerate instances for defaultPool
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-default-pool/listManagedInstances").Return(buildFourRunningInstancesOnDefaultMigManagedInstancesResponse(zoneB)).Once()
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-default-pool/listManagedInstances").Return(buildFourRunningInstancesOnDefaultMigManagedInstancesResponse(zoneB)).Once()
 
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-default-pool/deleteInstances").Return(deleteInstancesResponse).Once()
-	server.On("handle", "/project1/zones/us-central1-b/operations/operation-1505802641136-55984ff86d980-a99e8c2b-0c8aaaaa").Return(deleteInstancesOperationResponse).Once()
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-default-pool/deleteInstances").Return(deleteInstancesResponse).Once()
+	server.On("handle", "/projects/project1/zones/us-central1-b/operations/operation-1505802641136-55984ff86d980-a99e8c2b-0c8aaaaa").Return(deleteInstancesOperationResponse).Once()
 
 	instances := []GceRef{
 		{
@@ -488,7 +488,7 @@ func TestDeleteInstances(t *testing.T) {
 	mock.AssertExpectationsForObjects(t, server)
 
 	// Regenerate instances for extraPool (no basename call because it is already in cache)
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-extra-pool-323233232/listManagedInstances").Return(buildOneRunningInstanceOnExtraPoolMigManagedInstancesResponse(zoneB)).Once()
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-extra-pool-323233232/listManagedInstances").Return(buildOneRunningInstanceOnExtraPoolMigManagedInstancesResponse(zoneB)).Once()
 
 	// Fail on deleting instances from different MIGs.
 	instances = []GceRef{
@@ -554,7 +554,7 @@ func TestGetAndSetMigSize(t *testing.T) {
 	extraPoolMig := setupTestExtraPool(g, true)
 	defaultPoolMig := setupTestDefaultPool(g, true)
 
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers").Return(
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers").Return(
 		buildListInstanceGroupManagersResponse(
 			buildListInstanceGroupManagersResponsePart(defaultPoolMigName, zoneB, 7),
 			buildListInstanceGroupManagersResponsePart(extraPoolMigName, zoneB, 8),
@@ -577,8 +577,8 @@ func TestGetAndSetMigSize(t *testing.T) {
 	mock.AssertExpectationsForObjects(t, server)
 
 	// set target size for extraPoolMig; will require resize API call and API call for polling for resize operation
-	server.On("handle", fmt.Sprintf("/project1/zones/us-central1-b/instanceGroupManagers/%s/resize", extraPoolMigName)).Return(setMigSizeResponse).Once()
-	server.On("handle", "/project1/zones/us-central1-b/operations/operation-1505739408819-5597646964339-eb839c88-28805931").Return(setMigSizeOperationResponse).Once()
+	server.On("handle", fmt.Sprintf("/projects/project1/zones/us-central1-b/instanceGroupManagers/%s/resize", extraPoolMigName)).Return(setMigSizeResponse).Once()
+	server.On("handle", "/projects/project1/zones/us-central1-b/operations/operation-1505739408819-5597646964339-eb839c88-28805931").Return(setMigSizeOperationResponse).Once()
 	err = g.SetMigSize(extraPoolMig, 4)
 	assert.NoError(t, err)
 	mock.AssertExpectationsForObjects(t, server)
@@ -593,12 +593,12 @@ func TestGetAndSetMigSize(t *testing.T) {
 	extraPool2Mig := setupTestExtraPool2(g, true)
 
 	// query for size of resized extraPool2Mig; execting API call refreshing target sizes
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers").Return(
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers").Return(
 		buildListInstanceGroupManagersResponse(
 			buildListInstanceGroupManagersResponsePart(defaultPoolMigName, zoneB, 7),
 			buildListInstanceGroupManagersResponsePart(extraPoolMigName, zoneB, 8),
 		)).Once()
-	server.On("handle", "/project1/zones/us-central1-c/instanceGroupManagers").Return(
+	server.On("handle", "/projects/project1/zones/us-central1-c/instanceGroupManagers").Return(
 		buildListInstanceGroupManagersResponse(
 			buildListInstanceGroupManagersResponsePart(extraPool2MigName, zoneC, 9)),
 	).Once()
@@ -620,12 +620,12 @@ func TestGetAndSetMigSize(t *testing.T) {
 
 	// now if w query size of any mig whole cache should be refreshed by listing InstanceGroupManagers; we expect two calls
 	// for zoneB and zoneC
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers").Return(
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers").Return(
 		buildListInstanceGroupManagersResponse(
 			buildListInstanceGroupManagersResponsePart(defaultPoolMigName, zoneB, 7),
 			buildListInstanceGroupManagersResponsePart(extraPoolMigName, zoneB, 8),
 		)).Once()
-	server.On("handle", "/project1/zones/us-central1-c/instanceGroupManagers").Return(
+	server.On("handle", "/projects/project1/zones/us-central1-c/instanceGroupManagers").Return(
 		buildListInstanceGroupManagersResponse(
 			buildListInstanceGroupManagersResponsePart(extraPool2MigName, zoneC, 9),
 		)).Once()
@@ -644,8 +644,8 @@ func TestGetMigSizeListCallFails(t *testing.T) {
 	extraPoolMig := setupTestExtraPool(g, true)
 	defaultPoolMig := setupTestDefaultPool(g, true)
 
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers").Return("bad_response").Once()
-	server.On("handle", fmt.Sprintf("/project1/zones/us-central1-b/instanceGroupManagers/%s", defaultPoolMigName)).Return(buildInstanceGroupManagerResponse(zoneB, defaultPoolMigName, 7)).Once()
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers").Return("bad_response").Once()
+	server.On("handle", fmt.Sprintf("/projects/project1/zones/us-central1-b/instanceGroupManagers/%s", defaultPoolMigName)).Return(buildInstanceGroupManagerResponse(zoneB, defaultPoolMigName, 7)).Once()
 
 	// getting size for defaultPoolMig should trigger listing all the InstanceGroupManagers
 	defaultPoolMigSize, err := g.GetMigSize(defaultPoolMig)
@@ -659,7 +659,7 @@ func TestGetMigSizeListCallFails(t *testing.T) {
 	assert.Equal(t, int64(7), defaultPoolMigSize)
 
 	// Querying another mig will yet again try to list all migs
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers").Return(
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers").Return(
 		buildListInstanceGroupManagersResponse(
 			buildListInstanceGroupManagersResponsePart(defaultPoolMigName, zoneB, 7),
 			buildListInstanceGroupManagersResponsePart(extraPoolMigName, zoneB, 8),
@@ -680,8 +680,8 @@ func TestGetMigForInstance(t *testing.T) {
 	setupTestDefaultPool(g, false)
 	g.cache.InvalidateAllMigBasenames()
 
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-default-pool").Return(buildDefaultInstanceGroupManagerResponse(zoneB)).Once()
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-default-pool/listManagedInstances").Return(buildFourRunningInstancesOnDefaultMigManagedInstancesResponse(zoneB)).Twice()
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-default-pool").Return(buildDefaultInstanceGroupManagerResponse(zoneB)).Once()
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers/gke-cluster-1-default-pool/listManagedInstances").Return(buildFourRunningInstancesOnDefaultMigManagedInstancesResponse(zoneB)).Twice()
 	gceRef1 := GceRef{
 		Project: projectId,
 		Zone:    zoneB,
@@ -712,7 +712,7 @@ func TestGetMigNodesBasic(t *testing.T) {
 	defer server.Close()
 	g := newTestGceManager(t, server.URL, false)
 
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers/extra-pool-323233232/listManagedInstances").Return(buildFourRunningInstancesOnDefaultMigManagedInstancesResponse(zoneB)).Once()
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers/extra-pool-323233232/listManagedInstances").Return(buildFourRunningInstancesOnDefaultMigManagedInstancesResponse(zoneB)).Once()
 
 	mig := &gceMig{
 		gceRef: GceRef{
@@ -1054,7 +1054,7 @@ func TestGetMigNodesComplex(t *testing.T) {
 		parts = append(parts, tc.responsePart)
 	}
 	response := buildManagedInstancesResponse(parts...)
-	server.On("handle", "/project1/zones/europe-west1-b/instanceGroupManagers/some_group/listManagedInstances").Return(response).Once()
+	server.On("handle", "/projects/project1/zones/europe-west1-b/instanceGroupManagers/some_group/listManagedInstances").Return(response).Once()
 
 	mig := &gceMig{
 		gceRef: GceRef{
@@ -1139,15 +1139,15 @@ func TestFetchAutoMigsZonal(t *testing.T) {
 	server := NewHttpServerMock()
 	defer server.Close()
 
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroups").Return(buildListInstanceGroupsResponse(zoneB, gceMigA, gceMigB)).Once()
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA).Return(buildInstanceGroupManagerResponse(zoneB, gceMigA, 3)).Once()
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB).Return(buildInstanceGroupManagerResponse(zoneB, gceMigB, 3)).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroups").Return(buildListInstanceGroupsResponse(zoneB, gceMigA, gceMigB)).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA).Return(buildInstanceGroupManagerResponse(zoneB, gceMigA, 3)).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB).Return(buildInstanceGroupManagerResponse(zoneB, gceMigB, 3)).Once()
 
 	// Regenerate instance cache
-	server.On("handle", "/project1/global/instanceTemplates/"+gceMigA).Return(instanceTemplate).Once()
-	server.On("handle", "/project1/global/instanceTemplates/"+gceMigB).Return(instanceTemplate).Once()
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA+"/listManagedInstances").Return(buildFourRunningInstancesManagedInstancesResponse(zoneB, gceMigA)).Once()
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB+"/listManagedInstances").Return(buildOneRunningInstanceManagedInstancesResponse(zoneB, gceMigB)).Once()
+	server.On("handle", "/projects/project1/global/instanceTemplates/"+gceMigA).Return(instanceTemplate).Once()
+	server.On("handle", "/projects/project1/global/instanceTemplates/"+gceMigB).Return(instanceTemplate).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA+"/listManagedInstances").Return(buildFourRunningInstancesManagedInstancesResponse(zoneB, gceMigA)).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB+"/listManagedInstances").Return(buildOneRunningInstanceManagedInstancesResponse(zoneB, gceMigB)).Once()
 
 	regional := false
 	g := newTestGceManager(t, server.URL, regional)
@@ -1171,15 +1171,15 @@ func TestFetchAutoMigsUnregistersMissingMigs(t *testing.T) {
 	defer server.Close()
 
 	// Register explicit instance group
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA).Return(buildInstanceGroupManagerResponse(zoneB, gceMigA, 3)).Once()
-	server.On("handle", "/project1/global/instanceTemplates/"+gceMigA).Return(instanceTemplate).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA).Return(buildInstanceGroupManagerResponse(zoneB, gceMigA, 3)).Once()
+	server.On("handle", "/projects/project1/global/instanceTemplates/"+gceMigA).Return(instanceTemplate).Once()
 
 	// Regenerate cache for explicit instance group
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA+"/listManagedInstances").Return(buildFourRunningInstancesManagedInstancesResponse(zoneB, gceMigA)).Twice()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA+"/listManagedInstances").Return(buildFourRunningInstancesManagedInstancesResponse(zoneB, gceMigA)).Twice()
 
 	// Register 'previously autodetected' instance group
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB).Return(buildInstanceGroupManagerResponse(zoneB, gceMigB, 3)).Once()
-	server.On("handle", "/project1/global/instanceTemplates/"+gceMigB).Return(instanceTemplate).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB).Return(buildInstanceGroupManagerResponse(zoneB, gceMigB, 3)).Once()
+	server.On("handle", "/projects/project1/global/instanceTemplates/"+gceMigB).Return(instanceTemplate).Once()
 
 	regional := false
 	g := newTestGceManager(t, server.URL, regional)
@@ -1211,16 +1211,16 @@ func TestFetchAutoMigsRegional(t *testing.T) {
 	server := NewHttpServerMock()
 	defer server.Close()
 
-	server.On("handle", "/project1/regions/us-central1").Return(getRegionResponse).Once()
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroups").Return(buildListInstanceGroupsResponse(zoneB, gceMigA, gceMigB)).Once()
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA).Return(buildInstanceGroupManagerResponse(zoneB, gceMigA, 3)).Once()
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB).Return(buildInstanceGroupManagerResponse(zoneB, gceMigB, 3)).Once()
+	server.On("handle", "/projects/project1/regions/us-central1").Return(getRegionResponse).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroups").Return(buildListInstanceGroupsResponse(zoneB, gceMigA, gceMigB)).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA).Return(buildInstanceGroupManagerResponse(zoneB, gceMigA, 3)).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB).Return(buildInstanceGroupManagerResponse(zoneB, gceMigB, 3)).Once()
 
 	// Regenerate instance cache
-	server.On("handle", "/project1/global/instanceTemplates/"+gceMigA).Return(instanceTemplate).Once()
-	server.On("handle", "/project1/global/instanceTemplates/"+gceMigB).Return(instanceTemplate).Once()
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA+"/listManagedInstances").Return(buildFourRunningInstancesManagedInstancesResponse(zoneB, gceMigA)).Once()
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB+"/listManagedInstances").Return(buildOneRunningInstanceManagedInstancesResponse(zoneB, gceMigB)).Once()
+	server.On("handle", "/projects/project1/global/instanceTemplates/"+gceMigA).Return(instanceTemplate).Once()
+	server.On("handle", "/projects/project1/global/instanceTemplates/"+gceMigB).Return(instanceTemplate).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA+"/listManagedInstances").Return(buildFourRunningInstancesManagedInstancesResponse(zoneB, gceMigA)).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB+"/listManagedInstances").Return(buildOneRunningInstanceManagedInstancesResponse(zoneB, gceMigB)).Once()
 
 	regional := true
 	g := newTestGceManager(t, server.URL, regional)
@@ -1243,14 +1243,14 @@ func TestFetchExplicitMigs(t *testing.T) {
 	server := NewHttpServerMock()
 	defer server.Close()
 
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA).Return(buildInstanceGroupManagerResponse(zoneB, gceMigA, 3)).Once()
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB).Return(buildInstanceGroupManagerResponse(zoneB, gceMigB, 3)).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA).Return(buildInstanceGroupManagerResponse(zoneB, gceMigA, 3)).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB).Return(buildInstanceGroupManagerResponse(zoneB, gceMigB, 3)).Once()
 
-	server.On("handle", "/project1/global/instanceTemplates/"+gceMigA).Return(instanceTemplate).Once()
-	server.On("handle", "/project1/global/instanceTemplates/"+gceMigB).Return(instanceTemplate).Once()
+	server.On("handle", "/projects/project1/global/instanceTemplates/"+gceMigA).Return(instanceTemplate).Once()
+	server.On("handle", "/projects/project1/global/instanceTemplates/"+gceMigB).Return(instanceTemplate).Once()
 
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA+"/listManagedInstances").Return(buildFourRunningInstancesManagedInstancesResponse(zoneB, gceMigA)).Once()
-	server.On("handle", "/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB+"/listManagedInstances").Return(buildOneRunningInstanceManagedInstancesResponse(zoneB, gceMigB)).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigA+"/listManagedInstances").Return(buildFourRunningInstancesManagedInstancesResponse(zoneB, gceMigA)).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/instanceGroupManagers/"+gceMigB+"/listManagedInstances").Return(buildOneRunningInstanceManagedInstancesResponse(zoneB, gceMigB)).Once()
 
 	regional := false
 	g := newTestGceManager(t, server.URL, regional)
@@ -1313,8 +1313,8 @@ func TestGetMigTemplateNode(t *testing.T) {
 	server := NewHttpServerMock()
 	defer server.Close()
 
-	server.On("handle", "/project1/zones/us-central1-b/instanceGroupManagers/default-pool").Return(getInstanceGroupManagerResponse).Once()
-	server.On("handle", "/project1/global/instanceTemplates/gke-cluster-1-default-pool").Return(instanceTemplate).Once()
+	server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers/default-pool").Return(getInstanceGroupManagerResponse).Once()
+	server.On("handle", "/projects/project1/global/instanceTemplates/gke-cluster-1-default-pool").Return(instanceTemplate).Once()
 
 	regional := false
 	g := newTestGceManager(t, server.URL, regional)
@@ -1372,7 +1372,7 @@ func TestGetCpuAndMemoryForMachineType(t *testing.T) {
 	mock.AssertExpectationsForObjects(t, server)
 
 	// Standard machine type not found in cache.
-	server.On("handle", "/project1/zones/"+zoneB+"/machineTypes/n1-standard-2").Return(getMachineTypeResponse).Once()
+	server.On("handle", "/projects/project1/zones/"+zoneB+"/machineTypes/n1-standard-2").Return(getMachineTypeResponse).Once()
 	cpu, mem, err = g.getCpuAndMemoryForMachineType("n1-standard-2", zoneB)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(2), cpu)
@@ -1387,7 +1387,7 @@ func TestGetCpuAndMemoryForMachineType(t *testing.T) {
 	mock.AssertExpectationsForObjects(t, server)
 
 	// Standard machine type not found in the zone.
-	server.On("handle", "/project1/zones/us-central1-g/machineTypes/n1-standard-1").Return("").Once()
+	server.On("handle", "/projects/project1/zones/us-central1-g/machineTypes/n1-standard-1").Return("").Once()
 	_, _, err = g.getCpuAndMemoryForMachineType("n1-standard-1", "us-central1-g")
 	assert.Error(t, err)
 	mock.AssertExpectationsForObjects(t, server)

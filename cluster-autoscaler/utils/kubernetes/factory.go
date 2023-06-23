@@ -24,7 +24,7 @@ import (
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	kube_record "k8s.io/client-go/tools/record"
 
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (

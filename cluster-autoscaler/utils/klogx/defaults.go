@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package glogx
+package klogx
 
-import "k8s.io/klog"
+import klog "k8s.io/klog/v2"
 
 const (
 	// MaxPodsLogged is the maximum number of pods for which we will
@@ -29,7 +29,7 @@ const (
 
 // PodsLoggingQuota returns a new quota with default limit for pods at current verbosity.
 func PodsLoggingQuota() *quota {
-	if klog.V(5) {
+	if klog.V(5).Enabled() {
 		return NewLoggingQuota(MaxPodsLoggedV5)
 	}
 	return NewLoggingQuota(MaxPodsLogged)

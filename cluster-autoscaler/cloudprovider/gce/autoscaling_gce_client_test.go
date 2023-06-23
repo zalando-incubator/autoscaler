@@ -68,8 +68,8 @@ func TestWaitForOp(t *testing.T) {
 	g.operationPollInterval = 1 * time.Millisecond
 	g.operationWaitTimeout = 500 * time.Millisecond
 
-	server.On("handle", "/project1/zones/us-central1-b/operations/operation-1505728466148-d16f5197").Return(operationRunningResponse).Times(3)
-	server.On("handle", "/project1/zones/us-central1-b/operations/operation-1505728466148-d16f5197").Return(operationDoneResponse).Once()
+	server.On("handle", "/projects/project1/zones/us-central1-b/operations/operation-1505728466148-d16f5197").Return(operationRunningResponse).Times(3)
+	server.On("handle", "/projects/project1/zones/us-central1-b/operations/operation-1505728466148-d16f5197").Return(operationDoneResponse).Once()
 
 	operation := &gce_api.Operation{Name: "operation-1505728466148-d16f5197"}
 
@@ -90,7 +90,7 @@ func TestWaitForOpTimeout(t *testing.T) {
 
 	// Sometimes, only 3 calls are made, but it doesn't really matter,
 	// so let's not assert expectations for this mock, just check for timeout error.
-	server.On("handle", "/project1/zones/us-central1-b/operations/operation-1505728466148-d16f5197").Return(operationRunningResponse).Times(4)
+	server.On("handle", "/projects/project1/zones/us-central1-b/operations/operation-1505728466148-d16f5197").Return(operationRunningResponse).Times(4)
 
 	operation := &gce_api.Operation{Name: "operation-1505728466148-d16f5197"}
 

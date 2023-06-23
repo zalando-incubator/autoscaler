@@ -35,7 +35,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/clients/vmclient"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/clients/vmssclient"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/clients/vmssvmclient"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 // DeploymentsClient defines needed functions for azure network.DeploymentsClient.

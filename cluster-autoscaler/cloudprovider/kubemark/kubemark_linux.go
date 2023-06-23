@@ -35,9 +35,9 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/kubernetes/pkg/kubemark"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (
@@ -266,7 +266,7 @@ func (nodeGroup *NodeGroup) DecreaseTargetSize(delta int) error {
 }
 
 // TemplateNodeInfo returns a node template for this node group.
-func (nodeGroup *NodeGroup) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (nodeGroup *NodeGroup) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	return nil, cloudprovider.ErrNotImplemented
 }
 

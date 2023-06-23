@@ -17,11 +17,11 @@ limitations under the License.
 package nodegroupset
 
 import (
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 // IsAwsNodeInfoSimilar adds AWS specific node labels to the list of ignored labels.
-func IsAwsNodeInfoSimilar(n1, n2 *schedulernodeinfo.NodeInfo) bool {
+func IsAwsNodeInfoSimilar(n1, n2 *schedulerframework.NodeInfo) bool {
 	awsIgnoredLabels := map[string]bool{
 		"alpha.eksctl.io/instance-id":    true, // this is a label used by eksctl to identify instances.
 		"alpha.eksctl.io/nodegroup-name": true, // this is a label used by eksctl to identify "node group" names.

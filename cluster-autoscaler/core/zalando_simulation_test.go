@@ -31,7 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/deletetaint"
 	kube_client "k8s.io/client-go/kubernetes"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (

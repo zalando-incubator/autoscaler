@@ -33,8 +33,8 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
-	"k8s.io/klog"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	klog "k8s.io/klog/v2"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/legacy-cloud-providers/azure/retry"
 )
 
@@ -529,7 +529,7 @@ func (as *AgentPool) Debug() string {
 }
 
 // TemplateNodeInfo returns a node template for this agent pool.
-func (as *AgentPool) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (as *AgentPool) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	return nil, cloudprovider.ErrNotImplemented
 }
 

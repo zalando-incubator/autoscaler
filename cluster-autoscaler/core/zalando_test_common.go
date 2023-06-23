@@ -36,7 +36,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1beta1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -67,7 +67,7 @@ import (
 	v1appslister "k8s.io/client-go/listers/apps/v1"
 	v1batchlister "k8s.io/client-go/listers/batch/v1"
 	v1corelister "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/listers/policy/v1beta1"
+	v1 "k8s.io/client-go/listers/policy/v1"
 	clientgotesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 	klog "k8s.io/klog/v2"
@@ -984,7 +984,7 @@ func (l *fakeClientPodLister) List() ([]*corev1.Pod, error) {
 }
 
 type pdbLister struct {
-	lister v1beta1.PodDisruptionBudgetLister
+	lister v1.PodDisruptionBudgetLister
 }
 
 func (l *pdbLister) List() ([]*policyv1.PodDisruptionBudget, error) {
@@ -1086,7 +1086,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 		&fakeClientPodLister{client: clientset, filter: func(pod *corev1.Pod) bool {
 			return pod.Spec.NodeName == ""
 		}},
-		&pdbLister{lister: v1beta1.NewPodDisruptionBudgetLister(env.pdbIndexer)},
+		&pdbLister{lister: v1.NewPodDisruptionBudgetLister(env.pdbIndexer)},
 		v1appslister.NewDaemonSetLister(env.daemonsetIndexer),
 		v1corelister.NewReplicationControllerLister(env.replicationControllerIndexer),
 		v1batchlister.NewJobLister(env.jobIndexer),

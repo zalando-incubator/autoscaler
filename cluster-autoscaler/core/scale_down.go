@@ -40,7 +40,7 @@ import (
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 
 	apiv1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1beta1"
+	policyv1 "k8s.io/api/policy/v1"
 	kube_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -1226,7 +1226,7 @@ func evictPod(podToEvict *apiv1.Pod, client kube_client.Interface, recorder kube
 				},
 			},
 		}
-		lastError = client.CoreV1().Pods(podToEvict.Namespace).Evict(ctx.TODO(), eviction)
+		lastError = client.CoreV1().Pods(podToEvict.Namespace).EvictV1(ctx.TODO(), eviction)
 		if lastError == nil || kube_errors.IsNotFound(lastError) {
 			return status.PodEvictionResult{Pod: podToEvict, TimedOut: false, Err: nil}
 		}

@@ -27,20 +27,6 @@ pipeline:
     cmd: |
       cd cluster-autoscaler
       make test-in-docker
-  - desc: "Build and release"
-    cmd: |
-      if [[ "${CDP_TARGET_BRANCH}" != "zalando-cluster-autoscaler" || -n "${CDP_PULL_REQUEST_NUMBER}" ]]; then
-        VERSION="${VERSION}.dev-${CDP_TARGET_REPOSITORY_COUNTER}"
-      else
-        VERSION="${VERSION}.${CDP_TARGET_BRANCH_COUNTER}"
-      fi
-
-      cd cluster-autoscaler
-      make build-in-docker
-
-      IMAGE="${DOWNSTREAM}:${VERSION}"
-      docker build --build-arg BASEIMAGE=container-registry.zalando.net/library/alpine-3.13:latest --build-arg TARGETARCH= -t "${IMAGE}" .
-      docker push "${IMAGE}"
   - desc: "Build and release (multi-arch)"
     cmd: |
       if [[ "${CDP_TARGET_BRANCH}" != "zalando-cluster-autoscaler" || -n "${CDP_PULL_REQUEST_NUMBER}" ]]; then

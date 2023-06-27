@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/alicloud/alibaba-cloud-sdk-go/sdk/requests"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/alicloud/alibaba-cloud-sdk-go/services/ess"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 	"time"
 )
 
@@ -30,7 +30,7 @@ const (
 	defaultAdjustmentType   = "TotalCapacity"
 )
 
-//autoScaling define the interface usage in alibaba-cloud-sdk-go.
+// autoScaling define the interface usage in alibaba-cloud-sdk-go.
 type autoScaling interface {
 	DescribeScalingGroups(req *ess.DescribeScalingGroupsRequest) (*ess.DescribeScalingGroupsResponse, error)
 	DescribeScalingConfigurations(req *ess.DescribeScalingConfigurationsRequest) (*ess.DescribeScalingConfigurationsResponse, error)
@@ -95,7 +95,7 @@ func getEssClient(cfg *cloudConfig) (client *ess.Client, err error) {
 	return
 }
 
-//autoScalingWrapper will serve as the
+// autoScalingWrapper will serve as the
 type autoScalingWrapper struct {
 	autoScaling
 	cfg *cloudConfig

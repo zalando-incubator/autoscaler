@@ -1,3 +1,4 @@
+//go:build !providerless
 // +build !providerless
 
 /*
@@ -31,7 +32,7 @@ import (
 
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/util/flowcontrol"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 	azclients "k8s.io/legacy-cloud-providers/azure/clients"
 	"k8s.io/legacy-cloud-providers/azure/clients/armclient"
 	"k8s.io/legacy-cloud-providers/azure/metrics"

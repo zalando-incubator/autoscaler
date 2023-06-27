@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 /*
@@ -22,7 +23,7 @@ import (
 	"flag"
 	"html/template"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 	"os"
 )
 

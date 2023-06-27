@@ -39,7 +39,7 @@ import (
 	"golang.org/x/crypto/pkcs12"
 
 	"k8s.io/autoscaler/cluster-autoscaler/version"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 	"k8s.io/legacy-cloud-providers/azure/retry"
 )
 
@@ -89,9 +89,9 @@ var (
 	azureResourceGroupNameRE = regexp.MustCompile(`.*/subscriptions/(?:.*)/resourceGroups/(.+)/providers/(?:.*)`)
 )
 
-//AzUtil consists of utility functions which utilizes clients to different services.
-//Since they span across various clients they cannot be fitted into individual client structs
-//so adding them here.
+// AzUtil consists of utility functions which utilizes clients to different services.
+// Since they span across various clients they cannot be fitted into individual client structs
+// so adding them here.
 type AzUtil struct {
 	manager *AzureManager
 }

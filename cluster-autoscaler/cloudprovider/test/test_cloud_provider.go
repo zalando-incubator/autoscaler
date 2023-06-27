@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 // OnScaleUpFunc is a function called on node group increase in TestCloudProvider.
@@ -50,7 +50,7 @@ type TestCloudProvider struct {
 	onNodeGroupCreate func(string) error
 	onNodeGroupDelete func(string) error
 	machineTypes      []string
-	machineTemplates  map[string]*schedulernodeinfo.NodeInfo
+	machineTemplates  map[string]*schedulerframework.NodeInfo
 	priceModel        cloudprovider.PricingModel
 	resourceLimiter   *cloudprovider.ResourceLimiter
 }
@@ -69,7 +69,7 @@ func NewTestCloudProvider(onScaleUp OnScaleUpFunc, onScaleDown OnScaleDownFunc) 
 // NewTestAutoprovisioningCloudProvider builds new TestCloudProvider with autoprovisioning support
 func NewTestAutoprovisioningCloudProvider(onScaleUp OnScaleUpFunc, onScaleDown OnScaleDownFunc,
 	onNodeGroupCreate OnNodeGroupCreateFunc, onNodeGroupDelete OnNodeGroupDeleteFunc,
-	machineTypes []string, machineTemplates map[string]*schedulernodeinfo.NodeInfo) *TestCloudProvider {
+	machineTypes []string, machineTemplates map[string]*schedulerframework.NodeInfo) *TestCloudProvider {
 	return &TestCloudProvider{
 		nodes:             make(map[string]string),
 		groups:            make(map[string]cloudprovider.NodeGroup),
@@ -266,12 +266,12 @@ func (tcp *TestCloudProvider) Refresh(existingNodes []*apiv1.Node) error {
 }
 
 // SetNodeTemplate changes the node template for a non-autoprovisioned node group
-func (tcp *TestCloudProvider) SetNodeTemplate(nodeGroupId string, template *schedulernodeinfo.NodeInfo) {
+func (tcp *TestCloudProvider) SetNodeTemplate(nodeGroupId string, template *schedulerframework.NodeInfo) {
 	tcp.Lock()
 	defer tcp.Unlock()
 
 	if tcp.machineTemplates == nil {
-		tcp.machineTemplates = make(map[string]*schedulernodeinfo.NodeInfo)
+		tcp.machineTemplates = make(map[string]*schedulerframework.NodeInfo)
 	}
 	tcp.machineTemplates[nodeGroupId] = template
 }
@@ -444,7 +444,7 @@ func (tng *TestNodeGroup) Autoprovisioned() bool {
 }
 
 // TemplateNodeInfo returns a node template for this node group.
-func (tng *TestNodeGroup) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (tng *TestNodeGroup) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	if tng.cloudProvider.machineTemplates == nil {
 		return nil, cloudprovider.ErrNotImplemented
 	}

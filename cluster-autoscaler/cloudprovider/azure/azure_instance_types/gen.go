@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 /*
@@ -28,7 +29,7 @@ import (
 	"strings"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 var packageTemplate = template.Must(template.New("").Parse(`/*

@@ -28,10 +28,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
-	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
+	kubeletapis "k8s.io/kubelet/pkg/apis"
 
 	"github.com/ghodss/yaml"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 // GceTemplateBuilder builds templates for GCE nodes.

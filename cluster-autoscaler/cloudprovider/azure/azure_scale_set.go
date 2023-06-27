@@ -32,9 +32,9 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 	cloudvolume "k8s.io/cloud-provider/volume"
-	"k8s.io/klog"
-	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	klog "k8s.io/klog/v2"
+	kubeletapis "k8s.io/kubelet/pkg/apis"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/legacy-cloud-providers/azure/retry"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2019-07-01/compute"
@@ -654,7 +654,7 @@ func extractTaintsFromScaleSet(tags map[string]*string) []apiv1.Taint {
 }
 
 // TemplateNodeInfo returns a node template for this scale set.
-func (scaleSet *ScaleSet) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (scaleSet *ScaleSet) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	template, rerr := scaleSet.getVMSSInfo()
 	if rerr != nil {
 		return nil, rerr.Error()
@@ -665,7 +665,7 @@ func (scaleSet *ScaleSet) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error
 		return nil, err
 	}
 
-	nodeInfo := schedulernodeinfo.NewNodeInfo(cloudprovider.BuildKubeProxy(scaleSet.Name))
+	nodeInfo := schedulerframework.NewNodeInfo(cloudprovider.BuildKubeProxy(scaleSet.Name))
 	nodeInfo.SetNode(node)
 	return nodeInfo, nil
 }

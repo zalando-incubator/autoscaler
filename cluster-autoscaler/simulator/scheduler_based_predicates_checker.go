@@ -19,56 +19,45 @@ package simulator
 import (
 	"context"
 	"fmt"
-	"time"
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	kube_client "k8s.io/client-go/kubernetes"
 	v1listers "k8s.io/client-go/listers/core/v1"
-	"k8s.io/klog"
-	volume_scheduling "k8s.io/kubernetes/pkg/controller/volume/scheduling"
-	scheduler_apis_config "k8s.io/kubernetes/pkg/scheduler/apis/config"
+	klog "k8s.io/klog/v2"
+	scheduler_config "k8s.io/kubernetes/pkg/scheduler/apis/config/latest"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 	scheduler_plugins "k8s.io/kubernetes/pkg/scheduler/framework/plugins"
-	scheduler_framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
-	scheduler_nodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
-
-	// We need to import provider to initialize default scheduler.
-	"k8s.io/kubernetes/pkg/scheduler/algorithmprovider"
+	schedulerframeworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 )
 
 // SchedulerBasedPredicateChecker checks whether all required predicates pass for given Pod and Node.
 // The verification is done by calling out to scheduler code.
 type SchedulerBasedPredicateChecker struct {
-	framework              scheduler_framework.Framework
+	framework              schedulerframework.Framework
 	delegatingSharedLister *DelegatingSchedulerSharedLister
 	nodeLister             v1listers.NodeLister
 	podLister              v1listers.PodLister
+	lastIndex              int
 }
 
 // NewSchedulerBasedPredicateChecker builds scheduler based PredicateChecker.
 func NewSchedulerBasedPredicateChecker(kubeClient kube_client.Interface, stop <-chan struct{}) (*SchedulerBasedPredicateChecker, error) {
 	informerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
-	providerRegistry := algorithmprovider.NewRegistry()
-	plugins := providerRegistry[scheduler_apis_config.SchedulerDefaultProviderName]
+	config, err := scheduler_config.Default()
+	if err != nil {
+		return nil, fmt.Errorf("couldn't create scheduler config: %v", err)
+	}
+	if len(config.Profiles) != 1 || config.Profiles[0].SchedulerName != apiv1.DefaultSchedulerName {
+		return nil, fmt.Errorf("unexpected scheduler config: expected default scheduler profile only (found %d profiles)", len(config.Profiles))
+	}
 	sharedLister := NewDelegatingSchedulerSharedLister()
 
-	volumeBinder := volume_scheduling.NewVolumeBinder(
-		kubeClient,
-		informerFactory.Core().V1().Nodes(),
-		informerFactory.Storage().V1().CSINodes(),
-		informerFactory.Core().V1().PersistentVolumeClaims(),
-		informerFactory.Core().V1().PersistentVolumes(),
-		informerFactory.Storage().V1().StorageClasses(),
-		time.Duration(10)*time.Second,
-	)
-
-	framework, err := scheduler_framework.NewFramework(
+	framework, err := schedulerframeworkruntime.NewFramework(
 		scheduler_plugins.NewInTreeRegistry(),
-		plugins,
-		nil, // This is fine.
-		scheduler_framework.WithInformerFactory(informerFactory),
-		scheduler_framework.WithSnapshotSharedLister(sharedLister),
-		scheduler_framework.WithVolumeBinder(volumeBinder),
+		&config.Profiles[0],
+		schedulerframeworkruntime.WithInformerFactory(informerFactory),
+		schedulerframeworkruntime.WithSnapshotSharedLister(sharedLister),
 	)
 
 	if err != nil {
@@ -89,6 +78,13 @@ func NewSchedulerBasedPredicateChecker(kubeClient kube_client.Interface, stop <-
 
 // FitsAnyNode checks if the given pod can be placed on any of the given nodes.
 func (p *SchedulerBasedPredicateChecker) FitsAnyNode(clusterSnapshot ClusterSnapshot, pod *apiv1.Pod) (string, error) {
+	return p.FitsAnyNodeMatching(clusterSnapshot, pod, func(*schedulerframework.NodeInfo) bool {
+		return true
+	})
+}
+
+// FitsAnyNodeMatching checks if the given pod can be placed on any of the given nodes matching the provided function.
+func (p *SchedulerBasedPredicateChecker) FitsAnyNodeMatching(clusterSnapshot ClusterSnapshot, pod *apiv1.Pod, nodeMatches func(*schedulerframework.NodeInfo) bool) (string, error) {
 	if clusterSnapshot == nil {
 		return "", fmt.Errorf("ClusterSnapshot not provided")
 	}
@@ -106,13 +102,18 @@ func (p *SchedulerBasedPredicateChecker) FitsAnyNode(clusterSnapshot ClusterSnap
 	p.delegatingSharedLister.UpdateDelegate(clusterSnapshot)
 	defer p.delegatingSharedLister.ResetDelegate()
 
-	state := scheduler_framework.NewCycleState()
+	state := schedulerframework.NewCycleState()
 	preFilterStatus := p.framework.RunPreFilterPlugins(context.TODO(), state, pod)
 	if !preFilterStatus.IsSuccess() {
 		return "", fmt.Errorf("error running pre filter plugins for pod %s; %s", pod.Name, preFilterStatus.Message())
 	}
 
-	for _, nodeInfo := range nodeInfosList {
+	for i := range nodeInfosList {
+		nodeInfo := nodeInfosList[(p.lastIndex+i)%len(nodeInfosList)]
+		if !nodeMatches(nodeInfo) {
+			continue
+		}
+
 		// Be sure that the node is schedulable.
 		if nodeInfo.Node().Spec.Unschedulable {
 			continue
@@ -127,6 +128,7 @@ func (p *SchedulerBasedPredicateChecker) FitsAnyNode(clusterSnapshot ClusterSnap
 			}
 		}
 		if ok {
+			p.lastIndex = (p.lastIndex + i + 1) % len(nodeInfosList)
 			return nodeInfo.Node().Name, nil
 		}
 	}
@@ -147,7 +149,7 @@ func (p *SchedulerBasedPredicateChecker) CheckPredicates(clusterSnapshot Cluster
 	p.delegatingSharedLister.UpdateDelegate(clusterSnapshot)
 	defer p.delegatingSharedLister.ResetDelegate()
 
-	state := scheduler_framework.NewCycleState()
+	state := schedulerframework.NewCycleState()
 	preFilterStatus := p.framework.RunPreFilterPlugins(context.TODO(), state, pod)
 	if !preFilterStatus.IsSuccess() {
 		return NewPredicateError(
@@ -180,7 +182,7 @@ func (p *SchedulerBasedPredicateChecker) CheckPredicates(clusterSnapshot Cluster
 	return nil
 }
 
-func (p *SchedulerBasedPredicateChecker) buildDebugInfo(filterName string, nodeInfo *scheduler_nodeinfo.NodeInfo) func() string {
+func (p *SchedulerBasedPredicateChecker) buildDebugInfo(filterName string, nodeInfo *schedulerframework.NodeInfo) func() string {
 	switch filterName {
 	case "TaintToleration":
 		taints := nodeInfo.Node().Spec.Taints

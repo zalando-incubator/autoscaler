@@ -80,6 +80,5 @@ Example to Delete a Cluster
 	if err != nil {
 		panic(err)
 	}
-
 */
 package clusters

@@ -23,7 +23,7 @@ import (
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/context"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -42,14 +42,14 @@ func basicSimilarNodeGroupsTest(t *testing.T, processor NodeGroupSetProcessor) {
 	provider.AddNode("ng2", n2)
 	provider.AddNode("ng3", n3)
 
-	ni1 := schedulernodeinfo.NewNodeInfo()
+	ni1 := schedulerframework.NewNodeInfo()
 	ni1.SetNode(n1)
-	ni2 := schedulernodeinfo.NewNodeInfo()
+	ni2 := schedulerframework.NewNodeInfo()
 	ni2.SetNode(n2)
-	ni3 := schedulernodeinfo.NewNodeInfo()
+	ni3 := schedulerframework.NewNodeInfo()
 	ni3.SetNode(n3)
 
-	nodeInfosForGroups := map[string]*schedulernodeinfo.NodeInfo{
+	nodeInfosForGroups := map[string]*schedulerframework.NodeInfo{
 		"ng1": ni1, "ng2": ni2, "ng3": ni3,
 	}
 

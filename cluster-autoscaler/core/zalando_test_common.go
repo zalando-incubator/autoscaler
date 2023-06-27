@@ -36,7 +36,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1beta1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -67,11 +67,11 @@ import (
 	v1appslister "k8s.io/client-go/listers/apps/v1"
 	v1batchlister "k8s.io/client-go/listers/batch/v1"
 	v1corelister "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/listers/policy/v1beta1"
+	v1 "k8s.io/client-go/listers/policy/v1"
 	clientgotesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	klog "k8s.io/klog/v2"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 type zalandoTestEnvironmentCommandType string
@@ -261,7 +261,7 @@ type zalandoTestCloudProviderNodeGroup struct {
 	maxSize       int
 	targetSize    int
 	instances     sets.String
-	templateNode  *schedulernodeinfo.NodeInfo
+	templateNode  *schedulerframework.NodeInfo
 	handleCommand func(command zalandoTestEnvironmentCommand)
 	scaleUpError  string
 
@@ -356,7 +356,7 @@ func (g *zalandoTestCloudProviderNodeGroup) regenerateCachedInstances() {
 	g.cachedInstances = result
 }
 
-func (g *zalandoTestCloudProviderNodeGroup) TemplateNodeInfo() (*schedulernodeinfo.NodeInfo, error) {
+func (g *zalandoTestCloudProviderNodeGroup) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 	ensureSameGoroutine(g.expectedGID)
 
 	result := scheduler.CloneNodeInfo(g.templateNode)
@@ -381,8 +381,8 @@ func (g *zalandoTestCloudProviderNodeGroup) Autoprovisioned() bool {
 }
 
 func (g *zalandoTestCloudProviderNodeGroup) setTemplateNode(cpu resource.Quantity, memory resource.Quantity, nodeLabels map[string]string) error {
-	templateNode := schedulernodeinfo.NewNodeInfo()
-	err := templateNode.SetNode(&corev1.Node{
+	templateNode := schedulerframework.NewNodeInfo()
+	templateNode.SetNode(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: nodeLabels,
 		},
@@ -399,9 +399,6 @@ func (g *zalandoTestCloudProviderNodeGroup) setTemplateNode(cpu resource.Quantit
 			},
 		},
 	})
-	if err != nil {
-		return err
-	}
 
 	g.templateNode = templateNode
 	return nil
@@ -987,7 +984,7 @@ func (l *fakeClientPodLister) List() ([]*corev1.Pod, error) {
 }
 
 type pdbLister struct {
-	lister v1beta1.PodDisruptionBudgetLister
+	lister v1.PodDisruptionBudgetLister
 }
 
 func (l *pdbLister) List() ([]*policyv1.PodDisruptionBudget, error) {
@@ -1089,7 +1086,7 @@ func RunSimulation(t *testing.T, options config.AutoscalingOptions, interval tim
 		&fakeClientPodLister{client: clientset, filter: func(pod *corev1.Pod) bool {
 			return pod.Spec.NodeName == ""
 		}},
-		&pdbLister{lister: v1beta1.NewPodDisruptionBudgetLister(env.pdbIndexer)},
+		&pdbLister{lister: v1.NewPodDisruptionBudgetLister(env.pdbIndexer)},
 		v1appslister.NewDaemonSetLister(env.daemonsetIndexer),
 		v1corelister.NewReplicationControllerLister(env.replicationControllerIndexer),
 		v1batchlister.NewJobLister(env.jobIndexer),

@@ -37,10 +37,10 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 
 	apiv1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1beta1"
+	policyv1 "k8s.io/api/policy/v1"
 	kube_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -49,7 +49,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 	kube_client "k8s.io/client-go/kubernetes"
 	kube_record "k8s.io/client-go/tools/record"
-	"k8s.io/klog"
+	klog "k8s.io/klog/v2"
 )
 
 const (
@@ -398,7 +398,7 @@ func (sd *ScaleDown) CleanUpUnneededNodes() {
 	sd.unneededNodes = make(map[string]time.Time)
 }
 
-func (sd *ScaleDown) checkNodeUtilization(timestamp time.Time, node *apiv1.Node, nodeInfo *schedulernodeinfo.NodeInfo) (simulator.UnremovableReason, *simulator.UtilizationInfo) {
+func (sd *ScaleDown) checkNodeUtilization(timestamp time.Time, node *apiv1.Node, nodeInfo *schedulerframework.NodeInfo) (simulator.UnremovableReason, *simulator.UtilizationInfo) {
 	// Skip nodes that were recently checked.
 	if _, found := sd.unremovableNodes[node.Name]; found {
 		return simulator.RecentlyUnremovable, nil
@@ -1226,7 +1226,7 @@ func evictPod(podToEvict *apiv1.Pod, client kube_client.Interface, recorder kube
 				},
 			},
 		}
-		lastError = client.CoreV1().Pods(podToEvict.Namespace).Evict(ctx.TODO(), eviction)
+		lastError = client.CoreV1().Pods(podToEvict.Namespace).EvictV1(ctx.TODO(), eviction)
 		if lastError == nil || kube_errors.IsNotFound(lastError) {
 			return status.PodEvictionResult{Pod: podToEvict, TimedOut: false, Err: nil}
 		}
@@ -1386,16 +1386,16 @@ const (
 	apiServerLabelValue = "kube-apiserver"
 )
 
-func isMasterNode(nodeInfo *schedulernodeinfo.NodeInfo) bool {
-	for _, pod := range nodeInfo.Pods() {
-		if pod.Namespace == metav1.NamespaceSystem && pod.Labels[apiServerLabelKey] == apiServerLabelValue {
+func isMasterNode(nodeInfo *schedulerframework.NodeInfo) bool {
+	for _, podInfo := range nodeInfo.Pods {
+		if podInfo.Pod.Namespace == metav1.NamespaceSystem && podInfo.Pod.Labels[apiServerLabelKey] == apiServerLabelValue {
 			return true
 		}
 	}
 	return false
 }
 
-func filterOutMasters(nodeInfos []*schedulernodeinfo.NodeInfo) []*apiv1.Node {
+func filterOutMasters(nodeInfos []*schedulerframework.NodeInfo) []*apiv1.Node {
 	result := make([]*apiv1.Node, 0, len(nodeInfos))
 	for _, nodeInfo := range nodeInfos {
 		if !isMasterNode(nodeInfo) {

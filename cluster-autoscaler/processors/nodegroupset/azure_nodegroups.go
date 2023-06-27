@@ -17,13 +17,13 @@ limitations under the License.
 package nodegroupset
 
 import (
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 // AzureNodepoolLabel is a label specifying which Azure node pool a particular node belongs to.
 const AzureNodepoolLabel = "agentpool"
 
-func nodesFromSameAzureNodePool(n1, n2 *schedulernodeinfo.NodeInfo) bool {
+func nodesFromSameAzureNodePool(n1, n2 *schedulerframework.NodeInfo) bool {
 	n1AzureNodePool := n1.Node().Labels[AzureNodepoolLabel]
 	n2AzureNodePool := n2.Node().Labels[AzureNodepoolLabel]
 	return n1AzureNodePool != "" && n1AzureNodePool == n2AzureNodePool
@@ -32,7 +32,7 @@ func nodesFromSameAzureNodePool(n1, n2 *schedulernodeinfo.NodeInfo) bool {
 // IsAzureNodeInfoSimilar compares if two nodes should be considered part of the
 // same NodeGroupSet. This is true if they either belong to the same Azure agentpool
 // or match usual conditions checked by IsAzureNodeInfoSimilar, even if they have different agentpool labels.
-func IsAzureNodeInfoSimilar(n1, n2 *schedulernodeinfo.NodeInfo) bool {
+func IsAzureNodeInfoSimilar(n1, n2 *schedulerframework.NodeInfo) bool {
 	if nodesFromSameAzureNodePool(n1, n2) {
 		return true
 	}

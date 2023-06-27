@@ -1,0 +1,28 @@
+From c9c333c041be63d34aef206bc6d3b8ece39b1619 Mon Sep 17 00:00:00 2001
+From: Martin Linkhorst <martin.linkhorst@zalando.de>
+Date: Tue, 27 Jun 2023 13:57:35 +0200
+Subject: [PATCH] use minimum of volume limits from env var and from
+ allocatable resources
+
+---
+ .../scheduler/framework/plugins/nodevolumelimits/non_csi.go   | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/cluster-autoscaler/vendor/k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodevolumelimits/non_csi.go b/cluster-autoscaler/vendor/k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodevolumelimits/non_csi.go
+index 4297ddd1e..24ef8bb0f 100644
+--- a/cluster-autoscaler/vendor/k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodevolumelimits/non_csi.go
++++ b/cluster-autoscaler/vendor/k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodevolumelimits/non_csi.go
+@@ -265,7 +265,9 @@ func (pl *nonCSILimits) Filter(ctx context.Context, _ *framework.CycleState, pod
+ 	maxAttachLimit := pl.maxVolumeFunc(node)
+ 	volumeLimits := volumeLimits(nodeInfo)
+ 	if maxAttachLimitFromAllocatable, ok := volumeLimits[pl.volumeLimitKey]; ok {
+-		maxAttachLimit = int(maxAttachLimitFromAllocatable)
++		if int(maxAttachLimitFromAllocatable) < maxAttachLimit {
++			maxAttachLimit = int(maxAttachLimitFromAllocatable)
++		}
+ 	}
+ 
+ 	if numExistingVolumes+numNewVolumes > maxAttachLimit {
+-- 
+2.39.2 (Apple Git-143)
+

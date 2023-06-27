@@ -23,6 +23,11 @@ pipeline:
     cmd: |
       rm .zappr.yaml
       GO111MODULE=auto hack/verify-all.sh -v
+  - desc: "Apply custom patches"
+    cmd: |
+      cd cluster-autoscaler
+      go mod vendor
+      git apply 0001-use-minimum-of-volume-limits.patch
   - desc: "Run the test suite"
     cmd: |
       cd cluster-autoscaler

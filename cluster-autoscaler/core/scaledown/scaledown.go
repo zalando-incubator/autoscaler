@@ -25,7 +25,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 
 	apiv1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1beta1"
+	policyv1 "k8s.io/api/policy/v1"
 )
 
 // Planner is responsible for selecting nodes that should be removed.
@@ -36,7 +36,7 @@ type Planner interface {
 	CleanUpUnneededNodes()
 	// NodesToDelete returns a list of nodes that can be deleted right now,
 	// according to the Planner.
-	NodesToDelete() (empty, needDrain []*apiv1.Node)
+	NodesToDelete(currentTime time.Time) (empty, needDrain []*apiv1.Node)
 	// UnneededNodes returns a list of nodes that either can be deleted
 	// right now or in a near future, assuming nothing will change in the
 	// cluster.

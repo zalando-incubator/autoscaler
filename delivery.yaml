@@ -5,32 +5,18 @@ pipeline:
     vm_config:
       type: linux
       size: large
-      image: cdp-runtime/base
+      image: cdp-runtime/go-1.19
     working_dir: /go/src/k8s.io/autoscaler
     env:
-      VERSION: "v0.11.0-internal"
+      VERSION: "v0.12.0-internal"
     commands:
       - desc: "Installing dependencies"
         cmd: |
-          apt-get update
-          apt-get install libseccomp-dev python -qq
-
-          curl https://dl.google.com/go/go1.17.5.linux-amd64.tar.gz -o go1.17.5.linux-amd64.tar.gz
-          rm -rf /usr/local/go && tar -C /usr/local -xzf go1.17.5.linux-amd64.tar.gz
-          tee -a  ~/.profile << END
-          export GOROOT=/usr/local/go
-          export GOPATH=/go
-          export PATH=\$PATH:\$GOROOT/bin:\$GOPATH/bin 
-          END
-          source ~/.profile
-          go version
-
           export GO111MODULE=auto
           hack/install-verify-tools.sh
       - desc: "Verify"
         cmd: |
           rm .zappr.yaml
-          export EXCLUDE=verify-golint.sh
           export GO111MODULE=auto
           hack/verify-all.sh -v
       - desc: "Build and release"

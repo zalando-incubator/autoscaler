@@ -56,6 +56,7 @@ func NewSchedulerBasedPredicateChecker(kubeClient kube_client.Interface, stop <-
 	framework, err := schedulerframeworkruntime.NewFramework(
 		scheduler_plugins.NewInTreeRegistry(),
 		&config.Profiles[0],
+		stop,
 		schedulerframeworkruntime.WithInformerFactory(informerFactory),
 		schedulerframeworkruntime.WithSnapshotSharedLister(sharedLister),
 	)
@@ -103,7 +104,7 @@ func (p *SchedulerBasedPredicateChecker) FitsAnyNodeMatching(clusterSnapshot Clu
 	defer p.delegatingSharedLister.ResetDelegate()
 
 	state := schedulerframework.NewCycleState()
-	preFilterStatus := p.framework.RunPreFilterPlugins(context.TODO(), state, pod)
+	preFilterResult, preFilterStatus := p.framework.RunPreFilterPlugins(context.TODO(), state, pod)
 	if !preFilterStatus.IsSuccess() {
 		return "", fmt.Errorf("error running pre filter plugins for pod %s; %s", pod.Name, preFilterStatus.Message())
 	}
@@ -111,6 +112,10 @@ func (p *SchedulerBasedPredicateChecker) FitsAnyNodeMatching(clusterSnapshot Clu
 	for i := range nodeInfosList {
 		nodeInfo := nodeInfosList[(p.lastIndex+i)%len(nodeInfosList)]
 		if !nodeMatches(nodeInfo) {
+			continue
+		}
+
+		if !preFilterResult.AllNodes() && !preFilterResult.NodeNames.Has(nodeInfo.Node().Name) {
 			continue
 		}
 
@@ -150,7 +155,7 @@ func (p *SchedulerBasedPredicateChecker) CheckPredicates(clusterSnapshot Cluster
 	defer p.delegatingSharedLister.ResetDelegate()
 
 	state := schedulerframework.NewCycleState()
-	preFilterStatus := p.framework.RunPreFilterPlugins(context.TODO(), state, pod)
+	_, preFilterStatus := p.framework.RunPreFilterPlugins(context.TODO(), state, pod)
 	if !preFilterStatus.IsSuccess() {
 		return NewPredicateError(
 			InternalPredicateError,

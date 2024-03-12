@@ -90,7 +90,6 @@ func newMachineFromUnstructured(u *unstructured.Unstructured) *Machine {
 			Labels:            u.GetLabels(),
 			Annotations:       u.GetAnnotations(),
 			OwnerReferences:   u.GetOwnerReferences(),
-			ClusterName:       u.GetClusterName(),
 			DeletionTimestamp: u.GetDeletionTimestamp(),
 		},
 		Spec:   MachineSpec{},

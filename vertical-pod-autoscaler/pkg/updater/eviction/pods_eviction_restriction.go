@@ -77,6 +77,7 @@ type podsEvictionRestrictionFactoryImpl struct {
 	rcInformer                cache.SharedIndexInformer // informer for Replication Controllers
 	ssInformer                cache.SharedIndexInformer // informer for Stateful Sets
 	rsInformer                cache.SharedIndexInformer // informer for Replica Sets
+	dsInformer                cache.SharedIndexInformer // informer for Daemon Sets
 	minReplicas               int
 	evictionToleranceFraction float64
 }
@@ -87,6 +88,7 @@ const (
 	replicationController controllerKind = "ReplicationController"
 	statefulSet           controllerKind = "StatefulSet"
 	replicaSet            controllerKind = "ReplicaSet"
+	daemonSet             controllerKind = "DaemonSet"
 	job                   controllerKind = "Job"
 )
 
@@ -184,11 +186,16 @@ func NewPodsEvictionRestrictionFactory(client kube_client.Interface, minReplicas
 	if err != nil {
 		return nil, fmt.Errorf("Failed to create rsInformer: %v", err)
 	}
+	dsInformer, err := setUpInformer(client, daemonSet)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to create dsInformer: %v", err)
+	}
 	return &podsEvictionRestrictionFactoryImpl{
 		client:                    client,
 		rcInformer:                rcInformer, // informer for Replication Controllers
 		ssInformer:                ssInformer, // informer for Replica Sets
 		rsInformer:                rsInformer, // informer for Stateful Sets
+		dsInformer:                dsInformer, // informer for Daemon Sets
 		minReplicas:               minReplicas,
 		evictionToleranceFraction: evictionToleranceFraction}, nil
 }
@@ -338,6 +345,23 @@ func (f *podsEvictionRestrictionFactoryImpl) getReplicaCount(creator podReplicaC
 			return 0, fmt.Errorf("stateful set %s/%s has no replicas config", creator.Namespace, creator.Name)
 		}
 		return int(*ss.Spec.Replicas), nil
+
+	case daemonSet:
+		dsObj, exists, err := f.dsInformer.GetStore().GetByKey(creator.Namespace + "/" + creator.Name)
+		if err != nil {
+			return 0, fmt.Errorf("daemon set %s/%s is not available, err: %v", creator.Namespace, creator.Name, err)
+		}
+		if !exists {
+			return 0, fmt.Errorf("daemon set %s/%s does not exist", creator.Namespace, creator.Name)
+		}
+		ds, ok := dsObj.(*appsv1.DaemonSet)
+		if !ok {
+			return 0, fmt.Errorf("Failed to parse DaemonSet")
+		}
+		if ds.Status.NumberReady == 0 {
+			return 0, fmt.Errorf("daemon set %s/%s has no number ready pods", creator.Namespace, creator.Name)
+		}
+		return int(ds.Status.NumberReady), nil
 	}
 
 	return 0, nil
@@ -365,6 +389,9 @@ func setUpInformer(kubeClient kube_client.Interface, kind controllerKind) (cache
 			resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 	case statefulSet:
 		informer = appsinformer.NewStatefulSetInformer(kubeClient, apiv1.NamespaceAll,
+			resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+	case daemonSet:
+		informer = appsinformer.NewDaemonSetInformer(kubeClient, apiv1.NamespaceAll,
 			resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 	default:
 		return nil, fmt.Errorf("Unknown controller kind: %v", kind)

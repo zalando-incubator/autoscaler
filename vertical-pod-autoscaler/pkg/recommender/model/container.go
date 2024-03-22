@@ -217,9 +217,9 @@ func (container *ContainerState) RecordOOM(timestamp time.Time, requestedMemory 
 	}
 	// Get max of the request and the recent usage-based memory peak.
 	// Omitting oomPeak here to protect against recommendation running too high on subsequent OOMs.
-	memoryUsed := ResourceAmountMax(requestedMemory, container.memoryPeak) // <-- ignores oomPeak
-	memoryNeeded := ResourceAmountMax(memoryUsed+MemoryAmountFromBytes(OOMMinBumpUp),
-		ScaleResource(memoryUsed, OOMBumpUpRatio)) // adds at least 100MB to container.memoryPeak
+	memoryUsed := ResourceAmountMax(requestedMemory, container.memoryPeak)
+	memoryNeeded := ResourceAmountMax(memoryUsed+MemoryAmountFromBytes(GetAggregationsConfig().OOMMinBumpUp),
+		ScaleResource(memoryUsed, GetAggregationsConfig().OOMBumpUpRatio))
 
 	klog.V(3).Infof("RecordOOM memoryNeeded: %d", memoryNeeded)
 	oomMemorySample := ContainerUsageSample{

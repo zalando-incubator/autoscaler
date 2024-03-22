@@ -40,6 +40,7 @@ type asgCache struct {
 	asgToInstances       map[AwsRef][]AwsInstanceRef
 	instanceToAsg        map[AwsInstanceRef]*asg
 	instanceStatus       map[AwsInstanceRef]*string
+	instanceLifecycle    map[AwsInstanceRef]*string
 	asgInstanceTypeCache *instanceTypeExpirationStore
 	mutex                sync.Mutex
 	awsService           *awsWrapper
@@ -83,6 +84,7 @@ func newASGCache(awsService *awsWrapper, explicitSpecs []string, autoDiscoverySp
 		asgToInstances:        make(map[AwsRef][]AwsInstanceRef),
 		instanceToAsg:         make(map[AwsInstanceRef]*asg),
 		instanceStatus:        make(map[AwsInstanceRef]*string),
+		instanceLifecycle:     make(map[AwsInstanceRef]*string),
 		asgInstanceTypeCache:  newAsgInstanceTypeCache(awsService),
 		interrupt:             make(chan struct{}),
 		asgAutoDiscoverySpecs: autoDiscoverySpecs,
@@ -101,8 +103,15 @@ func newASGCache(awsService *awsWrapper, explicitSpecs []string, autoDiscoverySp
 var getInstanceTypeForAsg = func(m *asgCache, group *asg) (string, error) {
 	if obj, found, _ := m.asgInstanceTypeCache.GetByKey(group.AwsRef.Name); found {
 		return obj.(instanceTypeCachedObject).instanceType, nil
-	} else if result, err := m.awsService.getInstanceTypesForAsgs([]*asg{group}); err == nil {
-		return result[group.AwsRef.Name], nil
+	}
+
+	result, err := m.awsService.getInstanceTypesForAsgs([]*asg{group})
+	if err != nil {
+		return "", fmt.Errorf("could not get instance type for %s: %w", group.AwsRef.Name, err)
+	}
+
+	if instanceType, ok := result[group.AwsRef.Name]; ok {
+		return instanceType, nil
 	}
 
 	return "", fmt.Errorf("could not find instance type for %s", group.AwsRef.Name)
@@ -232,6 +241,14 @@ func (m *asgCache) InstanceStatus(ref AwsInstanceRef) (*string, error) {
 	return nil, fmt.Errorf("could not find instance %v", ref)
 }
 
+func (m *asgCache) findInstanceLifecycle(ref AwsInstanceRef) (*string, error) {
+	if lifecycle, found := m.instanceLifecycle[ref]; found {
+		return lifecycle, nil
+	}
+
+	return nil, fmt.Errorf("could not find instance %v", ref)
+}
+
 func (m *asgCache) SetAsgSize(asg *asg, size int) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
@@ -285,7 +302,6 @@ func (m *asgCache) DeleteInstances(instances []*AwsInstanceRef) error {
 			for i, instance := range instances {
 				instanceIds[i] = instance.Name
 			}
-
 			return fmt.Errorf("can't delete instances %s as they belong to at least two different ASGs (%s and %s)", strings.Join(instanceIds, ","), commonAsg.Name, asg.Name)
 		}
 	}
@@ -298,6 +314,22 @@ func (m *asgCache) DeleteInstances(instances []*AwsInstanceRef) error {
 				"of deleting instance", instance.Name)
 			m.decreaseAsgSizeByOneNoLock(commonAsg)
 		} else {
+			// check if the instance is already terminating - if it is, don't bother terminating again
+			// as doing so causes unnecessary API calls and can cause the curSize cached value to decrement
+			// unnecessarily.
+			lifecycle, err := m.findInstanceLifecycle(*instance)
+			if err != nil {
+				return err
+			}
+
+			if lifecycle != nil &&
+				*lifecycle == autoscaling.LifecycleStateTerminating ||
+				*lifecycle == autoscaling.LifecycleStateTerminatingWait ||
+				*lifecycle == autoscaling.LifecycleStateTerminatingProceed {
+				klog.V(2).Infof("instance %s is already terminating, will skip instead", instance.Name)
+				continue
+			}
+
 			params := &autoscaling.TerminateInstanceInAutoScalingGroupInput{
 				InstanceId:                     aws.String(instance.Name),
 				ShouldDecrementDesiredCapacity: aws.Bool(true),
@@ -354,6 +386,7 @@ func (m *asgCache) regenerate() error {
 	newInstanceToAsgCache := make(map[AwsInstanceRef]*asg)
 	newAsgToInstancesCache := make(map[AwsRef][]AwsInstanceRef)
 	newInstanceStatusMap := make(map[AwsInstanceRef]*string)
+	newInstanceLifecycleMap := make(map[AwsInstanceRef]*string)
 
 	// Fetch details of all ASGs
 	refreshNames := m.buildAsgNames()
@@ -395,6 +428,7 @@ func (m *asgCache) regenerate() error {
 			newInstanceToAsgCache[ref] = asg
 			newAsgToInstancesCache[asg.AwsRef][i] = ref
 			newInstanceStatusMap[ref] = instance.HealthStatus
+			newInstanceLifecycleMap[ref] = instance.LifecycleState
 		}
 	}
 
@@ -424,6 +458,7 @@ func (m *asgCache) regenerate() error {
 	m.instanceToAsg = newInstanceToAsgCache
 	m.autoscalingOptions = newAutoscalingOptions
 	m.instanceStatus = newInstanceStatusMap
+	m.instanceLifecycle = newInstanceLifecycleMap
 	return nil
 }
 

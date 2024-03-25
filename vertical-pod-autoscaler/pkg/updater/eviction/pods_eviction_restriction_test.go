@@ -579,7 +579,7 @@ func TestQuickOOMKill(t *testing.T) {
 			WithOomKill("fake", time.Minute).Get()
 	}
 
-	factory, _ := getEvictionRestrictionFactory(nil, nil, &ss, 2, tolerance)
+	factory, _ := getEvictionRestrictionFactory(nil, nil, &ss, nil, 2, tolerance)
 	eviction := factory.NewPodsEvictionRestriction(pods, getBasicVpa())
 
 	// All pods can be evicted because they have an oom kill

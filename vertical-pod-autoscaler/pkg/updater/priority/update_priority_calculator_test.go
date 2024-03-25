@@ -272,7 +272,7 @@ func TestDontUpdatePodWithQuickOOMNoResourceChange(t *testing.T) {
 }
 
 func TestDontUpdatePodWithOOMNoRecommendationChange(t *testing.T) {
-	pod := test.Pod().WithName("POD1").AddContainer(test.BuildTestContainer(containerName, "1", "1")).Get()
+	pod := test.Pod().WithName("POD1").AddContainer(test.Container().WithName(containerName).WithCPURequest(resource.MustParse("1")).WithMemRequest(resource.MustParse("1")).Get()).Get()
 
 	timestampNow := pod.Status.StartTime.Time.Add(time.Hour)
 
@@ -308,8 +308,8 @@ func TestDontUpdatePodWithOOMNoRecommendationChange(t *testing.T) {
 
 func TestUpdatePodWithOOMAnyContainer(t *testing.T) {
 	pod := test.Pod().WithName("POD1").
-		AddContainer(test.BuildTestContainer(containerName, "4", "")).
-		AddContainer(test.BuildTestContainer(secondContainerName, "4", "")).
+		AddContainer(test.Container().WithName(containerName).WithCPURequest(resource.MustParse("4")).Get()).
+		AddContainer(test.Container().WithName(secondContainerName).WithCPURequest(resource.MustParse("4")).Get()).
 		Get()
 
 	// Pretend that the test pod started 11 hours ago.

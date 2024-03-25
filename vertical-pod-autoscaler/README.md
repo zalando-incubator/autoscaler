@@ -15,6 +15,7 @@
   - [Troubleshooting](#troubleshooting)
   - [Components of VPA](#components-of-vpa)
   - [Tear down](#tear-down)
+- [Limits control](#limits-control)
 - [Examples](#examples)
   - [Keeping limit proportional to request](#keeping-limit-proportional-to-request)
   - [Capping to Limit Range](#capping-to-limit-range)
@@ -48,12 +49,14 @@ procedure described below.
 
 # Installation
 
-The current default version is Vertical Pod Autoscaler 0.13.0
+The current default version is Vertical Pod Autoscaler 0.14.0
 
 ### Compatibility
 
 | VPA version     | Kubernetes version |
 |-----------------|--------------------|
+| 1.0             | 1.25+              |
+| 0.14            | 1.25+              |
 | 0.13            | 1.25+              |
 | 0.12            | 1.25+              |
 | 0.11            | 1.22 - 1.24        |
@@ -258,13 +261,15 @@ kubectl delete clusterrolebinding myname-cluster-admin-binding
 # Limits control
 
 When setting limits VPA will conform to
-[resource policies](https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/types.go#L82).
+[resource policies](https://github.com/kubernetes/autoscaler/blob/master/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1/types.go#L100).
 It will maintain limit to request ratio specified for all containers.
 
 VPA will try to cap recommendations between min and max of
 [limit ranges](https://kubernetes.io/docs/concepts/policy/limit-range/). If limit range conflicts
 and VPA resource policy conflict, VPA will follow VPA policy (and set values outside the limit
 range).
+
+To disable getting VPA recommendations for an individual container, set `mode` to `"Off"` in `containerPolicies`.
 
 ## Examples
 
@@ -300,7 +305,7 @@ For example you could have 3 profiles: [frugal](deploy/recommender-deployment-lo
 use different TargetCPUPercentile (50, 90 and 95) to calculate their recommendations.
 
 Please note the usage of the following arguments to override default names and percentiles:
-- --name=performance
+- --recommender-name=performance
 - --target-cpu-percentile=0.95
 
 You can then choose which recommender to use by setting `recommenders` inside the `VerticalPodAutoscaler` spec.
@@ -341,8 +346,7 @@ vpa-post-processor.kubernetes.io/{containerName}_integerCPU=true
   (when configured in `Auto` and `Recreate` modes) will be successfully
   recreated. This can be partly
   addressed by using VPA together with [Cluster Autoscaler](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/FAQ.md#basics).
-* VPA does not evict pods which are not run under a controller. For such pods
-  `Auto` mode is currently equivalent to `Initial`.
+* VPA does not update resources of pods which are not run under a controller.
 * Vertical Pod Autoscaler **should not be used with the [Horizontal Pod Autoscaler](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#support-for-resource-metrics) (HPA) on CPU or memory** at this moment.
   However, you can use VPA with [HPA on custom and external metrics](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#scaling-on-custom-metrics).
 * The VPA admission controller is an admission webhook. If you add other admission webhooks

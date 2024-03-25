@@ -29,8 +29,8 @@ of in place updates in VPA with intention of gathering more feedback. Any more a
 (like applying different recommendations during pod initialization) will be introduced as separate enhancement
 proposals.
 
-[in-place update feature](https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/1287-in-place-update-pod-resources)
-[available in Kubernetes 1.27.](https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.27.md#api-change-3)
+[in-place update feature]: https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/1287-in-place-update-pod-resources
+[available in Kubernetes 1.27.]: https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.27.md#api-change-3
 
 ### Goals
 
@@ -165,7 +165,7 @@ the same conditions that apply to updates in the `Recreate` mode.
 [`UpdatePriorityCalculator.AddPod`]: https://github.com/kubernetes/autoscaler/blob/114a35961a85efdf3f36859350764e5e2c0c7013/vertical-pod-autoscaler/pkg/updater/priority/update_priority_calculator.go#L81
 [by default 12h]: https://github.com/kubernetes/autoscaler/blob/114a35961a85efdf3f36859350764e5e2c0c7013/vertical-pod-autoscaler/pkg/updater/priority/update_priority_calculator.go#L35
 [by default 10%]: https://github.com/kubernetes/autoscaler/blob/114a35961a85efdf3f36859350764e5e2c0c7013/vertical-pod-autoscaler/pkg/updater/priority/update_priority_calculator.go#L33
-[Outside recommendation range]: https://github.com/kubernetes/autoscaler/blob/114a35961a85efdf3f36859350764e5e2c0c7013/vertical-pod-autoscaler/pkg/updater/priority/priority_processor.go#L73
+[Outside recommended range]: https://github.com/kubernetes/autoscaler/blob/114a35961a85efdf3f36859350764e5e2c0c7013/vertical-pod-autoscaler/pkg/updater/priority/priority_processor.go#L73
 
 ### Test Plan
 
@@ -184,6 +184,30 @@ There will be also scenarios testing differences between `InPlaceOnly` and `InPl
 * VPA attempts an update that would change Pods QoS (`RequestsOnly` scaling, request initially < limit, recommendation
   equal to limit). In `InPlaceOnly` pod should not be evicted, request slightly lower than the recommendation will be
   applied. In the `InPlaceOrRecreate` pod should be evicted and the recommendation applied.
+
+### Details still to consider
+
+#### Ensure in-place resize request doesn't cause restarts
+
+Currently the container [resize policy](https://kubernetes.io/docs/tasks/configure-pod-container/resize-container-resources/#container-resize-policies)
+can be either `NotRequired` or `RestartContainer`. With `NotRequired` in-place update could still end up
+restarting the container if in-place update is not possible, depending on kubelet and container
+runtime implementation. However in the proposed design it should be VPA's decision whether to fall back
+to restarts or not.
+
+Extending or changing the existing API for in-place updates is possible, e.g. adding a new
+`MustNotRestart` container resize policy.
+
+#### Should `InPlaceOnly` mode be dropped
+
+The use case for `InPlaceOnly` is not understood yet. Unless we have a strong signal it solves real
+needs we should not implement it. Also VPA cannot ensure no restart would happen unless
+*Ensure in-place resize request doesn't cause restarts* (see above) is solved.
+
+#### Careful with memory scale down
+
+Downsizing memory may have to be done slowly to prevent OOMs if application starts to allocate rapidly.
+Needs more research on how to scale down on memory safely.
 
 ## Implementation History
 

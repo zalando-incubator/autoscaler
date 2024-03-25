@@ -528,6 +528,19 @@ func TestDrain(t *testing.T) {
 		},
 	}
 
+	unsafeNakedPod := &apiv1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "bar",
+			Namespace: "default",
+			Annotations: map[string]string{
+				PodSafeToEvictKey: "false",
+			},
+		},
+		Spec: apiv1.PodSpec{
+			NodeName: "node",
+		},
+	}
+
 	kubeSystemSafePod := &apiv1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "bar",
@@ -839,6 +852,15 @@ func TestDrain(t *testing.T) {
 			expectDaemonSetPods: []*apiv1.Pod{},
 		},
 		{
+			description:         "naked pod with PodSafeToEvict=false annotation",
+			pods:                []*apiv1.Pod{unsafeNakedPod},
+			pdbs:                []*policyv1.PodDisruptionBudget{},
+			expectFatal:         true,
+			expectPods:          []*apiv1.Pod{},
+			expectBlockingPod:   &BlockingPod{Pod: unsafeNakedPod, Reason: NotSafeToEvictAnnotation},
+			expectDaemonSetPods: []*apiv1.Pod{},
+		},
+		{
 			description:         "empty PDB with RC-managed pod",
 			pods:                []*apiv1.Pod{rcPod},
 			pdbs:                []*policyv1.PodDisruptionBudget{emptyPDB},
@@ -952,7 +974,7 @@ func TestDrain(t *testing.T) {
 		ssLister, err := kube_util.NewTestStatefulSetLister([]*appsv1.StatefulSet{&statefulset})
 		assert.NoError(t, err)
 
-		registry := kube_util.NewListerRegistry(nil, nil, nil, nil, nil, dsLister, rcLister, jobLister, rsLister, ssLister)
+		registry := kube_util.NewListerRegistry(nil, nil, nil, nil, dsLister, rcLister, jobLister, rsLister, ssLister)
 
 		pods, daemonSetPods, blockingPod, err := GetPodsForDeletionOnNodeDrain(test.pods, test.pdbs, true, true, test.skipNodesWithCustomControllerPods, registry, 0, testTime)
 

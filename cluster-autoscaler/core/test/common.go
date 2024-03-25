@@ -37,6 +37,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
 	"k8s.io/autoscaler/cluster-autoscaler/processors"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/actionablecluster"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/binpacking"
 	processor_callbacks "k8s.io/autoscaler/cluster-autoscaler/processors/callbacks"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/customresources"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupconfig"
@@ -108,6 +109,13 @@ type NodeGroupConfig struct {
 	MaxSize int
 }
 
+// NodeTemplateConfig is a structure to provide node info in tests
+type NodeTemplateConfig struct {
+	MachineType   string
+	NodeInfo      *schedulerframework.NodeInfo
+	NodeGroupName string
+}
+
 // ScaleUpTestConfig represents a config of a scale test
 type ScaleUpTestConfig struct {
 	Groups                  []NodeGroupConfig
@@ -117,6 +125,7 @@ type ScaleUpTestConfig struct {
 	OnScaleUp               testcloudprovider.OnScaleUpFunc
 	ExpansionOptionToChoose *GroupSizeChange
 	Options                 *config.AutoscalingOptions
+	NodeTemplateConfigs     map[string]*NodeTemplateConfig
 }
 
 // ScaleUpTestResult represents a node groups scale up result
@@ -167,8 +176,12 @@ func NewTestProcessors(context *context.AutoscalingContext) *processors.Autoscal
 	return &processors.AutoscalingProcessors{
 		PodListProcessor:       podlistprocessor.NewDefaultPodListProcessor(context.PredicateChecker),
 		NodeGroupListProcessor: &nodegroups.NoOpNodeGroupListProcessor{},
+		BinpackingLimiter:      binpacking.NewDefaultBinpackingLimiter(),
 		NodeGroupSetProcessor:  nodegroupset.NewDefaultNodeGroupSetProcessor([]string{}, config.NodeGroupDifferenceRatios{}),
-		ScaleDownSetProcessor:  nodes.NewPostFilteringScaleDownNodeProcessor(),
+		ScaleDownSetProcessor: nodes.NewCompositeScaleDownSetProcessor([]nodes.ScaleDownSetProcessor{
+			nodes.NewMaxNodesProcessor(),
+			nodes.NewAtomicResizeFilteringProcessor(),
+		}),
 		// TODO(bskiba): change scale up test so that this can be a NoOpProcessor
 		ScaleUpStatusProcessor:      &status.EventingScaleUpStatusProcessor{},
 		ScaleDownStatusProcessor:    &status.NoOpScaleDownStatusProcessor{},
@@ -176,7 +189,7 @@ func NewTestProcessors(context *context.AutoscalingContext) *processors.Autoscal
 		NodeGroupManager:            nodegroups.NewDefaultNodeGroupManager(),
 		NodeInfoProcessor:           nodeinfos.NewDefaultNodeInfoProcessor(),
 		TemplateNodeInfoProvider:    nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil, false),
-		NodeGroupConfigProcessor:    nodegroupconfig.NewDefaultNodeGroupConfigProcessor(),
+		NodeGroupConfigProcessor:    nodegroupconfig.NewDefaultNodeGroupConfigProcessor(context.NodeGroupDefaults),
 		CustomResourcesProcessor:    customresources.NewDefaultCustomResourcesProcessor(),
 		ActionableClusterProcessor:  actionablecluster.NewDefaultActionableClusterProcessor(),
 		ScaleDownCandidatesNotifier: scaledowncandidates.NewObserversList(),
@@ -198,7 +211,12 @@ func NewScaleTestAutoscalingContext(
 	}
 	// Ignoring error here is safe - if a test doesn't specify valid estimatorName,
 	// it either doesn't need one, or should fail when it turns out to be nil.
-	estimatorBuilder, _ := estimator.NewEstimatorBuilder(options.EstimatorName, estimator.NewThresholdBasedEstimationLimiter(0, 0), estimator.NewDecreasingPodOrderer())
+	estimatorBuilder, _ := estimator.NewEstimatorBuilder(
+		options.EstimatorName,
+		estimator.NewThresholdBasedEstimationLimiter(nil),
+		estimator.NewDecreasingPodOrderer(),
+		/* EstimationAnalyserFunc */ nil,
+	)
 	predicateChecker, err := predicatechecker.NewTestPredicateChecker()
 	if err != nil {
 		return context.AutoscalingContext{}, err
@@ -327,6 +345,26 @@ func (p *MockAutoprovisioningNodeGroupListProcessor) Process(context *context.Au
 
 // CleanUp doesn't do anything; it's here to satisfy the interface
 func (p *MockAutoprovisioningNodeGroupListProcessor) CleanUp() {
+}
+
+// MockBinpackingLimiter is a fake BinpackingLimiter to be used in tests.
+type MockBinpackingLimiter struct {
+	requiredExpansionOptions int
+}
+
+// InitBinpacking initialises the MockBinpackingLimiter and sets requiredExpansionOptions to 1.
+func (p *MockBinpackingLimiter) InitBinpacking(context *context.AutoscalingContext, nodeGroups []cloudprovider.NodeGroup) {
+	p.requiredExpansionOptions = 1
+}
+
+// StopBinpacking stops the binpacking early, if we already have requiredExpansionOptions i.e. 1.
+func (p *MockBinpackingLimiter) StopBinpacking(context *context.AutoscalingContext, evaluatedOptions []expander.Option) bool {
+	return len(evaluatedOptions) == p.requiredExpansionOptions
+}
+
+// MarkProcessed is here to satisfy the interface.
+func (p *MockBinpackingLimiter) MarkProcessed(context *context.AutoscalingContext, nodegroupId string) {
+
 }
 
 // NewBackoff creates a new backoff object

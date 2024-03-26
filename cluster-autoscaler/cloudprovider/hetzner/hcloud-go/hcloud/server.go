@@ -1,19 +1,3 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package hcloud
 
 import (
@@ -33,7 +17,7 @@ import (
 
 // Server represents a server in the Hetzner Cloud.
 type Server struct {
-	ID              int
+	ID              int64
 	Name            string
 	Status          ServerStatus
 	Created         time.Time
@@ -114,7 +98,7 @@ type ServerPublicNet struct {
 
 // ServerPublicNetIPv4 represents a server's public IPv4 address.
 type ServerPublicNetIPv4 struct {
-	ID      int
+	ID      int64
 	IP      net.IP
 	Blocked bool
 	DNSPtr  string
@@ -126,7 +110,7 @@ func (n *ServerPublicNetIPv4) IsUnspecified() bool {
 
 // ServerPublicNetIPv6 represents a Server's public IPv6 network and address.
 type ServerPublicNetIPv6 struct {
-	ID      int
+	ID      int64
 	IP      net.IP
 	Network *net.IPNet
 	Blocked bool
@@ -210,7 +194,7 @@ type ServerClient struct {
 }
 
 // GetByID retrieves a server by its ID. If the server does not exist, nil is returned.
-func (c *ServerClient) GetByID(ctx context.Context, id int) (*Server, *Response, error) {
+func (c *ServerClient) GetByID(ctx context.Context, id int64) (*Server, *Response, error) {
 	req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("/servers/%d", id), nil)
 	if err != nil {
 		return nil, nil, err
@@ -242,8 +226,8 @@ func (c *ServerClient) GetByName(ctx context.Context, name string) (*Server, *Re
 // Get retrieves a server by its ID if the input can be parsed as an integer, otherwise it
 // retrieves a server by its name. If the server does not exist, nil is returned.
 func (c *ServerClient) Get(ctx context.Context, idOrName string) (*Server, *Response, error) {
-	if id, err := strconv.Atoi(idOrName); err == nil {
-		return c.GetByID(ctx, int(id))
+	if id, err := strconv.ParseInt(idOrName, 10, 64); err == nil {
+		return c.GetByID(ctx, id)
 	}
 	return c.GetByName(ctx, idOrName)
 }
@@ -257,7 +241,7 @@ type ServerListOpts struct {
 }
 
 func (l ServerListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	if l.Name != "" {
 		vals.Add("name", l.Name)
 	}
@@ -364,8 +348,9 @@ func (o ServerCreateOpts) Validate() error {
 		return errors.New("location and datacenter are mutually exclusive")
 	}
 	if o.PublicNet != nil {
-		if !o.PublicNet.EnableIPv4 && !o.PublicNet.EnableIPv6 && len(o.Networks) == 0 {
-			return errors.New("missing networks when EnableIPv4 and EnableIPv6 is false")
+		if !o.PublicNet.EnableIPv4 && !o.PublicNet.EnableIPv6 &&
+			len(o.Networks) == 0 && (o.StartAfterCreate == nil || *o.StartAfterCreate) {
+			return errors.New("missing networks or StartAfterCreate == false when EnableIPv4 and EnableIPv6 is false")
 		}
 	}
 	return nil
@@ -432,14 +417,14 @@ func (c *ServerClient) Create(ctx context.Context, opts ServerCreateOpts) (Serve
 	}
 	if opts.Location != nil {
 		if opts.Location.ID != 0 {
-			reqBody.Location = strconv.Itoa(opts.Location.ID)
+			reqBody.Location = strconv.FormatInt(opts.Location.ID, 10)
 		} else {
 			reqBody.Location = opts.Location.Name
 		}
 	}
 	if opts.Datacenter != nil {
 		if opts.Datacenter.ID != 0 {
-			reqBody.Datacenter = strconv.Itoa(opts.Datacenter.ID)
+			reqBody.Datacenter = strconv.FormatInt(opts.Datacenter.ID, 10)
 		} else {
 			reqBody.Datacenter = opts.Datacenter.Name
 		}
@@ -473,13 +458,35 @@ func (c *ServerClient) Create(ctx context.Context, opts ServerCreateOpts) (Serve
 	return result, resp, nil
 }
 
+// ServerDeleteResult is the result of a delete server call.
+type ServerDeleteResult struct {
+	Action *Action
+}
+
 // Delete deletes a server.
+//
+// Deprecated: Use [ServerClient.DeleteWithResult] instead.
 func (c *ServerClient) Delete(ctx context.Context, server *Server) (*Response, error) {
+	_, resp, err := c.DeleteWithResult(ctx, server)
+	return resp, err
+}
+
+// DeleteWithResult deletes a server and returns the parsed response containing the action.
+func (c *ServerClient) DeleteWithResult(ctx context.Context, server *Server) (*ServerDeleteResult, *Response, error) {
 	req, err := c.client.NewRequest(ctx, "DELETE", fmt.Sprintf("/servers/%d", server.ID), nil)
 	if err != nil {
-		return nil, err
+		return &ServerDeleteResult{}, nil, err
 	}
-	return c.client.Do(req, nil)
+
+	var respBody schema.ServerDeleteResponse
+	resp, err := c.client.Do(req, &respBody)
+	if err != nil {
+		return &ServerDeleteResult{}, resp, err
+	}
+
+	return &ServerDeleteResult{
+		Action: ActionFromSchema(respBody.Action),
+	}, resp, nil
 }
 
 // ServerUpdateOpts specifies options for updating a server.
@@ -658,7 +665,7 @@ func (c *ServerClient) CreateImage(ctx context.Context, server *Server, opts *Se
 			reqBody.Description = opts.Description
 		}
 		if opts.Type != "" {
-			reqBody.Type = String(string(opts.Type))
+			reqBody.Type = Ptr(string(opts.Type))
 		}
 		if opts.Labels != nil {
 			reqBody.Labels = &opts.Labels
@@ -701,7 +708,7 @@ type ServerEnableRescueResult struct {
 // EnableRescue enables rescue mode for a server.
 func (c *ServerClient) EnableRescue(ctx context.Context, server *Server, opts ServerEnableRescueOpts) (ServerEnableRescueResult, *Response, error) {
 	reqBody := schema.ServerActionEnableRescueRequest{
-		Type: String(string(opts.Type)),
+		Type: Ptr(string(opts.Type)),
 	}
 	for _, sshKey := range opts.SSHKeys {
 		reqBody.SSHKeys = append(reqBody.SSHKeys, sshKey.ID)
@@ -750,8 +757,23 @@ type ServerRebuildOpts struct {
 	Image *Image
 }
 
+// ServerRebuildResult is the result of a create server call.
+type ServerRebuildResult struct {
+	Action       *Action
+	RootPassword string
+}
+
 // Rebuild rebuilds a server.
+//
+// Deprecated: Use [ServerClient.RebuildWithResult] instead.
 func (c *ServerClient) Rebuild(ctx context.Context, server *Server, opts ServerRebuildOpts) (*Action, *Response, error) {
+	result, resp, err := c.RebuildWithResult(ctx, server, opts)
+
+	return result.Action, resp, err
+}
+
+// RebuildWithResult rebuilds a server.
+func (c *ServerClient) RebuildWithResult(ctx context.Context, server *Server, opts ServerRebuildOpts) (ServerRebuildResult, *Response, error) {
 	reqBody := schema.ServerActionRebuildRequest{}
 	if opts.Image.ID != 0 {
 		reqBody.Image = opts.Image.ID
@@ -760,21 +782,29 @@ func (c *ServerClient) Rebuild(ctx context.Context, server *Server, opts ServerR
 	}
 	reqBodyData, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, nil, err
+		return ServerRebuildResult{}, nil, err
 	}
 
 	path := fmt.Sprintf("/servers/%d/actions/rebuild", server.ID)
 	req, err := c.client.NewRequest(ctx, "POST", path, bytes.NewReader(reqBodyData))
 	if err != nil {
-		return nil, nil, err
+		return ServerRebuildResult{}, nil, err
 	}
 
 	respBody := schema.ServerActionRebuildResponse{}
 	resp, err := c.client.Do(req, &respBody)
 	if err != nil {
-		return nil, resp, err
+		return ServerRebuildResult{}, resp, err
 	}
-	return ActionFromSchema(respBody.Action), resp, nil
+
+	result := ServerRebuildResult{
+		Action: ActionFromSchema(respBody.Action),
+	}
+	if respBody.RootPassword != nil {
+		result.RootPassword = *respBody.RootPassword
+	}
+
+	return result, resp, nil
 }
 
 // AttachISO attaches an ISO to a server.
@@ -826,7 +856,7 @@ func (c *ServerClient) DetachISO(ctx context.Context, server *Server) (*Action, 
 func (c *ServerClient) EnableBackup(ctx context.Context, server *Server, window string) (*Action, *Response, error) {
 	reqBody := schema.ServerActionEnableBackupRequest{}
 	if window != "" {
-		reqBody.BackupWindow = String(window)
+		reqBody.BackupWindow = Ptr(window)
 	}
 	reqBodyData, err := json.Marshal(reqBody)
 	if err != nil {
@@ -979,10 +1009,10 @@ func (c *ServerClient) AttachToNetwork(ctx context.Context, server *Server, opts
 		Network: opts.Network.ID,
 	}
 	if opts.IP != nil {
-		reqBody.IP = String(opts.IP.String())
+		reqBody.IP = Ptr(opts.IP.String())
 	}
 	for _, aliasIP := range opts.AliasIPs {
-		reqBody.AliasIPs = append(reqBody.AliasIPs, String(aliasIP.String()))
+		reqBody.AliasIPs = append(reqBody.AliasIPs, Ptr(aliasIP.String()))
 	}
 	reqBodyData, err := json.Marshal(reqBody)
 	if err != nil {

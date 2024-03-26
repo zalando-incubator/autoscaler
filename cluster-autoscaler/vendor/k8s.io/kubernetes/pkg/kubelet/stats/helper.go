@@ -23,9 +23,11 @@ import (
 	cadvisorapiv1 "github.com/google/cadvisor/info/v1"
 	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	statsapi "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
+	"k8s.io/kubernetes/pkg/kubelet/server/stats"
 )
 
 // defaultNetworkInterfaceName is used for collectng network stats.
@@ -93,6 +95,7 @@ func cadvisorInfoToContainerStats(name string, info *cadvisorapiv2.ContainerInfo
 	cpu, memory := cadvisorInfoToCPUandMemoryStats(info)
 	result.CPU = cpu
 	result.Memory = memory
+	result.Swap = cadvisorInfoToSwapStats(info)
 
 	// NOTE: if they can be found, log stats will be overwritten
 	// by the caller, as it knows more information about the pod,
@@ -255,6 +258,29 @@ func cadvisorInfoToUserDefinedMetrics(info *cadvisorapiv2.ContainerInfo) []stats
 	return udm
 }
 
+func cadvisorInfoToSwapStats(info *cadvisorapiv2.ContainerInfo) *statsapi.SwapStats {
+	cstat, found := latestContainerStats(info)
+	if !found {
+		return nil
+	}
+
+	var swapStats *statsapi.SwapStats
+
+	if info.Spec.HasMemory && cstat.Memory != nil {
+		swapStats = &statsapi.SwapStats{
+			Time:           metav1.NewTime(cstat.Timestamp),
+			SwapUsageBytes: &cstat.Memory.Swap,
+		}
+
+		if !isMemoryUnlimited(info.Spec.Memory.SwapLimit) {
+			swapAvailableBytes := info.Spec.Memory.SwapLimit - cstat.Memory.Swap
+			swapStats.SwapAvailableBytes = &swapAvailableBytes
+		}
+	}
+
+	return swapStats
+}
+
 // latestContainerStats returns the latest container stats from cadvisor, or nil if none exist
 func latestContainerStats(info *cadvisorapiv2.ContainerInfo) (*cadvisorapiv2.ContainerStats, bool) {
 	stats := info.Stats
@@ -414,4 +440,30 @@ func addUsage(first, second *uint64) *uint64 {
 	}
 	total := *first + *second
 	return &total
+}
+
+func makePodStorageStats(s *statsapi.PodStats, rootFsInfo *cadvisorapiv2.FsInfo, resourceAnalyzer stats.ResourceAnalyzer, hostStatsProvider HostStatsProvider, isCRIStatsProvider bool) {
+	podNs := s.PodRef.Namespace
+	podName := s.PodRef.Name
+	podUID := types.UID(s.PodRef.UID)
+	var ephemeralStats []statsapi.VolumeStats
+	if vstats, found := resourceAnalyzer.GetPodVolumeStats(podUID); found {
+		ephemeralStats = make([]statsapi.VolumeStats, len(vstats.EphemeralVolumes))
+		copy(ephemeralStats, vstats.EphemeralVolumes)
+		s.VolumeStats = append(append([]statsapi.VolumeStats{}, vstats.EphemeralVolumes...), vstats.PersistentVolumes...)
+
+	}
+	logStats, err := hostStatsProvider.getPodLogStats(podNs, podName, podUID, rootFsInfo)
+	if err != nil {
+		klog.V(6).ErrorS(err, "Unable to fetch pod log stats", "pod", klog.KRef(podNs, podName))
+		// If people do in-place upgrade, there might be pods still using
+		// the old log path. For those pods, no pod log stats is returned.
+		// We should continue generating other stats in that case.
+		// calcEphemeralStorage tolerants logStats == nil.
+	}
+	etcHostsStats, err := hostStatsProvider.getPodEtcHostsStats(podUID, rootFsInfo)
+	if err != nil {
+		klog.V(6).ErrorS(err, "Unable to fetch pod etc hosts stats", "pod", klog.KRef(podNs, podName))
+	}
+	s.EphemeralStorage = calcEphemeralStorage(s.Containers, ephemeralStats, rootFsInfo, logStats, etcHostsStats, isCRIStatsProvider)
 }

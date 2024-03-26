@@ -1,42 +1,27 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package schema
 
 import "time"
 
 // Image defines the schema of an image.
 type Image struct {
-	ID          int               `json:"id"`
-	Status      string            `json:"status"`
-	Type        string            `json:"type"`
-	Name        *string           `json:"name"`
-	Description string            `json:"description"`
-	ImageSize   *float32          `json:"image_size"`
-	DiskSize    float32           `json:"disk_size"`
-	Created     time.Time         `json:"created"`
-	CreatedFrom *ImageCreatedFrom `json:"created_from"`
-	BoundTo     *int              `json:"bound_to"`
-	OSFlavor    string            `json:"os_flavor"`
-	OSVersion   *string           `json:"os_version"`
-	RapidDeploy bool              `json:"rapid_deploy"`
-	Protection  ImageProtection   `json:"protection"`
-	Deprecated  time.Time         `json:"deprecated"`
-	Deleted     time.Time         `json:"deleted"`
-	Labels      map[string]string `json:"labels"`
+	ID           int64             `json:"id"`
+	Status       string            `json:"status"`
+	Type         string            `json:"type"`
+	Name         *string           `json:"name"`
+	Description  string            `json:"description"`
+	ImageSize    *float32          `json:"image_size"`
+	DiskSize     float32           `json:"disk_size"`
+	Created      time.Time         `json:"created"`
+	CreatedFrom  *ImageCreatedFrom `json:"created_from"`
+	BoundTo      *int64            `json:"bound_to"`
+	OSFlavor     string            `json:"os_flavor"`
+	OSVersion    *string           `json:"os_version"`
+	Architecture string            `json:"architecture"`
+	RapidDeploy  bool              `json:"rapid_deploy"`
+	Protection   ImageProtection   `json:"protection"`
+	Deprecated   time.Time         `json:"deprecated"`
+	Deleted      time.Time         `json:"deleted"`
+	Labels       map[string]string `json:"labels"`
 }
 
 // ImageProtection represents the protection level of a image.
@@ -46,7 +31,7 @@ type ImageProtection struct {
 
 // ImageCreatedFrom defines the schema of the images created from reference.
 type ImageCreatedFrom struct {
-	ID   int    `json:"id"`
+	ID   int64  `json:"id"`
 	Name string `json:"name"`
 }
 

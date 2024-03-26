@@ -1,6 +1,12 @@
 approvers:
-- jaypipes
 - gjtempleton
 - drmorr0
 emeritus_approvers:
 - Jeffwan
+- jaypipes
+reviewers:
+- gjtempleton
+- drmorr0
+
+labels:
+- area/provider/aws

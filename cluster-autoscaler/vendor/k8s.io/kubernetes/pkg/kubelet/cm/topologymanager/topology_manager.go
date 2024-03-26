@@ -18,12 +18,14 @@ package topologymanager
 
 import (
 	"fmt"
+	"time"
 
 	cadvisorapi "github.com/google/cadvisor/info/v1"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
+	"k8s.io/kubernetes/pkg/kubelet/metrics"
 )
 
 const (
@@ -130,32 +132,40 @@ func (th *TopologyHint) LessThan(other TopologyHint) bool {
 var _ Manager = &manager{}
 
 // NewManager creates a new TopologyManager based on provided policy and scope
-func NewManager(topology []cadvisorapi.Node, topologyPolicyName string, topologyScopeName string) (Manager, error) {
-	klog.InfoS("Creating topology manager with policy per scope", "topologyPolicyName", topologyPolicyName, "topologyScopeName", topologyScopeName)
-
-	var numaNodes []int
-	for _, node := range topology {
-		numaNodes = append(numaNodes, node.Id)
+func NewManager(topology []cadvisorapi.Node, topologyPolicyName string, topologyScopeName string, topologyPolicyOptions map[string]string) (Manager, error) {
+	// When policy is none, the scope is not relevant, so we can short circuit here.
+	if topologyPolicyName == PolicyNone {
+		klog.InfoS("Creating topology manager with none policy")
+		return &manager{scope: NewNoneScope()}, nil
 	}
 
-	if topologyPolicyName != PolicyNone && len(numaNodes) > maxAllowableNUMANodes {
+	opts, err := NewPolicyOptions(topologyPolicyOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	klog.InfoS("Creating topology manager with policy per scope", "topologyPolicyName", topologyPolicyName, "topologyScopeName", topologyScopeName, "topologyPolicyOptions", opts)
+
+	numaInfo, err := NewNUMAInfo(topology, opts)
+	if err != nil {
+		return nil, fmt.Errorf("cannot discover NUMA topology: %w", err)
+	}
+
+	if topologyPolicyName != PolicyNone && len(numaInfo.Nodes) > maxAllowableNUMANodes {
 		return nil, fmt.Errorf("unsupported on machines with more than %v NUMA Nodes", maxAllowableNUMANodes)
 	}
 
 	var policy Policy
 	switch topologyPolicyName {
 
-	case PolicyNone:
-		policy = NewNonePolicy()
-
 	case PolicyBestEffort:
-		policy = NewBestEffortPolicy(numaNodes)
+		policy = NewBestEffortPolicy(numaInfo, opts)
 
 	case PolicyRestricted:
-		policy = NewRestrictedPolicy(numaNodes)
+		policy = NewRestrictedPolicy(numaInfo, opts)
 
 	case PolicySingleNumaNode:
-		policy = NewSingleNumaNodePolicy(numaNodes)
+		policy = NewSingleNumaNodePolicy(numaInfo, opts)
 
 	default:
 		return nil, fmt.Errorf("unknown policy: \"%s\"", topologyPolicyName)
@@ -202,8 +212,12 @@ func (m *manager) RemoveContainer(containerID string) error {
 }
 
 func (m *manager) Admit(attrs *lifecycle.PodAdmitAttributes) lifecycle.PodAdmitResult {
-	klog.InfoS("Topology Admit Handler")
-	pod := attrs.Pod
+	klog.InfoS("Topology Admit Handler", "podUID", attrs.Pod.UID, "podNamespace", attrs.Pod.Namespace, "podName", attrs.Pod.Name)
+	metrics.TopologyManagerAdmissionRequestsTotal.Inc()
 
-	return m.scope.Admit(pod)
+	startTime := time.Now()
+	podAdmitResult := m.scope.Admit(attrs.Pod)
+	metrics.TopologyManagerAdmissionDuration.Observe(float64(time.Since(startTime).Milliseconds()))
+
+	return podAdmitResult
 }

@@ -97,6 +97,8 @@ const (
 	ScaleDownMiscOperations    FunctionLabel = "scaleDown:miscOperations"
 	ScaleDownSoftTaintUnneeded FunctionLabel = "scaleDown:softTaintUnneeded"
 	ScaleUp                    FunctionLabel = "scaleUp"
+	BuildPodEquivalenceGroups  FunctionLabel = "scaleUp:buildPodEquivalenceGroups"
+	Estimate                   FunctionLabel = "scaleUp:estimate"
 	FindUnneeded               FunctionLabel = "findUnneeded"
 	UpdateState                FunctionLabel = "updateClusterState"
 	FilterOutSchedulable       FunctionLabel = "filterOutSchedulable"
@@ -224,6 +226,14 @@ var (
 		}, []string{"function"},
 	)
 
+	pendingNodeDeletions = k8smetrics.NewGauge(
+		&k8smetrics.GaugeOpts{
+			Namespace: caNamespace,
+			Name:      "pending_node_deletions",
+			Help:      "Number of nodes that haven't been removed or aborted after finished scale-down phase.",
+		},
+	)
+
 	/**** Metrics related to autoscaler operations ****/
 	errorsCount = k8smetrics.NewCounterVec(
 		&k8smetrics.CounterOpts{
@@ -246,7 +256,7 @@ var (
 			Namespace: caNamespace,
 			Name:      "scaled_up_gpu_nodes_total",
 			Help:      "Number of GPU nodes added by CA, by GPU name.",
-		}, []string{"gpu_name"},
+		}, []string{"gpu_resource_name", "gpu_name"},
 	)
 
 	failedScaleUpCount = k8smetrics.NewCounterVec(
@@ -255,6 +265,14 @@ var (
 			Name:      "failed_scale_ups_total",
 			Help:      "Number of times scale-up operation has failed.",
 		}, []string{"reason"},
+	)
+
+	failedGPUScaleUpCount = k8smetrics.NewCounterVec(
+		&k8smetrics.CounterOpts{
+			Namespace: caNamespace,
+			Name:      "failed_gpu_scale_ups_total",
+			Help:      "Number of times scale-up operation has failed.",
+		}, []string{"reason", "gpu_resource_name", "gpu_name"},
 	)
 
 	scaleDownCount = k8smetrics.NewCounterVec(
@@ -270,7 +288,7 @@ var (
 			Namespace: caNamespace,
 			Name:      "scaled_down_gpu_nodes_total",
 			Help:      "Number of GPU nodes removed by CA, by reason and GPU name.",
-		}, []string{"reason", "gpu_name"},
+		}, []string{"reason", "gpu_resource_name", "gpu_name"},
 	)
 
 	evictionsCount = k8smetrics.NewCounter(
@@ -375,6 +393,7 @@ func RegisterAll(emitPerNodeGroupMetrics bool) {
 	legacyregistry.MustRegister(scaleUpCount)
 	legacyregistry.MustRegister(gpuScaleUpCount)
 	legacyregistry.MustRegister(failedScaleUpCount)
+	legacyregistry.MustRegister(failedGPUScaleUpCount)
 	legacyregistry.MustRegister(scaleDownCount)
 	legacyregistry.MustRegister(gpuScaleDownCount)
 	legacyregistry.MustRegister(evictionsCount)
@@ -387,6 +406,7 @@ func RegisterAll(emitPerNodeGroupMetrics bool) {
 	legacyregistry.MustRegister(napEnabled)
 	legacyregistry.MustRegister(nodeGroupCreationCount)
 	legacyregistry.MustRegister(nodeGroupDeletionCount)
+	legacyregistry.MustRegister(pendingNodeDeletions)
 
 	if emitPerNodeGroupMetrics {
 		legacyregistry.MustRegister(nodesGroupMinNodes)
@@ -490,23 +510,26 @@ func RegisterError(err errors.AutoscalerError) {
 }
 
 // RegisterScaleUp records number of nodes added by scale up
-func RegisterScaleUp(nodesCount int, gpuType string) {
+func RegisterScaleUp(nodesCount int, gpuResourceName, gpuType string) {
 	scaleUpCount.Add(float64(nodesCount))
 	if gpuType != gpu.MetricsNoGPU {
-		gpuScaleUpCount.WithLabelValues(gpuType).Add(float64(nodesCount))
+		gpuScaleUpCount.WithLabelValues(gpuResourceName, gpuType).Add(float64(nodesCount))
 	}
 }
 
 // RegisterFailedScaleUp records a failed scale-up operation
-func RegisterFailedScaleUp(reason FailedScaleUpReason) {
+func RegisterFailedScaleUp(reason FailedScaleUpReason, gpuResourceName, gpuType string) {
 	failedScaleUpCount.WithLabelValues(string(reason)).Inc()
+	if gpuType != gpu.MetricsNoGPU {
+		failedGPUScaleUpCount.WithLabelValues(string(reason), gpuResourceName, gpuType).Inc()
+	}
 }
 
 // RegisterScaleDown records number of nodes removed by scale down
-func RegisterScaleDown(nodesCount int, gpuType string, reason NodeScaleDownReason) {
+func RegisterScaleDown(nodesCount int, gpuResourceName, gpuType string, reason NodeScaleDownReason) {
 	scaleDownCount.WithLabelValues(string(reason)).Add(float64(nodesCount))
 	if gpuType != gpu.MetricsNoGPU {
-		gpuScaleDownCount.WithLabelValues(string(reason), gpuType).Add(float64(nodesCount))
+		gpuScaleDownCount.WithLabelValues(string(reason), gpuResourceName, gpuType).Add(float64(nodesCount))
 	}
 }
 
@@ -586,4 +609,9 @@ func RegisterSkippedScaleUpCPU() {
 // RegisterSkippedScaleUpMemory increases the count of skipped scale outs because of Memory resource limits
 func RegisterSkippedScaleUpMemory() {
 	skippedScaleEventsCount.WithLabelValues(DirectionScaleUp, MemoryResourceLimit).Add(1.0)
+}
+
+// ObservePendingNodeDeletions records the current value of nodes_pending_deletion metric
+func ObservePendingNodeDeletions(value int) {
+	pendingNodeDeletions.Set(float64(value))
 }

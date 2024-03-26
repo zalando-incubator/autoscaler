@@ -1,8 +1,13 @@
 approvers:
-- aleksandra-malinowska
+- BigDarkClown
 - feiskyer
 - towca
+- x13n
 reviewers:
-- aleksandra-malinowska
+- BigDarkClown
 - feiskyer
-- Jeffwan
+- x13n
+emeritus_approvers:
+- aleksandra-malinowska # 2022-09-30
+labels:
+- cluster-autoscaler

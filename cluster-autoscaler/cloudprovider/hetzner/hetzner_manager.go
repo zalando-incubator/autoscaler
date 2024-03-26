@@ -30,10 +30,10 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud"
+	"k8s.io/autoscaler/cluster-autoscaler/version"
 )
 
 var (
-	version    = "dev"
 	httpClient = &http.Client{
 		Transport: instrumentedRoundTripper(),
 	}
@@ -46,7 +46,7 @@ type hetznerManager struct {
 	nodeGroups       map[string]*hetznerNodeGroup
 	apiCallContext   context.Context
 	cloudInit        string
-	image            *hcloud.Image
+	image            string
 	sshKey           *hcloud.SSHKey
 	network          *hcloud.Network
 	firewall         *hcloud.Firewall
@@ -63,17 +63,19 @@ func newManager() (*hetznerManager, error) {
 		return nil, errors.New("`HCLOUD_TOKEN` is not specified")
 	}
 
+	client := hcloud.NewClient(
+		hcloud.WithToken(token),
+		hcloud.WithHTTPClient(httpClient),
+		hcloud.WithApplication("cluster-autoscaler", version.ClusterAutoscalerVersion),
+		hcloud.WithPollBackoffFunc(hcloud.ExponentialBackoff(2, 500*time.Millisecond)),
+	)
+
+	ctx := context.Background()
+
 	cloudInitBase64 := os.Getenv("HCLOUD_CLOUD_INIT")
 	if cloudInitBase64 == "" {
 		return nil, errors.New("`HCLOUD_CLOUD_INIT` is not specified")
 	}
-
-	client := hcloud.NewClient(
-		hcloud.WithToken(token),
-		hcloud.WithHTTPClient(httpClient),
-	)
-
-	ctx := context.Background()
 	cloudInit, err := base64.StdEncoding.DecodeString(cloudInitBase64)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse cloud init error: %s", err)
@@ -100,31 +102,6 @@ func newManager() (*hetznerManager, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse HCLOUD_PUBLIC_IPV6: %s", err)
 		}
-	}
-
-	// Search for an image ID corresponding to the supplied HCLOUD_IMAGE env
-	// variable. This value can either be an image ID itself (an int), a name
-	// (e.g. "ubuntu-20.04"), or a label selector associated with an image
-	// snapshot. In the latter case it will use the most recent snapshot.
-	image, _, err := client.Image.Get(ctx, imageName)
-	if err != nil {
-		return nil, fmt.Errorf("unable to find image %s: %v", imageName, err)
-	}
-	if image == nil {
-		images, err := client.Image.AllWithOpts(ctx, hcloud.ImageListOpts{
-			Type:   []hcloud.ImageType{hcloud.ImageTypeSnapshot},
-			Status: []hcloud.ImageStatus{hcloud.ImageStatusAvailable},
-			Sort:   []string{"created:desc"},
-			ListOpts: hcloud.ListOpts{
-				LabelSelector: imageName,
-			},
-		})
-
-		if err != nil || len(images) == 0 {
-			return nil, fmt.Errorf("unable to find image %s: %v", imageName, err)
-		}
-
-		image = images[0]
 	}
 
 	var sshKey *hcloud.SSHKey
@@ -165,7 +142,7 @@ func newManager() (*hetznerManager, error) {
 		client:           client,
 		nodeGroups:       make(map[string]*hetznerNodeGroup),
 		cloudInit:        string(cloudInit),
-		image:            image,
+		image:            imageName,
 		sshKey:           sshKey,
 		network:          network,
 		firewall:         firewall,

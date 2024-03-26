@@ -24,8 +24,8 @@ import (
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/core/test"
-	"k8s.io/autoscaler/cluster-autoscaler/utils/deletetaint"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/taints"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
 
 	"github.com/stretchr/testify/assert"
@@ -67,7 +67,7 @@ func TestSoftTaintUpdate(t *testing.T) {
 		MaxBulkSoftTaintCount: 1,
 		MaxBulkSoftTaintTime:  3 * time.Second,
 	}
-	registry := kube_util.NewListerRegistry(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	registry := kube_util.NewListerRegistry(nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	actx, err := test.NewScaleTestAutoscalingContext(options, fakeClient, registry, provider, nil, nil)
 	assert.NoError(t, err)
@@ -151,7 +151,7 @@ func TestSoftTaintTimeLimit(t *testing.T) {
 		MaxBulkSoftTaintCount: 10,
 		MaxBulkSoftTaintTime:  maxSoftTaintDuration,
 	}
-	registry := kube_util.NewListerRegistry(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	registry := kube_util.NewListerRegistry(nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	actx, err := test.NewScaleTestAutoscalingContext(options, fakeClient, registry, provider, nil, nil)
 	assert.NoError(t, err)
@@ -198,7 +198,7 @@ func TestSoftTaintTimeLimit(t *testing.T) {
 func countDeletionCandidateTaints(t *testing.T, client kubernetes.Interface) (total int) {
 	t.Helper()
 	for _, node := range getAllNodes(t, client) {
-		if deletetaint.HasDeletionCandidateTaint(node) {
+		if taints.HasDeletionCandidateTaint(node) {
 			total++
 		}
 	}
@@ -207,7 +207,7 @@ func countDeletionCandidateTaints(t *testing.T, client kubernetes.Interface) (to
 
 func hasDeletionCandidateTaint(t *testing.T, client kubernetes.Interface, name string) bool {
 	t.Helper()
-	return deletetaint.HasDeletionCandidateTaint(getNode(t, client, name))
+	return taints.HasDeletionCandidateTaint(getNode(t, client, name))
 }
 
 func getNode(t *testing.T, client kubernetes.Interface, name string) *apiv1.Node {

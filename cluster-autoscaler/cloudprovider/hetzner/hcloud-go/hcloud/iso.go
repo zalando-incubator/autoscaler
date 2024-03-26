@@ -1,19 +1,3 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package hcloud
 
 import (
@@ -28,14 +12,15 @@ import (
 
 // ISO represents an ISO image in the Hetzner Cloud.
 type ISO struct {
-	ID          int
-	Name        string
-	Description string
-	Type        ISOType
-	Deprecated  time.Time
+	ID           int64
+	Name         string
+	Description  string
+	Type         ISOType
+	Architecture *Architecture
+	Deprecated   time.Time
 }
 
-// IsDeprecated returns true if the ISO is deprecated
+// IsDeprecated returns true if the ISO is deprecated.
 func (iso *ISO) IsDeprecated() bool {
 	return !iso.Deprecated.IsZero()
 }
@@ -57,7 +42,7 @@ type ISOClient struct {
 }
 
 // GetByID retrieves an ISO by its ID.
-func (c *ISOClient) GetByID(ctx context.Context, id int) (*ISO, *Response, error) {
+func (c *ISOClient) GetByID(ctx context.Context, id int64) (*ISO, *Response, error) {
 	req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("/isos/%d", id), nil)
 	if err != nil {
 		return nil, nil, err
@@ -88,8 +73,8 @@ func (c *ISOClient) GetByName(ctx context.Context, name string) (*ISO, *Response
 
 // Get retrieves an ISO by its ID if the input can be parsed as an integer, otherwise it retrieves an ISO by its name.
 func (c *ISOClient) Get(ctx context.Context, idOrName string) (*ISO, *Response, error) {
-	if id, err := strconv.Atoi(idOrName); err == nil {
-		return c.GetByID(ctx, int(id))
+	if id, err := strconv.ParseInt(idOrName, 10, 64); err == nil {
+		return c.GetByID(ctx, id)
 	}
 	return c.GetByName(ctx, idOrName)
 }
@@ -99,15 +84,31 @@ type ISOListOpts struct {
 	ListOpts
 	Name string
 	Sort []string
+	// Architecture filters the ISOs by Architecture. Note that custom ISOs do not have any architecture set, and you
+	// must use IncludeWildcardArchitecture to include them.
+	Architecture []Architecture
+	// IncludeWildcardArchitecture must be set to also return custom ISOs that have no architecture set, if you are
+	// also setting the Architecture field.
+	// Deprecated: Use [ISOListOpts.IncludeArchitectureWildcard] instead.
+	IncludeWildcardArchitecture bool
+	// IncludeWildcardArchitecture must be set to also return custom ISOs that have no architecture set, if you are
+	// also setting the Architecture field.
+	IncludeArchitectureWildcard bool
 }
 
 func (l ISOListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	if l.Name != "" {
 		vals.Add("name", l.Name)
 	}
 	for _, sort := range l.Sort {
 		vals.Add("sort", sort)
+	}
+	for _, arch := range l.Architecture {
+		vals.Add("architecture", string(arch))
+	}
+	if l.IncludeArchitectureWildcard || l.IncludeWildcardArchitecture {
+		vals.Add("include_architecture_wildcard", "true")
 	}
 	return vals
 }
@@ -137,10 +138,12 @@ func (c *ISOClient) List(ctx context.Context, opts ISOListOpts) ([]*ISO, *Respon
 
 // All returns all ISOs.
 func (c *ISOClient) All(ctx context.Context) ([]*ISO, error) {
-	allISOs := []*ISO{}
+	return c.AllWithOpts(ctx, ISOListOpts{ListOpts: ListOpts{PerPage: 50}})
+}
 
-	opts := ISOListOpts{}
-	opts.PerPage = 50
+// AllWithOpts returns all ISOs for the given options.
+func (c *ISOClient) AllWithOpts(ctx context.Context, opts ISOListOpts) ([]*ISO, error) {
+	allISOs := make([]*ISO, 0)
 
 	err := c.client.all(func(page int) (*Response, error) {
 		opts.Page = page

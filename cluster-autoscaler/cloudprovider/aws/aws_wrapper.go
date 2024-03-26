@@ -57,7 +57,7 @@ type awsWrapper struct {
 	eksI
 }
 
-func (m *awsWrapper) getManagedNodegroupInfo(nodegroupName string, clusterName string) ([]apiv1.Taint, map[string]string, error) {
+func (m *awsWrapper) getManagedNodegroupInfo(nodegroupName string, clusterName string) ([]apiv1.Taint, map[string]string, map[string]string, error) {
 	params := &eks.DescribeNodegroupInput{
 		ClusterName:   &clusterName,
 		NodegroupName: &nodegroupName,
@@ -66,13 +66,14 @@ func (m *awsWrapper) getManagedNodegroupInfo(nodegroupName string, clusterName s
 	r, err := m.DescribeNodegroup(params)
 	observeAWSRequest("DescribeNodegroup", err, start)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	klog.V(6).Infof("DescribeNodegroup output : %+v\n", r)
 
 	taints := make([]apiv1.Taint, 0)
 	labels := make(map[string]string)
+	tags := make(map[string]string)
 
 	// Labels will include diskSize, amiType, capacityType, version
 	if r.Nodegroup.DiskSize != nil {
@@ -91,11 +92,24 @@ func (m *awsWrapper) getManagedNodegroupInfo(nodegroupName string, clusterName s
 		labels["k8sVersion"] = *r.Nodegroup.Version
 	}
 
+	if r.Nodegroup.NodegroupName != nil && len(*r.Nodegroup.NodegroupName) > 0 {
+		labels["eks.amazonaws.com/nodegroup"] = *r.Nodegroup.NodegroupName
+	}
+
 	if r.Nodegroup.Labels != nil && len(r.Nodegroup.Labels) > 0 {
 		labelsMap := r.Nodegroup.Labels
 		for k, v := range labelsMap {
 			if v != nil {
 				labels[k] = *v
+			}
+		}
+	}
+
+	if r.Nodegroup.Tags != nil && len(r.Nodegroup.Tags) > 0 {
+		tagsMap := r.Nodegroup.Tags
+		for k, v := range tagsMap {
+			if v != nil {
+				tags[k] = *v
 			}
 		}
 	}
@@ -113,7 +127,7 @@ func (m *awsWrapper) getManagedNodegroupInfo(nodegroupName string, clusterName s
 		}
 	}
 
-	return taints, labels, nil
+	return taints, labels, tags, nil
 }
 
 func (m *awsWrapper) getInstanceTypeByLaunchConfigNames(launchConfigToQuery []*string) (map[string]string, error) {
@@ -312,7 +326,7 @@ func (m *awsWrapper) getInstanceTypeFromInstanceRequirements(imageId string, req
 	}
 
 	start = time.Now()
-	instanceTypes := []string{}
+	var instanceTypes []string
 	err = m.GetInstanceTypesFromInstanceRequirementsPages(requirementsInput, func(page *ec2.GetInstanceTypesFromInstanceRequirementsOutput, isLastPage bool) bool {
 		for _, instanceType := range page.InstanceTypes {
 			instanceTypes = append(instanceTypes, *instanceType.InstanceType)
@@ -321,9 +335,12 @@ func (m *awsWrapper) getInstanceTypeFromInstanceRequirements(imageId string, req
 	})
 	observeAWSRequest("GetInstanceTypesFromInstanceRequirements", err, start)
 	if err != nil {
-		return "", fmt.Errorf("unable to get instance types from requirements")
+		return "", fmt.Errorf("unable to get instance types from requirements: %w", err)
 	}
 
+	if len(instanceTypes) == 0 {
+		return "", fmt.Errorf("no instance types found for requirements")
+	}
 	return instanceTypes[0], nil
 }
 
@@ -701,9 +718,13 @@ func (m *awsWrapper) getInstanceTypesForAsgs(asgs []*asg) (map[string]string, er
 	}
 
 	for asgName, cfgName := range launchConfigsToQuery {
+		if instanceType, ok := launchConfigs[cfgName]; !ok || instanceType == "" {
+			klog.Warningf("Could not fetch %q launch configuration for ASG %q", cfgName, asgName)
+			continue
+		}
 		results[asgName] = launchConfigs[cfgName]
 	}
-	klog.V(4).Infof("Successfully queried %d launch configurations", len(launchConfigsToQuery))
+	klog.V(4).Infof("Successfully queried %d launch configurations", len(launchConfigs))
 
 	// Have to query LaunchTemplates one-at-a-time, since there's no way to query <lt, version> pairs in bulk
 	for asgName, lt := range launchTemplatesToQuery {

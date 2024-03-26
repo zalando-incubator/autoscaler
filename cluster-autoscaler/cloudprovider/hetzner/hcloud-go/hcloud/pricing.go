@@ -1,19 +1,3 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package hcloud
 
 import (
@@ -72,12 +56,13 @@ type FloatingIPTypePricing struct {
 // PrimaryIPTypePricing defines the schema of pricing information for a primary IP
 // type at a datacenter.
 type PrimaryIPTypePricing struct {
-	Datacenter string
+	Datacenter string // Deprecated: the API does not return pricing for the individual DCs anymore
+	Location   string
 	Hourly     PrimaryIPPrice
 	Monthly    PrimaryIPPrice
 }
 
-// PrimaryIPTypePricing provides pricing information for PrimaryIPs
+// PrimaryIPTypePricing provides pricing information for PrimaryIPs.
 type PrimaryIPPricing struct {
 	Type     string
 	Pricings []PrimaryIPTypePricing

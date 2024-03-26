@@ -27,7 +27,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v2"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -36,6 +38,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/externalgrpc/protos"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 	klog "k8s.io/klog/v2"
 )
 
@@ -134,6 +137,11 @@ func (e *externalGrpcCloudProvider) NodeGroupForNode(node *apiv1.Node) (cloudpro
 	return ng, nil
 }
 
+// HasInstance returns whether a given node has a corresponding instance in this cloud provider
+func (e *externalGrpcCloudProvider) HasInstance(node *apiv1.Node) (bool, error) {
+	return true, cloudprovider.ErrNotImplemented
+}
+
 // pricingModel implements cloudprovider.PricingModel interface.
 type pricingModel struct {
 	client protos.CloudProviderClient
@@ -152,6 +160,10 @@ func (m *pricingModel) NodePrice(node *apiv1.Node, startTime time.Time, endTime 
 		EndTime:   &end,
 	})
 	if err != nil {
+		st, ok := status.FromError(err)
+		if ok && st.Code() == codes.Unimplemented {
+			return 0, cloudprovider.ErrNotImplemented
+		}
 		klog.V(1).Infof("Error on gRPC call PricingNodePrice: %v", err)
 		return 0, err
 	}
@@ -172,6 +184,10 @@ func (m *pricingModel) PodPrice(pod *apiv1.Pod, startTime time.Time, endTime tim
 		EndTime:   &end,
 	})
 	if err != nil {
+		st, ok := status.FromError(err)
+		if ok && st.Code() == codes.Unimplemented {
+			return 0, cloudprovider.ErrNotImplemented
+		}
 		klog.V(1).Infof("Error on gRPC call PricingPodPrice: %v", err)
 		return 0, err
 	}
@@ -255,6 +271,12 @@ func (e *externalGrpcCloudProvider) GetAvailableGPUTypes() map[string]struct{} {
 	}
 	e.gpuTypesCache = gpuTypes
 	return gpuTypes
+}
+
+// GetNodeGpuConfig returns the label, type and resource name for the GPU added to node. If node doesn't have
+// any GPUs, it returns nil.
+func (e *externalGrpcCloudProvider) GetNodeGpuConfig(node *apiv1.Node) *cloudprovider.GpuConfig {
+	return gpu.GetNodeGPUFromCloudProvider(e, node)
 }
 
 // Cleanup cleans up open resources before the cloud provider is destroyed, i.e. go routines etc.

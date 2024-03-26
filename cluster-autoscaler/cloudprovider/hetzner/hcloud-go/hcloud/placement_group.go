@@ -1,19 +1,3 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package hcloud
 
 import (
@@ -31,19 +15,19 @@ import (
 
 // PlacementGroup represents a Placement Group in the Hetzner Cloud.
 type PlacementGroup struct {
-	ID      int
+	ID      int64
 	Name    string
 	Labels  map[string]string
 	Created time.Time
-	Servers []int
+	Servers []int64
 	Type    PlacementGroupType
 }
 
-// PlacementGroupType specifies the type of a Placement Group
+// PlacementGroupType specifies the type of a Placement Group.
 type PlacementGroupType string
 
 const (
-	// PlacementGroupTypeSpread spreads all servers in the group on different vhosts
+	// PlacementGroupTypeSpread spreads all servers in the group on different vhosts.
 	PlacementGroupTypeSpread PlacementGroupType = "spread"
 )
 
@@ -53,7 +37,7 @@ type PlacementGroupClient struct {
 }
 
 // GetByID retrieves a PlacementGroup by its ID. If the PlacementGroup does not exist, nil is returned.
-func (c *PlacementGroupClient) GetByID(ctx context.Context, id int) (*PlacementGroup, *Response, error) {
+func (c *PlacementGroupClient) GetByID(ctx context.Context, id int64) (*PlacementGroup, *Response, error) {
 	req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("/placement_groups/%d", id), nil)
 	if err != nil {
 		return nil, nil, err
@@ -85,8 +69,8 @@ func (c *PlacementGroupClient) GetByName(ctx context.Context, name string) (*Pla
 // Get retrieves a PlacementGroup by its ID if the input can be parsed as an integer, otherwise it
 // retrieves a PlacementGroup by its name. If the PlacementGroup does not exist, nil is returned.
 func (c *PlacementGroupClient) Get(ctx context.Context, idOrName string) (*PlacementGroup, *Response, error) {
-	if id, err := strconv.Atoi(idOrName); err == nil {
-		return c.GetByID(ctx, int(id))
+	if id, err := strconv.ParseInt(idOrName, 10, 64); err == nil {
+		return c.GetByID(ctx, id)
 	}
 	return c.GetByName(ctx, idOrName)
 }
@@ -100,7 +84,7 @@ type PlacementGroupListOpts struct {
 }
 
 func (l PlacementGroupListOpts) values() url.Values {
-	vals := l.ListOpts.values()
+	vals := l.ListOpts.Values()
 	if l.Name != "" {
 		vals.Add("name", l.Name)
 	}
@@ -174,7 +158,7 @@ type PlacementGroupCreateOpts struct {
 	Type   PlacementGroupType
 }
 
-// Validate checks if options are valid
+// Validate checks if options are valid.
 func (o PlacementGroupCreateOpts) Validate() error {
 	if o.Name == "" {
 		return errors.New("missing name")
@@ -188,7 +172,7 @@ type PlacementGroupCreateResult struct {
 	Action         *Action
 }
 
-// Create creates a new PlacementGroup
+// Create creates a new PlacementGroup.
 func (c *PlacementGroupClient) Create(ctx context.Context, opts PlacementGroupCreateOpts) (PlacementGroupCreateResult, *Response, error) {
 	if err := opts.Validate(); err != nil {
 		return PlacementGroupCreateResult{}, nil, err

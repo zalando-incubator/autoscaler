@@ -22,21 +22,22 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/autoscaler/cluster-autoscaler/debuggingsnapshot"
-
-	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	testcloudprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/utils"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/context"
-	"k8s.io/autoscaler/cluster-autoscaler/core/filteroutschedulable"
+	"k8s.io/autoscaler/cluster-autoscaler/core/podlistprocessor"
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown/deletiontracker"
+	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown/pdb"
+	"k8s.io/autoscaler/cluster-autoscaler/debuggingsnapshot"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
+	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/random"
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
 	"k8s.io/autoscaler/cluster-autoscaler/processors"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/actionablecluster"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/binpacking"
 	processor_callbacks "k8s.io/autoscaler/cluster-autoscaler/processors/callbacks"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/customresources"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupconfig"
@@ -45,16 +46,18 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodeinfos"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodeinfosprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodes"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/scaledowncandidates"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
-	"k8s.io/autoscaler/cluster-autoscaler/simulator"
+	"k8s.io/autoscaler/cluster-autoscaler/simulator/clustersnapshot"
+	"k8s.io/autoscaler/cluster-autoscaler/simulator/predicatechecker"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/backoff"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/labels"
 
 	"github.com/stretchr/testify/assert"
-
 	apiv1 "k8s.io/api/core/v1"
-	"k8s.io/autoscaler/cluster-autoscaler/utils/backoff"
+	"k8s.io/apimachinery/pkg/api/resource"
 	kube_client "k8s.io/client-go/kubernetes"
 	kube_record "k8s.io/client-go/tools/record"
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
@@ -99,9 +102,46 @@ type ScaleTestConfig struct {
 	ExpectedScaleDownCount int
 }
 
+// NodeGroupConfig is a node group config used in tests
+type NodeGroupConfig struct {
+	Name    string
+	MinSize int
+	MaxSize int
+}
+
+// NodeTemplateConfig is a structure to provide node info in tests
+type NodeTemplateConfig struct {
+	MachineType   string
+	NodeInfo      *schedulerframework.NodeInfo
+	NodeGroupName string
+}
+
+// ScaleUpTestConfig represents a config of a scale test
+type ScaleUpTestConfig struct {
+	Groups                  []NodeGroupConfig
+	Nodes                   []NodeConfig
+	Pods                    []PodConfig
+	ExtraPods               []PodConfig
+	OnScaleUp               testcloudprovider.OnScaleUpFunc
+	ExpansionOptionToChoose *GroupSizeChange
+	Options                 *config.AutoscalingOptions
+	NodeTemplateConfigs     map[string]*NodeTemplateConfig
+}
+
+// ScaleUpTestResult represents a node groups scale up result
+type ScaleUpTestResult struct {
+	ScaleUpError     errors.AutoscalerError
+	ScaleUpStatus    ScaleUpStatusInfo
+	GroupSizeChanges []GroupSizeChange
+	ExpansionOptions []GroupSizeChange
+	Events           []string
+	GroupTargetSizes map[string]int
+}
+
 // ScaleTestResults contains results of a scale test
 type ScaleTestResults struct {
 	ExpansionOptions []GroupSizeChange
+	GroupTargetSizes map[string]int
 	FinalOption      GroupSizeChange
 	NoScaleUpReason  string
 	FinalScaleDowns  []string
@@ -132,22 +172,27 @@ func ExtractPodNames(pods []*apiv1.Pod) []string {
 }
 
 // NewTestProcessors returns a set of simple processors for use in tests.
-func NewTestProcessors() *processors.AutoscalingProcessors {
+func NewTestProcessors(context *context.AutoscalingContext) *processors.AutoscalingProcessors {
 	return &processors.AutoscalingProcessors{
-		PodListProcessor:       filteroutschedulable.NewFilterOutSchedulablePodListProcessor(),
+		PodListProcessor:       podlistprocessor.NewDefaultPodListProcessor(context.PredicateChecker),
 		NodeGroupListProcessor: &nodegroups.NoOpNodeGroupListProcessor{},
-		NodeGroupSetProcessor:  nodegroupset.NewDefaultNodeGroupSetProcessor([]string{}),
-		ScaleDownSetProcessor:  nodes.NewPostFilteringScaleDownNodeProcessor(),
+		BinpackingLimiter:      binpacking.NewDefaultBinpackingLimiter(),
+		NodeGroupSetProcessor:  nodegroupset.NewDefaultNodeGroupSetProcessor([]string{}, config.NodeGroupDifferenceRatios{}),
+		ScaleDownSetProcessor: nodes.NewCompositeScaleDownSetProcessor([]nodes.ScaleDownSetProcessor{
+			nodes.NewMaxNodesProcessor(),
+			nodes.NewAtomicResizeFilteringProcessor(),
+		}),
 		// TODO(bskiba): change scale up test so that this can be a NoOpProcessor
-		ScaleUpStatusProcessor:     &status.EventingScaleUpStatusProcessor{},
-		ScaleDownStatusProcessor:   &status.NoOpScaleDownStatusProcessor{},
-		AutoscalingStatusProcessor: &status.NoOpAutoscalingStatusProcessor{},
-		NodeGroupManager:           nodegroups.NewDefaultNodeGroupManager(),
-		NodeInfoProcessor:          nodeinfos.NewDefaultNodeInfoProcessor(),
-		TemplateNodeInfoProvider:   nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil),
-		NodeGroupConfigProcessor:   nodegroupconfig.NewDefaultNodeGroupConfigProcessor(),
-		CustomResourcesProcessor:   customresources.NewDefaultCustomResourcesProcessor(),
-		ActionableClusterProcessor: actionablecluster.NewDefaultActionableClusterProcessor(),
+		ScaleUpStatusProcessor:      &status.EventingScaleUpStatusProcessor{},
+		ScaleDownStatusProcessor:    &status.NoOpScaleDownStatusProcessor{},
+		AutoscalingStatusProcessor:  &status.NoOpAutoscalingStatusProcessor{},
+		NodeGroupManager:            nodegroups.NewDefaultNodeGroupManager(),
+		NodeInfoProcessor:           nodeinfos.NewDefaultNodeInfoProcessor(),
+		TemplateNodeInfoProvider:    nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil, false),
+		NodeGroupConfigProcessor:    nodegroupconfig.NewDefaultNodeGroupConfigProcessor(context.NodeGroupDefaults),
+		CustomResourcesProcessor:    customresources.NewDefaultCustomResourcesProcessor(),
+		ActionableClusterProcessor:  actionablecluster.NewDefaultActionableClusterProcessor(),
+		ScaleDownCandidatesNotifier: scaledowncandidates.NewObserversList(),
 	}
 }
 
@@ -155,7 +200,8 @@ func NewTestProcessors() *processors.AutoscalingProcessors {
 func NewScaleTestAutoscalingContext(
 	options config.AutoscalingOptions, fakeClient kube_client.Interface,
 	listers kube_util.ListerRegistry, provider cloudprovider.CloudProvider,
-	processorCallbacks processor_callbacks.ProcessorCallbacks, debuggingSnapshotter debuggingsnapshot.DebuggingSnapshotter) (context.AutoscalingContext, error) {
+	processorCallbacks processor_callbacks.ProcessorCallbacks, debuggingSnapshotter debuggingsnapshot.DebuggingSnapshotter,
+) (context.AutoscalingContext, error) {
 	// Not enough buffer space causes the test to hang without printing any logs.
 	// This is not useful.
 	fakeRecorder := kube_record.NewFakeRecorder(100)
@@ -165,15 +211,21 @@ func NewScaleTestAutoscalingContext(
 	}
 	// Ignoring error here is safe - if a test doesn't specify valid estimatorName,
 	// it either doesn't need one, or should fail when it turns out to be nil.
-	estimatorBuilder, _ := estimator.NewEstimatorBuilder(options.EstimatorName, estimator.NewThresholdBasedEstimationLimiter(0, 0))
-	predicateChecker, err := simulator.NewTestPredicateChecker()
+	estimatorBuilder, _ := estimator.NewEstimatorBuilder(
+		options.EstimatorName,
+		estimator.NewThresholdBasedEstimationLimiter(nil),
+		estimator.NewDecreasingPodOrderer(),
+		/* EstimationAnalyserFunc */ nil,
+	)
+	predicateChecker, err := predicatechecker.NewTestPredicateChecker()
 	if err != nil {
 		return context.AutoscalingContext{}, err
 	}
+	remainingPdbTracker := pdb.NewBasicRemainingPdbTracker()
 	if debuggingSnapshotter == nil {
 		debuggingSnapshotter = debuggingsnapshot.NewDebuggingSnapshotter(false)
 	}
-	clusterSnapshot := simulator.NewBasicClusterSnapshot()
+	clusterSnapshot := clustersnapshot.NewBasicClusterSnapshot()
 	return context.AutoscalingContext{
 		AutoscalingOptions: options,
 		AutoscalingKubeClients: context.AutoscalingKubeClients{
@@ -189,6 +241,7 @@ func NewScaleTestAutoscalingContext(
 		EstimatorBuilder:     estimatorBuilder,
 		ProcessorCallbacks:   processorCallbacks,
 		DebuggingSnapshotter: debuggingSnapshotter,
+		RemainingPdbTracker:  remainingPdbTracker,
 	}, nil
 }
 
@@ -273,8 +326,8 @@ type MockAutoprovisioningNodeGroupListProcessor struct {
 
 // Process extends the list of node groups
 func (p *MockAutoprovisioningNodeGroupListProcessor) Process(context *context.AutoscalingContext, nodeGroups []cloudprovider.NodeGroup, nodeInfos map[string]*schedulerframework.NodeInfo,
-	unschedulablePods []*apiv1.Pod) ([]cloudprovider.NodeGroup, map[string]*schedulerframework.NodeInfo, error) {
-
+	unschedulablePods []*apiv1.Pod,
+) ([]cloudprovider.NodeGroup, map[string]*schedulerframework.NodeInfo, error) {
 	machines, err := context.CloudProvider.GetAvailableMachineTypes()
 	assert.NoError(p.T, err)
 
@@ -294,8 +347,92 @@ func (p *MockAutoprovisioningNodeGroupListProcessor) Process(context *context.Au
 func (p *MockAutoprovisioningNodeGroupListProcessor) CleanUp() {
 }
 
+// MockBinpackingLimiter is a fake BinpackingLimiter to be used in tests.
+type MockBinpackingLimiter struct {
+	requiredExpansionOptions int
+}
+
+// InitBinpacking initialises the MockBinpackingLimiter and sets requiredExpansionOptions to 1.
+func (p *MockBinpackingLimiter) InitBinpacking(context *context.AutoscalingContext, nodeGroups []cloudprovider.NodeGroup) {
+	p.requiredExpansionOptions = 1
+}
+
+// StopBinpacking stops the binpacking early, if we already have requiredExpansionOptions i.e. 1.
+func (p *MockBinpackingLimiter) StopBinpacking(context *context.AutoscalingContext, evaluatedOptions []expander.Option) bool {
+	return len(evaluatedOptions) == p.requiredExpansionOptions
+}
+
+// MarkProcessed is here to satisfy the interface.
+func (p *MockBinpackingLimiter) MarkProcessed(context *context.AutoscalingContext, nodegroupId string) {
+
+}
+
 // NewBackoff creates a new backoff object
 func NewBackoff() backoff.Backoff {
 	return backoff.NewIdBasedExponentialBackoff(5*time.Minute, /*InitialNodeGroupBackoffDuration*/
 		30*time.Minute /*MaxNodeGroupBackoffDuration*/, 3*time.Hour /*NodeGroupBackoffResetTimeout*/)
+}
+
+// To implement expander.Strategy, BestOption method must have a struct receiver.
+// This prevents it from modifying fields of reportingStrategy, so we need a thin
+// pointer wrapper for mutable parts.
+type expanderResults struct {
+	inputOptions []GroupSizeChange
+}
+
+// MockReportingStrategy implements expander.Strategy
+type MockReportingStrategy struct {
+	defaultStrategy expander.Strategy
+	optionToChoose  *GroupSizeChange
+	t               *testing.T
+	results         *expanderResults
+}
+
+// NewMockRepotingStrategy creates an expander strategy with reporting and mocking capabilities.
+func NewMockRepotingStrategy(t *testing.T, optionToChoose *GroupSizeChange) *MockReportingStrategy {
+	return &MockReportingStrategy{
+		defaultStrategy: random.NewStrategy(),
+		results:         &expanderResults{},
+		optionToChoose:  optionToChoose,
+		t:               t,
+	}
+}
+
+// LastInputOptions provides access to expansion options passed as an input in recent strategy execution
+func (r *MockReportingStrategy) LastInputOptions() []GroupSizeChange {
+	return r.results.inputOptions
+}
+
+// BestOption satisfies the Strategy interface. Picks the best option from those passed as an argument.
+// When parameter optionToChoose is defined, it's picked as the best one.
+// Otherwise, random option is used.
+func (r *MockReportingStrategy) BestOption(options []expander.Option, nodeInfo map[string]*schedulerframework.NodeInfo) *expander.Option {
+	r.results.inputOptions = expanderOptionsToGroupSizeChanges(options)
+	if r.optionToChoose == nil {
+		return r.defaultStrategy.BestOption(options, nodeInfo)
+	}
+	for _, option := range options {
+		groupSizeChange := expanderOptionToGroupSizeChange(option)
+		if groupSizeChange == *r.optionToChoose {
+			return &option
+		}
+	}
+	assert.Fail(r.t, "did not find expansionOptionToChoose %+v", r.optionToChoose)
+	return nil
+}
+
+func expanderOptionsToGroupSizeChanges(options []expander.Option) []GroupSizeChange {
+	groupSizeChanges := make([]GroupSizeChange, 0, len(options))
+	for _, option := range options {
+		groupSizeChange := expanderOptionToGroupSizeChange(option)
+		groupSizeChanges = append(groupSizeChanges, groupSizeChange)
+	}
+	return groupSizeChanges
+}
+
+func expanderOptionToGroupSizeChange(option expander.Option) GroupSizeChange {
+	groupName := option.NodeGroup.Id()
+	groupSizeIncrement := option.NodeCount
+	scaleUpOption := GroupSizeChange{GroupName: groupName, SizeChange: groupSizeIncrement}
+	return scaleUpOption
 }

@@ -23,7 +23,8 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/autoscaler/cluster-autoscaler/simulator"
+	"k8s.io/autoscaler/cluster-autoscaler/simulator/clustersnapshot"
+	"k8s.io/autoscaler/cluster-autoscaler/simulator/predicatechecker"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/units"
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
@@ -104,6 +105,7 @@ func makeNode(cpu int64, mem int64, name string, zone string) *apiv1.Node {
 }
 
 func TestBinpackingEstimate(t *testing.T) {
+	highResourcePodList := makePods(500, 1000, 0, 0, "", 10)
 	testCases := []struct {
 		name                 string
 		millicores           int64
@@ -113,6 +115,7 @@ func TestBinpackingEstimate(t *testing.T) {
 		topologySpreadingKey string
 		expectNodeCount      int
 		expectPodCount       int
+		expectProcessedPods  []*apiv1.Pod
 	}{
 		{
 			name:            "simple resource-based binpacking",
@@ -148,6 +151,16 @@ func TestBinpackingEstimate(t *testing.T) {
 			expectPodCount:  10,
 		},
 		{
+			name:                "decreasing ordered pods are processed first",
+			millicores:          1000,
+			memory:              5000,
+			pods:                append(makePods(50, 1000, 0, 0, "", 10), highResourcePodList...),
+			maxNodes:            5,
+			expectNodeCount:     5,
+			expectPodCount:      10,
+			expectProcessedPods: highResourcePodList,
+		},
+		{
 			name:            "hostname topology spreading with maxSkew=2 forces 2 pods/node",
 			millicores:      1000,
 			memory:          5000,
@@ -166,15 +179,15 @@ func TestBinpackingEstimate(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			clusterSnapshot := simulator.NewBasicClusterSnapshot()
+			clusterSnapshot := clustersnapshot.NewBasicClusterSnapshot()
 			// Add one node in different zone to trigger topology spread constraints
 			clusterSnapshot.AddNode(makeNode(100, 100, "oldnode", "zone-jupiter"))
 
-			predicateChecker, err := simulator.NewTestPredicateChecker()
+			predicateChecker, err := predicatechecker.NewTestPredicateChecker()
 			assert.NoError(t, err)
-			limiter := NewThresholdBasedEstimationLimiter(tc.maxNodes, time.Duration(0))
-			estimator := NewBinpackingNodeEstimator(predicateChecker, clusterSnapshot, limiter)
-
+			limiter := NewThresholdBasedEstimationLimiter([]Threshold{NewStaticThreshold(tc.maxNodes, time.Duration(0))})
+			processor := NewDecreasingPodOrderer()
+			estimator := NewBinpackingNodeEstimator(predicateChecker, clusterSnapshot, limiter, processor, nil /* EstimationContext */, nil /* EstimationAnalyserFunc */)
 			node := makeNode(tc.millicores, tc.memory, "template", "zone-mars")
 			nodeInfo := schedulerframework.NewNodeInfo()
 			nodeInfo.SetNode(node)
@@ -182,6 +195,9 @@ func TestBinpackingEstimate(t *testing.T) {
 			estimatedNodes, estimatedPods := estimator.Estimate(tc.pods, nodeInfo, nil)
 			assert.Equal(t, tc.expectNodeCount, estimatedNodes)
 			assert.Equal(t, tc.expectPodCount, len(estimatedPods))
+			if tc.expectProcessedPods != nil {
+				assert.Equal(t, tc.expectProcessedPods, estimatedPods)
+			}
 		})
 	}
 }

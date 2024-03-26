@@ -17,7 +17,9 @@ limitations under the License.
 package processors
 
 import (
+	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/actionablecluster"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/binpacking"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/customresources"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupconfig"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroups"
@@ -26,6 +28,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodeinfosprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodes"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/pods"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/scaledowncandidates"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
 )
 
@@ -36,6 +39,8 @@ type AutoscalingProcessors struct {
 	PodListProcessor pods.PodListProcessor
 	// NodeGroupListProcessor is used to process list of NodeGroups that can be used in scale-up.
 	NodeGroupListProcessor nodegroups.NodeGroupListProcessor
+	// BinpackingLimiter processes expansion options to stop binpacking early.
+	BinpackingLimiter binpacking.BinpackingLimiter
 	// NodeGroupSetProcessor is used to divide scale-up between similar NodeGroups.
 	NodeGroupSetProcessor nodegroupset.NodeGroupSetProcessor
 	// ScaleUpStatusProcessor is used to process the state of the cluster after a scale-up.
@@ -60,25 +65,38 @@ type AutoscalingProcessors struct {
 	CustomResourcesProcessor customresources.CustomResourcesProcessor
 	// ActionableClusterProcessor is interface defining whether the cluster is in an actionable state
 	ActionableClusterProcessor actionablecluster.ActionableClusterProcessor
+	// ScaleDownCandidatesNotifier  is used to Update and Register new scale down candidates observer.
+	ScaleDownCandidatesNotifier *scaledowncandidates.ObserversList
 }
 
 // DefaultProcessors returns default set of processors.
-func DefaultProcessors() *AutoscalingProcessors {
+func DefaultProcessors(options config.AutoscalingOptions) *AutoscalingProcessors {
 	return &AutoscalingProcessors{
-		PodListProcessor:           pods.NewDefaultPodListProcessor(),
-		NodeGroupListProcessor:     nodegroups.NewDefaultNodeGroupListProcessor(),
-		NodeGroupSetProcessor:      nodegroupset.NewDefaultNodeGroupSetProcessor([]string{}),
-		ScaleUpStatusProcessor:     status.NewDefaultScaleUpStatusProcessor(),
-		ScaleDownNodeProcessor:     nodes.NewPreFilteringScaleDownNodeProcessor(),
-		ScaleDownSetProcessor:      nodes.NewPostFilteringScaleDownNodeProcessor(),
-		ScaleDownStatusProcessor:   status.NewDefaultScaleDownStatusProcessor(),
-		AutoscalingStatusProcessor: status.NewDefaultAutoscalingStatusProcessor(),
-		NodeGroupManager:           nodegroups.NewDefaultNodeGroupManager(),
-		NodeInfoProcessor:          nodeinfos.NewDefaultNodeInfoProcessor(),
-		NodeGroupConfigProcessor:   nodegroupconfig.NewDefaultNodeGroupConfigProcessor(),
-		CustomResourcesProcessor:   customresources.NewDefaultCustomResourcesProcessor(),
-		ActionableClusterProcessor: actionablecluster.NewDefaultActionableClusterProcessor(),
-		TemplateNodeInfoProvider:   nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil),
+		PodListProcessor:       pods.NewDefaultPodListProcessor(),
+		NodeGroupListProcessor: nodegroups.NewDefaultNodeGroupListProcessor(),
+		BinpackingLimiter:      binpacking.NewDefaultBinpackingLimiter(),
+		NodeGroupSetProcessor: nodegroupset.NewDefaultNodeGroupSetProcessor([]string{}, config.NodeGroupDifferenceRatios{
+			MaxAllocatableDifferenceRatio:    config.DefaultMaxAllocatableDifferenceRatio,
+			MaxCapacityMemoryDifferenceRatio: config.DefaultMaxCapacityMemoryDifferenceRatio,
+			MaxFreeDifferenceRatio:           config.DefaultMaxFreeDifferenceRatio,
+		}),
+		ScaleUpStatusProcessor: status.NewDefaultScaleUpStatusProcessor(),
+		ScaleDownNodeProcessor: nodes.NewPreFilteringScaleDownNodeProcessor(),
+		ScaleDownSetProcessor: nodes.NewCompositeScaleDownSetProcessor(
+			[]nodes.ScaleDownSetProcessor{
+				nodes.NewMaxNodesProcessor(),
+				nodes.NewAtomicResizeFilteringProcessor(),
+			},
+		),
+		ScaleDownStatusProcessor:    status.NewDefaultScaleDownStatusProcessor(),
+		AutoscalingStatusProcessor:  status.NewDefaultAutoscalingStatusProcessor(),
+		NodeGroupManager:            nodegroups.NewDefaultNodeGroupManager(),
+		NodeInfoProcessor:           nodeinfos.NewDefaultNodeInfoProcessor(),
+		NodeGroupConfigProcessor:    nodegroupconfig.NewDefaultNodeGroupConfigProcessor(options.NodeGroupDefaults),
+		CustomResourcesProcessor:    customresources.NewDefaultCustomResourcesProcessor(),
+		ActionableClusterProcessor:  actionablecluster.NewDefaultActionableClusterProcessor(),
+		TemplateNodeInfoProvider:    nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil, false),
+		ScaleDownCandidatesNotifier: scaledowncandidates.NewObserversList(),
 	}
 }
 

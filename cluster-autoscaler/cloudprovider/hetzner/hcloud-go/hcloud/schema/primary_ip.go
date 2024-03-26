@@ -2,16 +2,16 @@ package schema
 
 import "time"
 
-// PrimaryIP defines a Primary IP
+// PrimaryIP defines a Primary IP.
 type PrimaryIP struct {
-	ID           int                 `json:"id"`
+	ID           int64               `json:"id"`
 	IP           string              `json:"ip"`
 	Labels       map[string]string   `json:"labels"`
 	Name         string              `json:"name"`
 	Type         string              `json:"type"`
 	Protection   PrimaryIPProtection `json:"protection"`
 	DNSPtr       []PrimaryIPDNSPTR   `json:"dns_ptr"`
-	AssigneeID   int                 `json:"assignee_id"`
+	AssigneeID   int64               `json:"assignee_id"`
 	AssigneeType string              `json:"assignee_type"`
 	AutoDelete   bool                `json:"auto_delete"`
 	Blocked      bool                `json:"blocked"`
@@ -46,4 +46,17 @@ type PrimaryIPGetResult struct {
 // PrimaryIPListResult defines the response when listing Primary IPs.
 type PrimaryIPListResult struct {
 	PrimaryIPs []PrimaryIP `json:"primary_ips"`
+}
+
+// PrimaryIPUpdateResult defines the response
+// when updating a Primary IP.
+type PrimaryIPUpdateResult struct {
+	PrimaryIP PrimaryIP `json:"primary_ip"`
+}
+
+// PrimaryIPActionChangeDNSPtrRequest defines the schema for the request to
+// change a Primary IP's reverse DNS pointer.
+type PrimaryIPActionChangeDNSPtrRequest struct {
+	IP     string  `json:"ip"`
+	DNSPtr *string `json:"dns_ptr"`
 }

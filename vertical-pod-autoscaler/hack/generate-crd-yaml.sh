@@ -19,7 +19,7 @@ set -o nounset
 set -o pipefail
 
 REPOSITORY_ROOT=$(realpath $(dirname ${BASH_SOURCE})/..)
-CRD_OPTS=crd:trivialVersions=false,allowDangerousTypes=true
+CRD_OPTS=crd:allowDangerousTypes=true
 APIS_PATH=${REPOSITORY_ROOT}/pkg/apis
 OUTPUT=${REPOSITORY_ROOT}/deploy/vpa-v1-crd-gen.yaml
 WORKSPACE=$(mktemp -d)
@@ -32,8 +32,7 @@ trap cleanup EXIT
 if [[ -z $(which controller-gen) ]]; then
     (
         cd $WORKSPACE
-	      go mod init tmp
-	      go get sigs.k8s.io/controller-tools/cmd/controller-gen@v0.4.0
+	      go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.9.2
     )
     CONTROLLER_GEN=${GOBIN:-$(go env GOPATH)/bin}/controller-gen
 else
@@ -41,7 +40,7 @@ else
 fi
 
 # The following commands always returns an error because controller-gen does not accept keys other than strings.
-${CONTROLLER_GEN} ${CRD_OPTS} paths="${APIS_PATH}/..." output:crd:dir=${WORKSPACE} >& ${WORKSPACE}/errors.log ||:
+${CONTROLLER_GEN} ${CRD_OPTS} paths="${APIS_PATH}/..." output:crd:dir="\"${WORKSPACE}\"" >& ${WORKSPACE}/errors.log ||:
 grep -v -e 'map keys must be strings, not int' -e 'not all generators ran successfully' -e 'usage' ${WORKSPACE}/errors.log \
     && { echo "Failed to generate CRD YAMLs."; exit 1; }
 
@@ -53,4 +52,5 @@ resources:
 commonAnnotations:
   "api-approved.kubernetes.io": "https://github.com/kubernetes/kubernetes/pull/63797"
 EOF
-kubectl kustomize . > ${OUTPUT}
+echo --- > ${OUTPUT}
+kubectl kustomize . >> ${OUTPUT}

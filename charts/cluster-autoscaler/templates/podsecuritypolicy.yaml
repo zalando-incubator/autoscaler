@@ -19,11 +19,7 @@ spec:
     - 'emptyDir'
     - 'projected'
     - 'downwardAPI'
-{{- if eq .Values.cloudProvider "gce" }}
-  allowedHostPaths:
-    - pathPrefix: {{ .Values.cloudConfigPath }}
-{{- end }}
-  hostNetwork: false
+  hostNetwork: {{ .Values.hostNetwork }}
   hostIPC: false
   hostPID: false
   runAsUser:

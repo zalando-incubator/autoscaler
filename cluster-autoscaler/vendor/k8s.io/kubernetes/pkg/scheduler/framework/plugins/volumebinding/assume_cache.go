@@ -43,7 +43,7 @@ type AssumeCache interface {
 	// Get the object by name
 	Get(objName string) (interface{}, error)
 
-	// Get the API object by name
+	// GetAPIObj gets the API object by name
 	GetAPIObj(objName string) (interface{}, error)
 
 	// List all the objects in the cache
@@ -206,7 +206,7 @@ func (c *assumeCache) delete(obj interface{}) {
 		return
 	}
 
-	name, err := cache.MetaNamespaceKeyFunc(obj)
+	name, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 	if err != nil {
 		klog.ErrorS(&errObjectName{err}, "Failed to delete")
 		return

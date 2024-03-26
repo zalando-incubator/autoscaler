@@ -44,7 +44,6 @@ rules:
       - get
       - list
       - watch
-      - patch
   - apiGroups:
       - "autoscaling.k8s.io"
     resources:
@@ -53,6 +52,18 @@ rules:
       - get
       - list
       - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:vpa-status-actor
+rules:
+  - apiGroups:
+      - "autoscaling.k8s.io"
+    resources:
+      - verticalpodautoscalers/status
+    verbs:
+      - get
       - patch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -141,6 +152,19 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
+  name: system:vpa-status-actor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:vpa-status-actor
+subjects:
+  - kind: ServiceAccount
+    name: vpa-recommender
+    namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
   name: system:vpa-checkpoint-actor
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -214,7 +238,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: system:vpa-evictionter-binding
+  name: system:vpa-evictioner-binding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -228,6 +252,18 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: vpa-admission-controller
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vpa-recommender
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vpa-updater
   namespace: kube-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1

@@ -8,7 +8,7 @@ pipeline:
   type: script
   working_dir: /go/src/k8s.io/autoscaler
   env:
-    VERSION: "v1.18.2-internal"
+    VERSION: "v1.27.5-internal"
     DOWNSTREAM: "registry-write.opensource.zalan.do/teapot/kube-cluster-autoscaler"
     TARGET_NAME: "container-registry-test.zalando.net/teapot/kube-cluster-autoscaler"
   commands:

@@ -40,8 +40,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
+	provider_aws "k8s.io/cloud-provider-aws/pkg/providers/v1"
 	kubeletapis "k8s.io/kubelet/pkg/apis"
-	provider_aws "k8s.io/legacy-cloud-providers/aws"
 )
 
 // resetAWSRegion resets AWS_REGION environment variable key to its pre-test

@@ -45,6 +45,7 @@ type DeltaClusterSnapshot struct {
 }
 
 type deltaSnapshotNodeLister DeltaClusterSnapshot
+type deltaSnapshotStorageLister DeltaClusterSnapshot
 
 type internalDeltaSnapshotData struct {
 	baseData *internalDeltaSnapshotData
@@ -351,6 +352,11 @@ func (snapshot *deltaSnapshotNodeLister) Get(nodeName string) (*schedulerframewo
 	return (*DeltaClusterSnapshot)(snapshot).getNodeInfo(nodeName)
 }
 
+// IsPVCUsedByPods returns if PVC is used by pods
+func (snapshot *deltaSnapshotStorageLister) IsPVCUsedByPods(key string) bool {
+	return false
+}
+
 func (snapshot *DeltaClusterSnapshot) getNodeInfo(nodeName string) (*schedulerframework.NodeInfo, error) {
 	data := snapshot.data
 	node, found := data.getNodeInfo(nodeName)
@@ -363,6 +369,11 @@ func (snapshot *DeltaClusterSnapshot) getNodeInfo(nodeName string) (*schedulerfr
 // NodeInfos returns node lister.
 func (snapshot *DeltaClusterSnapshot) NodeInfos() schedulerframework.NodeInfoLister {
 	return (*deltaSnapshotNodeLister)(snapshot)
+}
+
+// StorageInfos returns storage lister
+func (snapshot *DeltaClusterSnapshot) StorageInfos() schedulerframework.StorageInfoLister {
+	return (*deltaSnapshotStorageLister)(snapshot)
 }
 
 // NewDeltaClusterSnapshot creates instances of DeltaClusterSnapshot.

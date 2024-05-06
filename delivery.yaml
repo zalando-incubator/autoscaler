@@ -5,10 +5,10 @@ pipeline:
     vm_config:
       type: linux
       size: large
-      image: cdp-runtime/go-1.19
+      image: cdp-runtime/go-1.22
     working_dir: /go/src/k8s.io/autoscaler
     env:
-      VERSION: "v1.0.0-internal"
+      VERSION: "v1.1.1-internal"
     commands:
       - desc: "Installing dependencies"
         cmd: |

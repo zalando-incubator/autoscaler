@@ -290,6 +290,12 @@ type KubeletConfiguration struct {
 	// Default: "2m"
 	// +optional
 	ImageMinimumGCAge metav1.Duration `json:"imageMinimumGCAge,omitempty"`
+	// imageMaximumGCAge is the maximum age an image can be unused before it is garbage collected.
+	// The default of this field is "0s", which disables this field--meaning images won't be garbage
+	// collected based on being unused for too long.
+	// Default: "0s" (disabled)
+	// +optional
+	ImageMaximumGCAge metav1.Duration `json:"imageMaximumGCAge,omitempty"`
 	// imageGCHighThresholdPercent is the percent of disk usage after which
 	// image garbage collection is always run. The percent is calculated by
 	// dividing this field value by 100, so this field must be between 0 and
@@ -589,6 +595,21 @@ type KubeletConfiguration struct {
 	// Default: 5
 	// +optional
 	ContainerLogMaxFiles *int32 `json:"containerLogMaxFiles,omitempty"`
+
+	// ContainerLogMaxWorkers specifies the maximum number of concurrent workers to spawn
+	// for performing the log rotate operations. Set this count to 1 for disabling the
+	// concurrent log rotation workflows
+	// Default: 1
+	// +optional
+	ContainerLogMaxWorkers *int32 `json:"containerLogMaxWorkers,omitempty"`
+
+	// ContainerLogMonitorInterval specifies the duration at which the container logs are monitored
+	// for performing the log rotate operation. This defaults to 10 * time.Seconds. But can be
+	// customized to a smaller value based on the log generation rate and the size required to be
+	// rotated against
+	// Default: 10s
+	// +optional
+	ContainerLogMonitorInterval *metav1.Duration `json:"containerLogMonitorInterval,omitempty"`
 	// configMapAndSecretChangeDetectionStrategy is a mode in which ConfigMap and Secret
 	// managers are running. Valid values include:
 	//

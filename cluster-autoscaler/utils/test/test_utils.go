@@ -82,13 +82,25 @@ func MarkUnschedulable() func(*apiv1.Pod) {
 	}
 }
 
-// BuildDSTestPod creates a DaemonSet pod with cpu and memory.
-func BuildDSTestPod(name string, cpu int64, mem int64) *apiv1.Pod {
+// AddSchedulerName adds scheduler name to a pod.
+func AddSchedulerName(schedulerName string) func(*apiv1.Pod) {
+	return func(pod *apiv1.Pod) {
+		pod.Spec.SchedulerName = schedulerName
+	}
+}
 
-	pod := BuildTestPod(name, cpu, mem)
-	pod.OwnerReferences = GenerateOwnerReferences("ds", "DaemonSet", "apps/v1", "some-uid")
+// WithDSController creates a daemonSet owner ref for the pod.
+func WithDSController() func(*apiv1.Pod) {
+	return func(pod *apiv1.Pod) {
+		pod.OwnerReferences = GenerateOwnerReferences("ds", "DaemonSet", "apps/v1", "some-uid")
+	}
+}
 
-	return pod
+// WithNodeName sets a node name to the pod.
+func WithNodeName(nodeName string) func(*apiv1.Pod) {
+	return func(pod *apiv1.Pod) {
+		pod.Spec.NodeName = nodeName
+	}
 }
 
 // BuildTestPodWithEphemeralStorage creates a pod with cpu, memory and ephemeral storage resources.
@@ -200,7 +212,7 @@ func TolerateGpuForPod(pod *apiv1.Pod) {
 }
 
 // BuildTestNode creates a node with specified capacity.
-func BuildTestNode(name string, millicpu int64, mem int64) *apiv1.Node {
+func BuildTestNode(name string, millicpuCapacity int64, memCapacity int64) *apiv1.Node {
 	node := &apiv1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:     name,
@@ -217,11 +229,11 @@ func BuildTestNode(name string, millicpu int64, mem int64) *apiv1.Node {
 		},
 	}
 
-	if millicpu >= 0 {
-		node.Status.Capacity[apiv1.ResourceCPU] = *resource.NewMilliQuantity(millicpu, resource.DecimalSI)
+	if millicpuCapacity >= 0 {
+		node.Status.Capacity[apiv1.ResourceCPU] = *resource.NewMilliQuantity(millicpuCapacity, resource.DecimalSI)
 	}
-	if mem >= 0 {
-		node.Status.Capacity[apiv1.ResourceMemory] = *resource.NewQuantity(mem, resource.DecimalSI)
+	if memCapacity >= 0 {
+		node.Status.Capacity[apiv1.ResourceMemory] = *resource.NewQuantity(memCapacity, resource.DecimalSI)
 	}
 
 	node.Status.Allocatable = apiv1.ResourceList{}
@@ -229,6 +241,13 @@ func BuildTestNode(name string, millicpu int64, mem int64) *apiv1.Node {
 		node.Status.Allocatable[k] = v
 	}
 
+	return node
+}
+
+// WithAllocatable adds specified milliCpu and memory to Allocatable of the node in-place.
+func WithAllocatable(node *apiv1.Node, millicpuAllocatable, memAllocatable int64) *apiv1.Node {
+	node.Status.Allocatable[apiv1.ResourceCPU] = *resource.NewMilliQuantity(millicpuAllocatable, resource.DecimalSI)
+	node.Status.Allocatable[apiv1.ResourceMemory] = *resource.NewQuantity(memAllocatable, resource.DecimalSI)
 	return node
 }
 
@@ -419,8 +438,14 @@ func NewHttpServerMock(fields ...HttpServerMockField) *HttpServerMock {
 
 func (l *HttpServerMock) handle(req *http.Request, w http.ResponseWriter, serverMock *HttpServerMock) string {
 	url := req.URL.Path
+	query := req.URL.Query()
 	var response string
-	args := l.Called(url)
+	var args mock.Arguments
+	if query.Has("pageToken") {
+		args = l.Called(url, query.Get("pageToken"))
+	} else {
+		args = l.Called(url)
+	}
 	for i, field := range l.fields {
 		switch field {
 		case MockFieldResponse:

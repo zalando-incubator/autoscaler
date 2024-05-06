@@ -32,9 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes/fake"
-	core "k8s.io/client-go/testing"
-
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
@@ -43,11 +40,14 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown/deletiontracker"
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown/status"
 	. "k8s.io/autoscaler/cluster-autoscaler/core/test"
+	"k8s.io/autoscaler/cluster-autoscaler/observers/nodegroupchange"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupconfig"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/utilization"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/taints"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
+	"k8s.io/client-go/kubernetes/fake"
+	core "k8s.io/client-go/testing"
 )
 
 type nodeGroupViewInfo struct {
@@ -1187,12 +1187,16 @@ func TestStartDeletion(t *testing.T) {
 					wantScaleDownStatus.ScaledDownNodes = append(wantScaleDownStatus.ScaledDownNodes, statusScaledDownNode)
 				}
 
+				scaleStateNotifier := nodegroupchange.NewNodeGroupChangeObserversList()
+				scaleStateNotifier.Register(csr)
+
 				// Create Actuator, run StartDeletion, and verify the error.
 				ndt := deletiontracker.NewNodeDeletionTracker(0)
-				ndb := NewNodeDeletionBatcher(&ctx, csr, ndt, 0*time.Second)
-				evictor := Evictor{EvictionRetryTime: 0, DsEvictionRetryTime: 0, DsEvictionEmptyNodeTimeout: 0, PodEvictionHeadroom: DefaultPodEvictionHeadroom}
+				ndb := NewNodeDeletionBatcher(&ctx, scaleStateNotifier, ndt, 0*time.Second)
+				legacyFlagDrainConfig := SingleRuleDrainConfig(ctx.MaxGracefulTerminationSec)
+				evictor := Evictor{EvictionRetryTime: 0, PodEvictionHeadroom: DefaultPodEvictionHeadroom, shutdownGracePeriodByPodPriority: legacyFlagDrainConfig, fullDsEviction: false}
 				actuator := Actuator{
-					ctx: &ctx, clusterState: csr, nodeDeletionTracker: ndt,
+					ctx: &ctx, nodeDeletionTracker: ndt,
 					nodeDeletionScheduler: NewGroupDeletionScheduler(&ctx, ndt, ndb, evictor),
 					budgetProcessor:       budgets.NewScaleDownBudgetProcessor(&ctx),
 					configGetter:          nodegroupconfig.NewDefaultNodeGroupConfigProcessor(ctx.NodeGroupDefaults),
@@ -1260,8 +1264,8 @@ func TestStartDeletion(t *testing.T) {
 						break taintsLoop
 					}
 				}
-				ignoreTaintValue := cmpopts.IgnoreFields(apiv1.Taint{}, "Value")
-				if diff := cmp.Diff(tc.wantTaintUpdates, gotTaintUpdates, ignoreTaintValue, cmpopts.EquateEmpty()); diff != "" {
+				startupTaintValue := cmpopts.IgnoreFields(apiv1.Taint{}, "Value")
+				if diff := cmp.Diff(tc.wantTaintUpdates, gotTaintUpdates, startupTaintValue, cmpopts.EquateEmpty()); diff != "" {
 					t.Errorf("taintUpdates diff (-want +got):\n%s", diff)
 				}
 
@@ -1424,11 +1428,14 @@ func TestStartDeletionInBatchBasic(t *testing.T) {
 				t.Fatalf("Couldn't set up autoscaling context: %v", err)
 			}
 			csr := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, ctx.LogRecorder, NewBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}))
+			scaleStateNotifier := nodegroupchange.NewNodeGroupChangeObserversList()
+			scaleStateNotifier.Register(csr)
 			ndt := deletiontracker.NewNodeDeletionTracker(0)
-			ndb := NewNodeDeletionBatcher(&ctx, csr, ndt, deleteInterval)
-			evictor := Evictor{EvictionRetryTime: 0, DsEvictionRetryTime: 0, DsEvictionEmptyNodeTimeout: 0, PodEvictionHeadroom: DefaultPodEvictionHeadroom}
+			ndb := NewNodeDeletionBatcher(&ctx, scaleStateNotifier, ndt, deleteInterval)
+			legacyFlagDrainConfig := SingleRuleDrainConfig(ctx.MaxGracefulTerminationSec)
+			evictor := Evictor{EvictionRetryTime: 0, PodEvictionHeadroom: DefaultPodEvictionHeadroom, shutdownGracePeriodByPodPriority: legacyFlagDrainConfig}
 			actuator := Actuator{
-				ctx: &ctx, clusterState: csr, nodeDeletionTracker: ndt,
+				ctx: &ctx, nodeDeletionTracker: ndt,
 				nodeDeletionScheduler: NewGroupDeletionScheduler(&ctx, ndt, ndb, evictor),
 				budgetProcessor:       budgets.NewScaleDownBudgetProcessor(&ctx),
 			}

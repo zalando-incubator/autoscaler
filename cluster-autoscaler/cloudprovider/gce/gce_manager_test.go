@@ -333,7 +333,7 @@ func newTestGceManager(t *testing.T, testServerURL string, regional bool) *gceMa
 
 	cache := &GceCache{
 		migs:                    make(map[GceRef]Mig),
-		instances:               make(map[GceRef][]cloudprovider.Instance),
+		instances:               make(map[GceRef][]GceInstance),
 		instancesUpdateTime:     make(map[GceRef]time.Time),
 		instancesToMig:          make(map[GceRef]GceRef),
 		instancesFromUnknownMig: make(map[GceRef]bool),
@@ -346,6 +346,7 @@ func newTestGceManager(t *testing.T, testServerURL string, regional bool) *gceMa
 		migTargetSizeCache:        map[GceRef]int64{},
 		instanceTemplateNameCache: map[GceRef]string{},
 		instanceTemplatesCache:    map[GceRef]*gce.InstanceTemplate{},
+		kubeEnvCache:              map[GceRef]KubeEnv{},
 		migBaseNameCache:          map[GceRef]string{},
 	}
 	migLister := NewMigLister(cache)

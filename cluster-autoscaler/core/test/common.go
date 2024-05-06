@@ -31,10 +31,10 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown/deletiontracker"
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown/pdb"
 	"k8s.io/autoscaler/cluster-autoscaler/debuggingsnapshot"
-	"k8s.io/autoscaler/cluster-autoscaler/estimator"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/random"
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
+	"k8s.io/autoscaler/cluster-autoscaler/observers/nodegroupchange"
 	"k8s.io/autoscaler/cluster-autoscaler/processors"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/actionablecluster"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/binpacking"
@@ -193,6 +193,7 @@ func NewTestProcessors(context *context.AutoscalingContext) *processors.Autoscal
 		CustomResourcesProcessor:    customresources.NewDefaultCustomResourcesProcessor(),
 		ActionableClusterProcessor:  actionablecluster.NewDefaultActionableClusterProcessor(),
 		ScaleDownCandidatesNotifier: scaledowncandidates.NewObserversList(),
+		ScaleStateNotifier:          nodegroupchange.NewNodeGroupChangeObserversList(),
 	}
 }
 
@@ -209,14 +210,6 @@ func NewScaleTestAutoscalingContext(
 	if err != nil {
 		return context.AutoscalingContext{}, err
 	}
-	// Ignoring error here is safe - if a test doesn't specify valid estimatorName,
-	// it either doesn't need one, or should fail when it turns out to be nil.
-	estimatorBuilder, _ := estimator.NewEstimatorBuilder(
-		options.EstimatorName,
-		estimator.NewThresholdBasedEstimationLimiter(nil),
-		estimator.NewDecreasingPodOrderer(),
-		/* EstimationAnalyserFunc */ nil,
-	)
 	predicateChecker, err := predicatechecker.NewTestPredicateChecker()
 	if err != nil {
 		return context.AutoscalingContext{}, err
@@ -238,7 +231,6 @@ func NewScaleTestAutoscalingContext(
 		PredicateChecker:     predicateChecker,
 		ClusterSnapshot:      clusterSnapshot,
 		ExpanderStrategy:     random.NewStrategy(),
-		EstimatorBuilder:     estimatorBuilder,
 		ProcessorCallbacks:   processorCallbacks,
 		DebuggingSnapshotter: debuggingSnapshotter,
 		RemainingPdbTracker:  remainingPdbTracker,
@@ -357,14 +349,17 @@ func (p *MockBinpackingLimiter) InitBinpacking(context *context.AutoscalingConte
 	p.requiredExpansionOptions = 1
 }
 
+// MarkProcessed is here to satisfy the interface.
+func (p *MockBinpackingLimiter) MarkProcessed(context *context.AutoscalingContext, nodegroupId string) {
+}
+
 // StopBinpacking stops the binpacking early, if we already have requiredExpansionOptions i.e. 1.
 func (p *MockBinpackingLimiter) StopBinpacking(context *context.AutoscalingContext, evaluatedOptions []expander.Option) bool {
 	return len(evaluatedOptions) == p.requiredExpansionOptions
 }
 
-// MarkProcessed is here to satisfy the interface.
-func (p *MockBinpackingLimiter) MarkProcessed(context *context.AutoscalingContext, nodegroupId string) {
-
+// FinalizeBinpacking is here to satisfy the interface.
+func (p *MockBinpackingLimiter) FinalizeBinpacking(context *context.AutoscalingContext, finalOptions []expander.Option) {
 }
 
 // NewBackoff creates a new backoff object

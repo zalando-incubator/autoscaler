@@ -26,7 +26,6 @@ import (
 	"time"
 
 	gce "google.golang.org/api/compute/v1"
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/client-go/util/workqueue"
 	klog "k8s.io/klog/v2"
 )
@@ -34,7 +33,7 @@ import (
 // MigInfoProvider allows obtaining information about MIGs
 type MigInfoProvider interface {
 	// GetMigInstances returns instances for a given MIG ref
-	GetMigInstances(migRef GceRef) ([]cloudprovider.Instance, error)
+	GetMigInstances(migRef GceRef) ([]GceInstance, error)
 	// GetMigForInstance returns MIG ref for a given instance
 	GetMigForInstance(instanceRef GceRef) (Mig, error)
 	// RegenerateMigInstancesCache regenerates MIGs to instances mapping cache
@@ -47,6 +46,8 @@ type MigInfoProvider interface {
 	GetMigInstanceTemplateName(migRef GceRef) (string, error)
 	// GetMigInstanceTemplate returns instance template for given MIG ref
 	GetMigInstanceTemplate(migRef GceRef) (*gce.InstanceTemplate, error)
+	// GetMigKubeEnv returns kube-env for given MIG ref
+	GetMigKubeEnv(migRef GceRef) (KubeEnv, error)
 	// GetMigMachineType returns machine type used by a MIG.
 	// For custom machines cpu and memory information is based on parsing
 	// machine name. For standard types it's retrieved from GCE API.
@@ -89,7 +90,7 @@ func NewCachingMigInfoProvider(cache *GceCache, migLister MigLister, gceClient A
 }
 
 // GetMigInstances returns instances for a given MIG ref
-func (c *cachingMigInfoProvider) GetMigInstances(migRef GceRef) ([]cloudprovider.Instance, error) {
+func (c *cachingMigInfoProvider) GetMigInstances(migRef GceRef) ([]GceInstance, error) {
 	instances, found := c.cache.GetMigInstances(migRef)
 	if found {
 		return instances, nil
@@ -283,6 +284,29 @@ func (c *cachingMigInfoProvider) GetMigInstanceTemplate(migRef GceRef) (*gce.Ins
 	}
 	c.cache.SetMigInstanceTemplate(migRef, template)
 	return template, nil
+}
+
+func (c *cachingMigInfoProvider) GetMigKubeEnv(migRef GceRef) (KubeEnv, error) {
+	templateName, err := c.GetMigInstanceTemplateName(migRef)
+	if err != nil {
+		return KubeEnv{}, err
+	}
+
+	kubeEnv, kubeEnvFound := c.cache.GetMigKubeEnv(migRef)
+	if kubeEnvFound && kubeEnv.templateName == templateName {
+		return kubeEnv, nil
+	}
+
+	template, err := c.GetMigInstanceTemplate(migRef)
+	if err != nil {
+		return KubeEnv{}, err
+	}
+	kubeEnv, err = ExtractKubeEnv(template)
+	if err != nil {
+		return KubeEnv{}, err
+	}
+	c.cache.SetMigKubeEnv(migRef, kubeEnv)
+	return kubeEnv, nil
 }
 
 // filMigInfoCache needs to be called with migInfoMutex locked

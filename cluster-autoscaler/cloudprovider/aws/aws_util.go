@@ -20,14 +20,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"io/ioutil"
-	klog "k8s.io/klog/v2"
 	"net/http"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/aws/aws-sdk-go/aws/endpoints"
+	klog "k8s.io/klog/v2"
 )
 
 var (
@@ -137,7 +138,13 @@ func parseMemory(memory string) int64 {
 func parseCPU(cpu string) int64 {
 	i, err := strconv.ParseInt(cpu, 10, 64)
 	if err != nil {
-		klog.Fatal(err)
+		// klog.Fatal(err)
+		// invalid CPU values can be treated as 0, this will result in
+		// the instance type being ignored in the autoscaling process
+		klog.Warningf("Invalid CPU value '%s', treating as 0", cpu)
+		// Returning 0 instead of logging fatal to avoid crashing the autoscaler
+		// This allows the autoscaler to continue functioning even if some instance types have invalid CPU
+		return 0
 	}
 	return i
 }

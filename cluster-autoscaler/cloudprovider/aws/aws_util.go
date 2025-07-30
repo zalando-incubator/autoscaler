@@ -60,6 +60,7 @@ func GenerateEC2InstanceTypes(region string) (map[string]*InstanceType, error) {
 	partitions := resolver.(endpoints.EnumPartitions).Partitions()
 
 	for _, p := range partitions {
+
 		for _, r := range p.Regions() {
 			if region != "" && region != r.ID() {
 				continue

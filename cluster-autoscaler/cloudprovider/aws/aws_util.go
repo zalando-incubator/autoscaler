@@ -144,6 +144,7 @@ func parseCPU(cpu string) int64 {
 		klog.Warningf("Invalid CPU value '%s', treating as 0", cpu)
 		// Returning 0 instead of logging fatal to avoid crashing the autoscaler
 		// This allows the autoscaler to continue functioning even if some instance types have invalid CPU
+		//
 		return 0
 	}
 	return i

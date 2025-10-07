@@ -39,9 +39,14 @@ func (p *EventingScaleUpStatusProcessor) Process(context *context.AutoscalingCon
 	consideredNodeGroupsMap := nodeGroupListToMapById(status.ConsideredNodeGroups)
 	if status.Result != ScaleUpSuccessful && status.Result != ScaleUpError {
 		for _, noScaleUpInfo := range status.PodsRemainUnschedulable {
-			context.Recorder.Event(noScaleUpInfo.Pod, apiv1.EventTypeNormal, "NotTriggerScaleUp",
-				fmt.Sprintf("pod didn't trigger scale-up (it wouldn't fit if a new node is"+
-					" added): %s", ReasonsMessage(noScaleUpInfo, consideredNodeGroupsMap)))
+			if noScaleUpInfo.Pod.Labels != nil && noScaleUpInfo.Pod.Labels["application"] == "skipper-ingress" && noScaleUpInfo.Pod.Labels["component"] == "ingress" {
+				// only emit NotTriggerScaleUp event for
+				// skipper-ingress pods as they are the only
+				// ones running on CA managed nodes in Zalando
+				context.Recorder.Event(noScaleUpInfo.Pod, apiv1.EventTypeNormal, "NotTriggerScaleUp",
+					fmt.Sprintf("pod didn't trigger scale-up (it wouldn't fit if a new node is"+
+						" added): %s", ReasonsMessage(noScaleUpInfo, consideredNodeGroupsMap)))
+			}
 		}
 	} else {
 		klog.V(4).Infof("Skipping event processing for unschedulable pods since there is a" +
